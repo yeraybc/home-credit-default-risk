@@ -28,3 +28,24 @@ jobs:
         run: |
           grep '^ruff==' requirements-dev.txt | xargs pip install
           ruff check src/ scripts/
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Aqui si se instala el stack, y en la version del proyecto: los tests ejercitan
+      # reduce_mem_usage y EvaluadorSenal de verdad, no solo su sintaxis.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Instalación
+        run: |
+          pip install -r requirements-dev.txt
+          pip install -e .
+
+      - name: Pytest
+        run: pytest tests/
