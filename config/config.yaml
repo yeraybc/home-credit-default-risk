@@ -1,0 +1,39 @@
+paths:
+  raw_data:       "data/raw"
+  processed_data: "data/processed"
+  external_data:  "data/external"
+  models:         "models"
+  reports:        "monitoring/reports"
+
+dataset:
+  target_col:         "TARGET"
+  id_col:             "SK_ID_CURR"
+  test_size:          0.2
+  random_state:       42
+  missing_threshold:  0.60   # columnas con > 60% nulos se evalúan para drop
+
+feature_engineering:
+  min_iv:                0.02   # IV < 0.02 → sin valor predictivo
+  n_bins_max:            10
+  correlation_threshold: 0.95
+
+modeling:
+  random_state:    42
+  cv_folds:        5
+  optuna_metric:   "roc_auc"
+  optuna_n_trials: 100
+  decision_threshold: 0.5
+
+monitoring:
+  psi_threshold:   0.2    # > 0.2 → drift significativo, reentrenar
+  drift_threshold: 0.05
+
+api:
+  host:          "0.0.0.0"
+  port:          8000
+  model_name:    "credit_scoring_ensemble"
+  model_version: "latest"
+
+mlflow:
+  experiment_name: "home-credit-default-risk"
+  tracking_uri:    "mlruns"
