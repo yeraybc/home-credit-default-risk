@@ -11,18 +11,18 @@ help:
 setup: ## crea el entorno e instala dependencias
 	python3 -m venv .venv
 	$(PIP) install --upgrade pip -q
-	$(PIP) install -r requirements.txt -q
+	$(PIP) install -r requirements-dev.txt -q
 	$(PIP) install -e . -q
 
 install: ## instala dependencias en el venv existente
-	$(PIP) install -r requirements.txt -q
+	$(PIP) install -r requirements-dev.txt -q
 	$(PIP) install -e . -q
 
 lint: ## linter
-	.venv/bin/ruff check src/ api/ tests/
+	.venv/bin/ruff check src/ scripts/
 
 format: ## formatea con black
-	.venv/bin/black src/ api/ tests/
+	.venv/bin/black src/ scripts/
 
 test: ## tests
 	.venv/bin/pytest tests/ -v --tb=short

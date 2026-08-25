@@ -17,11 +17,12 @@ include = ["src*", "api*"]
 # --- Ruff (linter + formatter) -----------------------------------------------
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
+# ANN101 y ANN102 estaban en ignore, pero ruff ya las eliminó y solo generaban un warning.
 select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
-ignore  = ["ANN101", "ANN102"]
+
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*" = ["ANN001", "ANN201", "E402"]
 "tests/*"     = ["ANN001", "ANN201"]
@@ -29,7 +30,7 @@ ignore  = ["ANN101", "ANN102"]
 # --- Black (code formatter) --------------------------------------------------
 [tool.black]
 line-length    = 100
-target-version = ["py310"]
+target-version = ["py39"]
 
 # --- Pytest ------------------------------------------------------------------
 [tool.pytest.ini_options]
@@ -39,6 +40,6 @@ addopts      = "-v --tb=short"
 
 # --- MyPy (type checker, opcional pero recomendado) --------------------------
 [tool.mypy]
-python_version         = "3.10"
+python_version         = "3.9"
 ignore_missing_imports = true
 warn_return_any        = true

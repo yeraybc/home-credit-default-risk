@@ -1,0 +1,6 @@
+# Herramientas de desarrollo que el Makefile y el pyproject dan por instaladas.
+-r requirements.txt
+
+ruff==0.16.4
+black==25.11.0
+pytest==8.4.2
