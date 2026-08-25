@@ -1,7 +1,9 @@
 """Genera notebooks/01_eda.ipynb con el contenido del Día 1."""
+
 import json
 import uuid
 from pathlib import Path
+
 
 def code(source: str) -> dict:
     return {
@@ -10,22 +12,30 @@ def code(source: str) -> dict:
         "id": str(uuid.uuid4())[:8],
         "metadata": {},
         "outputs": [],
-        "source": source.strip()
+        "source": source.strip(),
     }
+
 
 def md(source: str) -> dict:
     return {
         "cell_type": "markdown",
         "id": str(uuid.uuid4())[:8],
         "metadata": {},
-        "source": source.strip()
+        "source": source.strip(),
     }
+
 
 cells = []
 
-cells.append(md("# EDA — Día 1: overview del dataset\n\n**objetivo:** entender la estructura del dataset antes de tocar una sola feature."))
+cells.append(
+    md(
+        "# EDA — Día 1: overview del dataset\n\n**objetivo:** entender la estructura del dataset antes de tocar una sola feature."
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -45,39 +55,63 @@ plt.rcParams.update({'figure.dpi': 120, 'axes.spines.top': False, 'axes.spines.r
 from src.data import load_all_tables, data_audit
 
 print('setup ok')
-"""))
+"""
+    )
+)
 
 cells.append(md("## 1. carga y audit"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # carga completa — tarda 3-6 min la primera vez por bureau_balance (27M filas)
 dfs = load_all_tables()
 app = dfs['application_train']
-"""))
+"""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # resumen de todas las tablas
 audit = data_audit(dfs)
 audit
-"""))
+"""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 total_gb = audit['memory_MB'].sum() / 1024
 print(f"RAM total tras optimización: {total_gb:.2f} GB")
-"""))
+"""
+    )
+)
 
-cells.append(md("## 2. target — distribución de clases\n\nPrimero que se mira en cualquier problema de clasificación."))
+cells.append(
+    md(
+        "## 2. target — distribución de clases\n\nPrimero que se mira en cualquier problema de clasificación."
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 target_counts = app['TARGET'].value_counts()
 target_pct    = app['TARGET'].value_counts(normalize=True).mul(100)
 
 print("TARGET    count        %")
 for k in [0, 1]:
     print(f"  {k}       {target_counts[k]:>7,}    {target_pct[k]:.2f}%")
-"""))
+"""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
 # conteos
@@ -97,11 +131,15 @@ plt.tight_layout()
 plt.show()
 
 print("nota: un modelo que prediga siempre 0 tendría 92% accuracy. por eso usamos Gini/AUC-ROC.")
-"""))
+"""
+    )
+)
 
 cells.append(md("## 3. tipos de variables"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 num_cols = app.select_dtypes(include=[np.number]).columns.tolist()
 cat_cols = app.select_dtypes(include='object').columns.tolist()
 
@@ -113,11 +151,15 @@ print(f"numéricas  : {len(feature_num)}")
 print(f"categóricas: {len(feature_cat)}")
 print(f"target + id: 2")
 print(f"total      : {app.shape[1]}")
-"""))
+"""
+    )
+)
 
 cells.append(md("## 4. análisis de nulos"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 missing = (
     app.isnull().sum()
     .rename('n_missing')
@@ -131,14 +173,22 @@ print(f"{len(missing)} columnas con nulos (de {app.shape[1]} totales)")
 print(f"  > 60% nulos: {(missing['pct'] > 60).sum()}")
 print(f"  > 30% nulos: {(missing['pct'] > 30).sum()}")
 print(f"  > 0%  nulos: {len(missing)}")
-"""))
+"""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # top 30 columnas con más nulos
 missing.head(30).style.background_gradient(subset=['pct'], cmap='Reds')
-"""))
+"""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # heatmap de patrón de nulos — columnas con > 40% missing
 high_missing_cols = missing[missing['pct'] > 40].index.tolist()
 sample = app[high_missing_cols].isnull().astype(int).sample(500, random_state=42)
@@ -150,9 +200,13 @@ ax.set_xlabel('solicitudes')
 ax.tick_params(axis='y', labelsize=8)
 plt.tight_layout()
 plt.show()
-"""))
+"""
+    )
+)
 
-cells.append(md("""\
+cells.append(
+    md(
+        """\
 ## 5. ¿son los nulos informativos?
 
 Esta es la pregunta clave. Hay tres tipos de missings:
@@ -162,9 +216,13 @@ Esta es la pregunta clave. Hay tres tipos de missings:
 
 En crédito, muchos nulos son **MNAR**: si alguien no tiene historial en el bureau externo, *eso en sí mismo* es una señal de riesgo. El nulo *es* la información.
 
-La forma de detectarlo: comparar la tasa de default cuando el campo es nulo vs cuando tiene valor."""))
+La forma de detectarlo: comparar la tasa de default cuando el campo es nulo vs cuando tiene valor."""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # para cada columna con nulos, comparamos default rate: nulo vs presente
 results = []
 for col in missing.index[:30]:  # top 30 con más nulos
@@ -186,11 +244,15 @@ mcar_df = (
     .sort_values('diff', key=abs, ascending=False)
 )
 mcar_df.style.background_gradient(subset=['diff'], cmap='RdYlGn_r', vmin=-0.1, vmax=0.1)
-"""))
+"""
+    )
+)
 
 cells.append(md("## 6. distribuciones — variables numéricas clave"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # variables financieras principales — las más relevantes para credit scoring
 key_num = [
     'AMT_INCOME_TOTAL',   # ingresos del solicitante
@@ -223,11 +285,15 @@ for i, col in enumerate(key_num):
 plt.suptitle('distribución de variables clave por TARGET', y=1.01, fontsize=12)
 plt.tight_layout()
 plt.show()
-"""))
+"""
+    )
+)
 
 cells.append(md("## 7. variables categóricas — tasa de default por categoría"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # variables categóricas y su relación con el target
 key_cat = [
     'NAME_CONTRACT_TYPE',    # tipo de contrato
@@ -260,11 +326,19 @@ for i, col in enumerate(key_cat):
 plt.suptitle('tasa de default por categoría (línea = media global)', y=1.01, fontsize=12)
 plt.tight_layout()
 plt.show()
-"""))
+"""
+    )
+)
 
-cells.append(md("## 8. EXT_SOURCE — los features más predictivos\n\nLos tres scores externos son generalmente las variables con mayor poder predictivo en este dataset. Vale la pena entender bien su distribución."))
+cells.append(
+    md(
+        "## 8. EXT_SOURCE — los features más predictivos\n\nLos tres scores externos son generalmente las variables con mayor poder predictivo en este dataset. Vale la pena entender bien su distribución."
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 ext_cols = ['EXT_SOURCE_1', 'EXT_SOURCE_2', 'EXT_SOURCE_3']
 ext_cols = [c for c in ext_cols if c in app.columns]
 
@@ -274,7 +348,7 @@ for i, col in enumerate(ext_cols):
     for target_val, color, label in [(0, '#4C72B0', 'no default'), (1, '#DD8452', 'default')]:
         data = app.loc[app['TARGET'] == target_val, col].dropna()
         axes[i].hist(data, bins=40, alpha=0.6, color=color, label=label, density=True)
-    
+
     axes[i].set_title(f'{col}\\nmissing: {100*app[col].isnull().mean():.1f}%')
     axes[i].set_xlabel('score externo (0-1)')
     axes[i].set_yticks([])
@@ -288,15 +362,23 @@ plt.show()
 for col in ext_cols:
     r = app[col].corr(app['TARGET'])
     print(f"{col}: correlación con TARGET = {r:.4f}")
-"""))
+"""
+    )
+)
 
-cells.append(md("""\
+cells.append(
+    md(
+        """\
 ## 9. DAYS_BIRTH y DAYS_EMPLOYED — anomalías conocidas
 
 `DAYS_BIRTH` son los días de vida del solicitante en negativo (p.ej. -15000 ≈ 41 años).
-`DAYS_EMPLOYED` tiene una anomalía conocida: 365243 significa "desempleado/jubilado" — no es un valor real."""))
+`DAYS_EMPLOYED` tiene una anomalía conocida: 365243 significa "desempleado/jubilado" — no es un valor real."""
+    )
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # convertimos DAYS_BIRTH a edad en años para que sea más legible
 app['AGE_YEARS'] = -app['DAYS_BIRTH'] / 365
 
@@ -323,11 +405,15 @@ plt.show()
 
 anomaly_pct = 100 * (app['DAYS_EMPLOYED'] == 365243).mean()
 print(f"DAYS_EMPLOYED == 365243: {anomaly_pct:.1f}% de los registros — se tratará como nulo")
-"""))
+"""
+    )
+)
 
 cells.append(md("## 10. correlaciones entre variables numéricas"))
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 # matriz de correlación — top 15 features por correlación absoluta con target
 top_corr_cols = (
     app[feature_num + ['TARGET']]
@@ -348,11 +434,17 @@ sns.heatmap(corr_matrix, mask=mask, annot=True, fmt='.2f', cmap='coolwarm',
 ax.set_title('correlaciones — top 15 features más correladas con TARGET')
 plt.tight_layout()
 plt.show()
-"""))
+"""
+    )
+)
 
-cells.append(md("## resumen Día 1\n\nAnota aquí los hallazgos más importantes para la siguiente fase."))
+cells.append(
+    md("## resumen Día 1\n\nAnota aquí los hallazgos más importantes para la siguiente fase.")
+)
 
-cells.append(code("""\
+cells.append(
+    code(
+        """\
 print("checklist Día 1:")
 print("  [ ] data audit completado — tamaños y memoria")
 print("  [ ] target: ~8% default — dataset muy desbalanceado")
@@ -361,24 +453,19 @@ print("  [ ] nulos MNAR detectados (nulo correlacionado con target)")
 print("  [ ] EXT_SOURCE_1/2/3 — features más predictivos identificados")
 print("  [ ] DAYS_EMPLOYED anomalía 365243 — tratar como nulo")
 print("  [ ] features categóricos con mayor diferencia de default rate identificados")
-"""))
+"""
+    )
+)
 
 # construcción del notebook
 notebook = {
     "cells": cells,
     "metadata": {
-        "kernelspec": {
-            "display_name": ".venv",
-            "language": "python",
-            "name": ".venv"
-        },
-        "language_info": {
-            "name": "python",
-            "version": "3.9.6"
-        }
+        "kernelspec": {"display_name": ".venv", "language": "python", "name": ".venv"},
+        "language_info": {"name": "python", "version": "3.9.6"},
     },
     "nbformat": 4,
-    "nbformat_minor": 5
+    "nbformat_minor": 5,
 }
 
 out = Path(__file__).parent.parent / "notebooks" / "01_eda.ipynb"

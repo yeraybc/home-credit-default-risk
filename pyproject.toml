@@ -28,6 +28,9 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*" = ["ANN001", "ANN201", "E402"]
 "tests/*"     = ["ANN001", "ANN201"]
+# Generador de notebooks: sus lineas largas son markdown dentro de strings, y ahi el
+# salto de linea es contenido, no formato. Partirlas cambiaria el notebook generado.
+"scripts/make_notebook.py" = ["E501"]
 
 # --- Black (code formatter) --------------------------------------------------
 [tool.black]
