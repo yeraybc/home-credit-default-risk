@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "home-credit-scoring"
+version = "0.1.0"
+description = "End-to-end credit scoring pipeline: EDA → FE → XGBoost/LightGBM → SHAP → FastAPI → Docker → Evidently"
+authors = [{ name = "Yeray Benito Calviño" }]
+requires-python = ">=3.9"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "api*"]
+
+# --- Ruff (linter + formatter) -----------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
+ignore  = ["ANN101", "ANN102"]
+[tool.ruff.lint.per-file-ignores]
+"notebooks/*" = ["ANN001", "ANN201", "E402"]
+"tests/*"     = ["ANN001", "ANN201"]
+
+# --- Black (code formatter) --------------------------------------------------
+[tool.black]
+line-length    = 100
+target-version = ["py310"]
+
+# --- Pytest ------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+python_files = ["test_*.py"]
+addopts      = "-v --tb=short"
+
+# --- MyPy (type checker, opcional pero recomendado) --------------------------
+[tool.mypy]
+python_version         = "3.10"
+ignore_missing_imports = true
+warn_return_any        = true
