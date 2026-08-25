@@ -7,7 +7,9 @@ name = "home-credit-scoring"
 version = "0.1.0"
 description = "End-to-end credit scoring pipeline: EDA → FE → XGBoost/LightGBM → SHAP → FastAPI → Docker → Evidently"
 authors = [{ name = "Yeray Benito Calviño" }]
-requires-python = ">=3.9"
+# Techo en 3.13: numpy 2.0.2 y scipy 1.13.1 no publican wheels para cp313, asi que
+# instalar ahi obliga a compilar desde fuente.
+requires-python = ">=3.9,<3.13"
 readme = "README.md"
 
 [tool.setuptools.packages.find]

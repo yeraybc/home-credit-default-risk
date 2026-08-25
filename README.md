@@ -183,7 +183,7 @@ En sentido contrario, la variable con el rank-biserial más alto del panel (0,15
 
 ## Stack técnico
 
-- **Lenguaje:** Python 3.9
+- **Lenguaje:** Python 3.9 (probado en 3.9; soportado hasta 3.12, porque los pines de `numpy` y `scipy` no publican wheels para 3.13)
 - **Análisis:** `pandas`, `numpy`
 - **Estadística:** `scipy` (Mann-Whitney, Chi², Fisher, z-test de proporciones)
 - **Visualización:** `matplotlib`, `seaborn`
