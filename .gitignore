@@ -1,0 +1,56 @@
+# python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# jupyter
+.ipynb_checkpoints/
+
+# data — nunca sube al repo (demasiado grande + Kaggle).
+# Se versiona solo el .gitkeep para que la estructura de carpetas viaje con el repo.
+data/raw/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+*.csv
+*.parquet
+*.pkl
+*.joblib
+
+# mlflow
+mlruns/
+mlartifacts/
+
+# secrets
+.env
+.env.*
+
+# testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mac
+.DS_Store
+._*
+
+# editors
+.idea/
+.vscode/
+*.swp
+
+# trabajo interno, no forma parte del proyecto publicado
+CLAUDE.md
+Prompt_generalizado.md
+mapping.md
+scratch/
+.claude/
+.agents/
