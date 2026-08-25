@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Sintaxis y dependencias
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # El proyecto es 3.9, pero check.py es un verificador estatico (ast.parse, no
+      # importa nada) y necesita sys.stdlib_module_names, que es 3.10+.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verificación
+        run: python .github/scripts/check.py
