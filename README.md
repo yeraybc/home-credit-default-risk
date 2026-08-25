@@ -70,7 +70,10 @@ home-credit-default-risk/
 │   ├── raw/                              # CSVs de Kaggle (no versionados, 2,5 GB)
 │   ├── processed/                        # Datos transformados (Fase 3)
 │   └── external/                         # Enriquecimiento macro (fase futura)
-├── scripts/make_notebook.py              # Generador de notebooks
+├── tests/
+│   ├── test_loader.py                    # Contrato de reduce_mem_usage y data_audit
+│   └── test_eval.py                      # Control de composición de EvaluadorSenal
+├── scripts/make_notebook.py              # Generador del esqueleto inicial del notebook 01
 ├── .github/
 │   ├── workflows/ci.yml                  # Verificación en cada push y PR
 │   └── scripts/check.py                  # Sintaxis y dependencias, sin instalar el stack
@@ -227,7 +230,13 @@ Previsto para las fases siguientes: `scikit-learn`, `XGBoost`, `LightGBM`, `SHAP
    ```
    Los notebooks 02 y 03 corren limpios de arriba abajo con Restart & Run All. `bureau_balance` son 27 millones de filas, así que conviene tener RAM disponible: `reduce_mem_usage` en [src/data/loader.py](src/data/loader.py) baja los dtypes al mínimo sin perder rango y ahorra más del 60 % de memoria.
 
-5. **Comandos disponibles:**
+5. **Pasa los tests** (no necesitan los datos de Kaggle):
+   ```bash
+   make test    # 20 pruebas sobre reduce_mem_usage y EvaluadorSenal
+   make lint    # ruff sobre src/ y scripts/
+   ```
+
+6. **Comandos disponibles:**
    ```bash
    make help
    ```
