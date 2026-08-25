@@ -22,3 +22,9 @@ jobs:
 
       - name: Verificación
         run: python .github/scripts/check.py
+
+      # La version sale de requirements-dev.txt para no tener el pin en dos sitios.
+      - name: Lint
+        run: |
+          grep '^ruff==' requirements-dev.txt | xargs pip install
+          ruff check src/ scripts/
