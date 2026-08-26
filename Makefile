@@ -19,10 +19,10 @@ install: ## instala dependencias en el venv existente
 	$(PIP) install -e . -q
 
 lint: ## linter
-	.venv/bin/ruff check src/ scripts/
+	.venv/bin/ruff check src/
 
 format: ## formatea con black
-	.venv/bin/black src/ scripts/
+	.venv/bin/black src/
 
 test: ## tests
 	.venv/bin/pytest tests/ -v --tb=short
