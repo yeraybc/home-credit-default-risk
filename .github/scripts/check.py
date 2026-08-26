@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verificación de sintaxis y dependencias para CI.
+"""Verificación de sintaxis, kernel y dependencias para CI.
 
 No instala el stack del proyecto: ast.parse valida la sintaxis sin evaluar los
 import, así que no hace falta descargar pandas para saber si el código está bien.
@@ -18,6 +18,11 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 
+# Un kernelspec con nombre propio apunta a un venv registrado a nivel de usuario y
+# solo existe en la maquina de origen: en un clon limpio da NoSuchKernel. El kernel
+# "python3" lo provee cualquier venv con ipykernel.
+KERNEL_PORTABLE = "python3"
+
 # El nombre que se importa no siempre es el del paquete que se instala.
 IMPORT_A_PAQUETE = {
     "dotenv": "python-dotenv",
@@ -34,9 +39,8 @@ def seccion(titulo):
     print(f"\n{titulo}")
 
 
-def celdas_de_codigo(ruta):
+def celdas_de_codigo(nb):
     """Devuelve el código de cada celda, sin las líneas mágicas de IPython."""
-    nb = json.loads(ruta.read_text(encoding="utf-8"))
     for celda in nb.get("cells", []):
         if celda.get("cell_type") != "code":
             continue
@@ -79,19 +83,28 @@ def comprobar_notebooks():
     for ruta in sorted(RAIZ.glob("notebooks/*.ipynb")):
         rel = ruta.relative_to(RAIZ)
         try:
-            celdas = list(celdas_de_codigo(ruta))
+            nb = json.loads(ruta.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             print(f"  {rel}: JSON inválido, {e}")
             fallos.append(f"JSON inválido: {rel}")
             continue
+
+        problemas = []
+        kernel = nb.get("metadata", {}).get("kernelspec", {}).get("name")
+        if kernel != KERNEL_PORTABLE:
+            problemas.append(f"kernel '{kernel}', se espera '{KERNEL_PORTABLE}'")
+            fallos.append(f"kernel no portable: {rel}")
+
+        celdas = list(celdas_de_codigo(nb))
         try:
             for codigo in celdas:
                 ast.parse(codigo)
-            print(f"  {rel}: ok, {len(celdas)} celdas de código")
             legibles.append(celdas)
         except SyntaxError as e:
-            print(f"  {rel}: celda con error de sintaxis, {e}")
+            problemas.append(f"celda con error de sintaxis, {e}")
             fallos.append(f"celda no parsea: {rel}")
+
+        print(f"  {rel}: " + ("; ".join(problemas) or f"ok, {len(celdas)} celdas de código"))
     return legibles
 
 
