@@ -33,8 +33,9 @@ mlartifacts/
 .env
 .env.*
 
-# testing
+# testing y linters
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -50,7 +51,6 @@ htmlcov/
 # trabajo interno, no forma parte del proyecto publicado
 CLAUDE.md
 Prompt_generalizado.md
-mapping.md
 scratch/
 .claude/
 .agents/

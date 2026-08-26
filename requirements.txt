@@ -1,5 +1,5 @@
 # Dependencias de ejecucion, fijadas a las versiones con las que corren los notebooks.
-# Solo se declara lo que se importa de verdad en src/, scripts/ y notebooks/.
+# Solo se declara lo que se importa de verdad en src/ y notebooks/.
 # scikit-learn, statsmodels, xgboost y lightgbm entraran con la fase de modelado.
 
 pandas==2.3.3

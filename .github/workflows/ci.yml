@@ -27,7 +27,7 @@ jobs:
       - name: Lint
         run: |
           grep '^ruff==' requirements-dev.txt | xargs pip install
-          ruff check src/ scripts/
+          ruff check src/
 
   tests:
     name: Tests

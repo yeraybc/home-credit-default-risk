@@ -73,7 +73,6 @@ home-credit-default-risk/
 ├── tests/
 │   ├── test_loader.py                    # Contrato de reduce_mem_usage y data_audit
 │   └── test_eval.py                      # Control de composición de EvaluadorSenal
-├── scripts/make_notebook.py              # Generador del esqueleto inicial del notebook 01
 ├── .github/
 │   ├── workflows/ci.yml                  # Verificación en cada push y PR
 │   └── scripts/check.py                  # Sintaxis y dependencias, sin instalar el stack
@@ -233,7 +232,7 @@ Previsto para las fases siguientes: `scikit-learn`, `XGBoost`, `LightGBM`, `SHAP
 5. **Pasa los tests** (no necesitan los datos de Kaggle):
    ```bash
    make test    # 20 pruebas sobre reduce_mem_usage y EvaluadorSenal
-   make lint    # ruff sobre src/ y scripts/
+   make lint    # ruff sobre src/
    ```
 
 6. **Comandos disponibles:**
