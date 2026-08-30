@@ -5,169 +5,141 @@ nota: cruces con TARGET sobre train completo; recalcular IV sobre el split en FE
 features:
   BUREAU_NEGATIVE_LIMIT_FLAG:
     tipo: flag
-    agregacion: max(AMT_CREDIT_SUM_LIMIT<0)
     poblacion_medicion: con historial
     efecto: 12.719
     estado: conservar (severidad)
   BUREAU_CURRENT_OVERDUE_SUM > 0:
     tipo: flag
-    agregacion: sum(AMT_CREDIT_SUM_OVERDUE)
     poblacion_medicion: con historial
     efecto: 8.5752
     estado: conservar (mora prioritaria)
   BUREAU_OVERDUE_UNION:
     tipo: flag
-    agregacion: max(MAX_OVERDUE>0 | SUM_OVERDUE>0 | DAY_OVERDUE>0)
     poblacion_medicion: con historial
     efecto: 2.6011
     estado: conservar (mejora HAS_ANY)
   BUREAU_BAD_DEBT_COUNT > 0:
     tipo: flag
-    agregacion: sum(CREDIT_ACTIVE in {Sold,Bad debt})
     poblacion_medicion: con historial
     efecto: 2.5826
     estado: conservar (flag)
   BUREAU_DAYS_CREDIT_UPDATE_FLAG:
     tipo: flag
-    agregacion: max(DAYS_CREDIT_UPDATE) > -180
     poblacion_medicion: con historial
     efecto: 2.55
     estado: conservar (rescatada)
   BUREAU_ENDDATE_2_5Y_COUNT > 0:
     tipo: flag
-    agregacion: sum(a termino, vencimiento 2-5 anios futuro)
     poblacion_medicion: con historial
     efecto: 2.473
     estado: 'conservar (recuperada #2)'
   BUREAU_HAS_ANY_OVERDUE:
     tipo: flag
-    agregacion: max(AMT_CREDIT_MAX_OVERDUE>0)
     poblacion_medicion: con historial
     efecto: 2.4103
     estado: conservar
   HAS_BUREAU_HISTORY:
     tipo: flag
-    agregacion: 'flag: cliente presente en bureau'
     poblacion_medicion: global (nulo=0)
     efecto: -2.3949
     estado: conservar (1er orden)
   BUREAU_CREDITS_WITH_ANNUITY_COUNT > 0:
     tipo: flag
-    agregacion: sum(AMT_ANNUITY>0)
     poblacion_medicion: con historial
     efecto: 1.4928
-    estado: conservar (3 niveles en Fase 3)
+    estado: conservar (3 niveles en FE)
   HAS_BUREAU_FINANCIAL_DETAIL | historial:
     tipo: flag
-    agregacion: max(LIMIT o DEBT no nulos)
     poblacion_medicion: con historial
     efecto: 1.0445
     estado: IV (banda debil)
   HAS_BEEN_PROLONGED:
     tipo: flag
-    agregacion: max(CNT_CREDIT_PROLONG>0)
     poblacion_medicion: con historial
     efecto: 1.0121
     estado: IV (banda debil)
   HAS_BUREAU_ANNUITY | historial:
     tipo: flag
-    agregacion: max(AMT_ANNUITY no nulo)
     poblacion_medicion: con historial
     efecto: 0.7471
     estado: descartar (codif. peor)
   BUREAU_CLOSED_AFTER_ENDDATE > 0:
     tipo: flag
-    agregacion: sum(Closed & cierre>fecha fin)
     poblacion_medicion: con créditos cerrados
     efecto: -0.6698
     estado: descartar (test valido)
   HAS_BUREAU_OVERDUE_HISTORY | historial:
     tipo: flag
-    agregacion: max(AMT_CREDIT_MAX_OVERDUE no nulo)
     poblacion_medicion: con historial
     efecto: 0.3753
     estado: descartar (señal en valor)
   BUREAU_DEBT_CREDIT_RATIO:
     tipo: continua
-    agregacion: sum(debt)/sum(credit)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.1828
     estado: conservar (1er orden)
   BUREAU_DAYS_CREDIT_MAX:
     tipo: continua
-    agregacion: max(DAYS_CREDIT) = recencia de la ultima solicitud
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.1606
     estado: conservar (recencia)
   BUREAU_DAYS_CREDIT_MIN:
     tipo: continua
-    agregacion: min(DAYS_CREDIT) = longitud de historial
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.1567
     estado: conservar (1er orden)
   BUREAU_DAYS_ENDDATE_FACT_MIN:
     tipo: continua
-    agregacion: min(DAYS_ENDDATE_FACT, solo Closed)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.1235
     estado: descartar (redundancia)
   BUREAU_ACTIVE_COUNT:
     tipo: continua
-    agregacion: sum(CREDIT_ACTIVE==Active)
     poblacion_medicion: con historial
     efecto: 0.1208
     estado: conservar (primario)
   BUREAU_ACTIVE_CONSUMER_COUNT:
     tipo: continua
-    agregacion: sum(Active & Consumer credit)
     poblacion_medicion: con historial
     efecto: 0.0977
     estado: descartar (no supera ACTIVE_COUNT)
   BUREAU_ACTIVE_CARD_COUNT:
     tipo: continua
-    agregacion: sum(Active & Credit card)
     poblacion_medicion: con historial
     efecto: 0.0957
     estado: descartar (no supera ACTIVE_COUNT)
   BUREAU_CLOSED_COUNT:
     tipo: continua
-    agregacion: sum(CREDIT_ACTIVE==Closed)
     poblacion_medicion: con historial
     efecto: 0.0948
     estado: conservar
   BUREAU_MAX_OVERDUE_EVER:
     tipo: continua
-    agregacion: max(AMT_CREDIT_MAX_OVERDUE)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.0934
     estado: conservar
   BUREAU_DAYS_CREDIT_ENDDATE_MAX:
     tipo: continua
-    agregacion: max(DAYS_CREDIT_ENDDATE a termino)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.0906
     estado: IV (secundaria)
   BUREAU_ENDDATE_2_5Y_COUNT:
     tipo: continua
-    agregacion: sum(a termino, vencimiento 2-5 anios futuro)
     poblacion_medicion: con historial
     efecto: 0.086
     estado: 'conservar (recuperada #2)'
   BUREAU_ANNUITY_ACTIVE_RATIO:
     tipo: continua
-    agregacion: mean(AMT_ANNUITY>0)
     poblacion_medicion: solo con cuota
     efecto: 0.0676
     estado: IV (secundaria)
   BUREAU_CREDIT_TYPE_NUNIQUE:
     tipo: continua
-    agregacion: nunique(CREDIT_TYPE)
     poblacion_medicion: con historial
     efecto: 0.0119
     estado: IV (secundaria)
   BUREAU_LOAN_COUNT:
     tipo: continua
-    agregacion: size
     poblacion_medicion: con historial
     efecto: 0.0098
     estado: denominador de ratios
