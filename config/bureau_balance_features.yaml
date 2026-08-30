@@ -1,78 +1,112 @@
 tabla: bureau_balance
-nivel: SK_ID_CURR (doble agregación SK_ID_BUREAU -> SK_ID_CURR)
-nota: enlace triple vía bureau; cobertura 29,99% de train. Cruces con TARGET sobre
-  train completo, recalcular IV sobre el split en FE. Descartes por señal provisionales;
-  el de BB_MONTHS_MAX/TOTAL es redundancia estructural con bureau (firme).
+nivel: SK_ID_CURR (doble agregación desde SK_ID_BUREAU vía bureau)
+nota: 'cobertura del 29,99% de train, completa por cliente en el 99,78% de los casos.
+  Cruces con TARGET sobre train completo: los descartes por señal son provisionales
+  y se reconfirman sobre el split; los de redundancia estructural son firmes. Medir
+  IV incremental sobre EXT_SOURCE_3 antes de fijar la lista.'
 features:
   BB_RECENT_DPD_FLAG:
     tipo: flag
-    agregacion: max(mes en DPD dentro de los últimos 6 meses)
-    poblacion_medicion: con historial
+    poblacion_medicion: con histórico
     efecto: 4.8932
-    estado: conservar (mora reciente, top flag)
+    estado: conservar (mora reciente, top)
+  BB_PERSISTENT_DPD_FLAG:
+    tipo: flag
+    poblacion_medicion: trayectoria evaluable
+    efecto: 4.0463
+    estado: conservar (persistencia)
+  BB_WORSENING_DPD_FLAG:
+    tipo: flag
+    poblacion_medicion: trayectoria evaluable
+    efecto: 3.374
+    estado: conservar (deterioro)
+  BB_MANY_CREDITS_FLAG:
+    tipo: flag
+    poblacion_medicion: con histórico
+    efecto: 2.9629
+    estado: IV (no pasa Bonferroni)
   BB_WRITEOFF_FLAG:
     tipo: flag
-    agregacion: max(algún mes STATUS==5)
-    poblacion_medicion: con historial
+    poblacion_medicion: con histórico
     efecto: 2.9432
-    estado: conservar (fallido, flag)
+    estado: conservar (fallido)
+  BB_STATUS_WORST > 0:
+    tipo: flag
+    poblacion_medicion: con estado reportado
+    efecto: 2.7573
+    estado: descartar (duplica BB_ANY_DPD_FLAG)
   BB_ANY_DPD_FLAG:
     tipo: flag
-    agregacion: max(algún mes STATUS in 1-5)
-    poblacion_medicion: con historial
+    poblacion_medicion: con histórico
     efecto: 2.7361
-    estado: conservar (mora, complementa bureau)
-  BB_MONTHS_MAX:
-    tipo: continua
-    agregacion: max(longitud de panel por crédito)
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1502
-    estado: descartar (redundancia bureau r=-0.75)
-  BB_MONTHS_SINCE_LAST_DPD:
-    tipo: continua
-    agregacion: max(MONTHS_BALANCE de meses en DPD) = recencia
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1379
-    estado: conservar (recencia continua)
-  BB_MONTHS_TOTAL:
-    tipo: continua
-    agregacion: sum(meses observados)
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1151
-    estado: descartar (redundancia bureau r=-0.60)
-  BB_PCT_MONTHS_DPD:
-    tipo: continua
-    agregacion: sum(meses DPD)/sum(meses reportados)*100
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.102
-    estado: conservar (intensidad de mora)
+    estado: conservar (en tres niveles)
+  BB_OVERDUE_UNION:
+    tipo: flag
+    poblacion_medicion: con historial de bureau
+    efecto: 2.7272
+    estado: conservar (codificación de mora)
+  BUREAU_OVERDUE_UNION:
+    tipo: flag
+    poblacion_medicion: con historial de bureau
+    efecto: 2.6011
+    estado: referencia (feature de bureau)
+  BB_RECOVERED_DPD_FLAG:
+    tipo: flag
+    poblacion_medicion: trayectoria evaluable
+    efecto: 0.5115
+    estado: descartar (sin señal)
   HAS_BUREAU_BALANCE:
     tipo: flag
-    agregacion: 'flag: cliente con panel mensual'
-    poblacion_medicion: global (nulo=0)
+    poblacion_medicion: global
     efecto: 0.0996
-    estado: descartar (sin señal, p=0.35)
+    estado: control de composición
+  BB_MONTHS_SINCE_LAST_DPD_REL:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1584
+    estado: conservar (recencia, en tramos)
+  BB_MONTHS_MAX:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1502
+    estado: descartar (redundancia con bureau, firme)
+  BB_MONTHS_SINCE_LAST_DPD:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1379
+    estado: descartar (redundante con la relativa)
+  BB_MONTHS_TOTAL:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1151
+    estado: IV (descarte ya no estructural)
+  BB_PCT_MONTHS_DPD:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1095
+    estado: conservar (denominador mínimo de 6)
   BB_DPD_MONTHS_COUNT:
     tipo: continua
-    agregacion: sum(meses en DPD)
     poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0867
-    estado: IV (intensidad, correlada con PCT)
+    efecto: 0.0885
+    estado: IV (secundaria)
   BB_CREDITS_WITH_DPD_COUNT:
     tipo: continua
-    agregacion: count(créditos con algún DPD)
     poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0854
+    efecto: 0.0871
     estado: IV (secundaria)
   BB_STATUS_WORST:
     tipo: continua
-    agregacion: max(DPD 0-5 sobre créditos)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.0823
-    estado: conservar (severidad)
+    estado: descartar (vacía dentro de morosos)
   BB_N_CREDITS_WBAL:
     tipo: continua
-    agregacion: count(créditos con panel)
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.0058
-    estado: descartar (ruido, p=0.40)
+    estado: descartar (ruido como continua)
+  BB_CENSORED_RATIO:
+    tipo: control
+    poblacion_medicion: con histórico
+    efecto: null
+    estado: control (desplaza la recencia, no es predictor)
