@@ -32,6 +32,31 @@ IMPORT_A_PAQUETE = {
     "yaml": "pyyaml",
 }
 
+# Convenciones de redacción de los markdown del EDA (CLAUDE.md 9 y 11.2). Se revisan
+# porque son errores que no se ven a ojo: en la ultima pasada manual quedaron 353
+# decimales con punto sin detectar en un solo notebook.
+TIPOGRAFIA = [
+    # los miles espanoles van en grupos de 3, asi que 1.670.214 es correcto y 0.21 no
+    (r"\d\.(\d{1,2}(?!\d)|\d{4,})", "decimal con punto"),
+    (r"(?<!0),\d{3}(?!\d)", "miles a la inglesa"),
+    (r"—|–", "em dash"),
+    (r"->|→", "flecha"),
+    (r"(?<=\w) - (?=\w)", "guion como conector"),
+    (r"={3,}|·", "separador decorativo"),
+    (r"(?<![\d,.])\d{1,3}-\d", "rango con guion"),
+]
+
+# Nombres de variables del codigo que el lector de una conclusion no puede interpretar.
+VARIABLES_INTERNAS = ["prev_t", "ev_cli", "tiene_prev", "bureau_t", "bureau_client", "map_bc",
+                      "fb_flags", "fb_cont", "rank_flags", "df["]
+
+# La conclusion no habla del documento que la contiene (CLAUDE.md 6.3.6b).
+META_ESTRUCTURA = [r"secci[óo]n", r"Fase [AB3]", r"notebook", r"§", r"apartado"]
+
+# Arrastran redaccion anterior a la unificacion y se limpian en una pasada aparte:
+# se reportan pero no bloquean, y este conjunto debe acabar vacio.
+TIPOGRAFIA_PENDIENTE = {"01_eda_application_train.ipynb", "02_eda_bureau.ipynb"}
+
 fallos = []
 
 
@@ -77,9 +102,9 @@ def comprobar_sintaxis_python():
 
 
 def comprobar_notebooks():
-    """Valida los notebooks y devuelve las celdas de los que se pudieron leer."""
+    """Valida los notebooks y devuelve sus celdas de código y los que se pudieron leer."""
     seccion("Notebooks")
-    legibles = []
+    legibles, leidos = [], []
     for ruta in sorted(RAIZ.glob("notebooks/*.ipynb")):
         rel = ruta.relative_to(RAIZ)
         try:
@@ -89,6 +114,7 @@ def comprobar_notebooks():
             fallos.append(f"JSON inválido: {rel}")
             continue
 
+        leidos.append((rel, nb))
         problemas = []
         kernel = nb.get("metadata", {}).get("kernelspec", {}).get("name")
         if kernel != KERNEL_PORTABLE:
@@ -105,7 +131,51 @@ def comprobar_notebooks():
             fallos.append(f"celda no parsea: {rel}")
 
         print(f"  {rel}: " + ("; ".join(problemas) or f"ok, {len(celdas)} celdas de código"))
-    return legibles
+    return legibles, leidos
+
+
+def avisos_de_tipografia(nb):
+    """Avisos de redacción de los markdown de un notebook, como (etiqueta, contexto)."""
+    comprobaciones = (TIPOGRAFIA
+                      + [(re.escape(v), "variable interna") for v in VARIABLES_INTERNAS]
+                      + [(w, "meta-estructura") for w in META_ESTRUCTURA])
+    for i, celda in enumerate(nb.get("cells", [])):
+        if celda.get("cell_type") != "markdown":
+            continue
+        texto = re.sub(r"`[^`]*`", "", "".join(celda["source"]))  # fuera nombres de columna y código
+        # las listas, las tablas y los títulos usan guiones y numeración de forma legítima
+        texto = "\n".join(l for l in texto.split("\n") if not l.lstrip().startswith(("-", "|", "#")))
+
+        for patron, etiqueta in comprobaciones:
+            for m in re.finditer(patron, texto, re.M | re.I):
+                yield etiqueta, f"celda {i}: ...{texto[max(0, m.start() - 40):m.end() + 40]}..."
+
+
+def comprobar_tipografia(leidos):
+    """Las conclusiones siguen las convenciones de redacción del proyecto.
+
+    Los notebooks de TIPOGRAFIA_PENDIENTE se reportan sin bloquear: arrastran redacción
+    anterior a la unificación y se limpian aparte.
+    """
+    seccion("Tipografía de los markdown")
+    for rel, nb in leidos:
+        avisos = list(avisos_de_tipografia(nb))
+        if not avisos:
+            print(f"  {rel}: ok")
+            continue
+
+        tipos = {}
+        for etiqueta, ctx in avisos:
+            tipos.setdefault(etiqueta, ctx)
+        detalle = ", ".join(f"{e} ({sum(1 for a, _ in avisos if a == e)})" for e in tipos)
+        if rel.name in TIPOGRAFIA_PENDIENTE:
+            print(f"  {rel}: {len(avisos)} avisos pendientes de limpieza, no bloquean: {detalle}")
+            continue
+
+        print(f"  {rel}: {len(avisos)} avisos: {detalle}")
+        for etiqueta, ctx in tipos.items():
+            print(f"      {etiqueta}: {ctx}".replace("\n", " "))
+        fallos.append(f"tipografía: {rel}")
 
 
 def leer_requirements():
@@ -165,7 +235,8 @@ def main():
         sys.exit("Este script necesita Python 3.10+ (usa sys.stdlib_module_names)")
 
     modulos = comprobar_sintaxis_python()
-    notebooks = comprobar_notebooks()
+    notebooks, leidos = comprobar_notebooks()
+    comprobar_tipografia(leidos)
     declaradas = leer_requirements()
     comprobar_dependencias(declaradas, modulos, notebooks)
 
