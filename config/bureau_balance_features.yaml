@@ -102,18 +102,18 @@ features:
     estado: conservar (denominador mínimo de 6)
   BB_DPD_MONTHS_COUNT:
     tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0885
+    poblacion_medicion: clientes con mora
+    efecto: 0.0367
     estado: IV (secundaria)
   BB_CREDITS_WITH_DPD_COUNT:
     tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0871
+    poblacion_medicion: clientes con mora
+    efecto: 0.027
     estado: IV (secundaria)
   BB_STATUS_WORST:
     tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0823
+    poblacion_medicion: clientes con mora
+    efecto: 0.0065
     estado: descartar (vacía dentro de morosos)
   BB_N_CREDITS_WBAL:
     tipo: continua
