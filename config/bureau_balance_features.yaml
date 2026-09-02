@@ -5,11 +5,21 @@ nota: 'cobertura del 29,99% de train, completa por cliente en el 99,78% de los c
   y se reconfirman sobre el split; los de redundancia estructural son firmes. Medir
   IV incremental sobre EXT_SOURCE_3 antes de fijar la lista.'
 features:
+  BB_EXITS_IN_DPD_FLAG:
+    tipo: flag
+    poblacion_medicion: con histórico
+    efecto: 5.3726
+    estado: conservar (sale del histórico en mora)
+  BB_RECENT_DPD_FLAG_REL:
+    tipo: flag
+    poblacion_medicion: con histórico
+    efecto: 4.9243
+    estado: conservar (mora reciente, cortada sobre la recencia relativa)
   BB_RECENT_DPD_FLAG:
     tipo: flag
     poblacion_medicion: con histórico
     efecto: 4.8932
-    estado: conservar (mora reciente, top)
+    estado: descartar (cortada sobre la recencia absoluta, que también se descarta)
   BB_PERSISTENT_DPD_FLAG:
     tipo: flag
     poblacion_medicion: trayectoria evaluable
@@ -50,6 +60,11 @@ features:
     poblacion_medicion: con historial de bureau
     efecto: 2.6011
     estado: referencia (feature de bureau)
+  BB_ALL_CLOSED_FLAG:
+    tipo: flag
+    poblacion_medicion: con histórico
+    efecto: -2.1801
+    estado: descartar (redundante con el cierre que reporta bureau)
   BB_RECOVERED_DPD_FLAG:
     tipo: flag
     poblacion_medicion: trayectoria evaluable
