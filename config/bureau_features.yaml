@@ -13,6 +13,11 @@ features:
     poblacion_medicion: con historial
     efecto: 8.5752
     estado: conservar (mora prioritaria)
+  BUREAU_MAX_DAYS_OVERDUE > 0:
+    tipo: flag
+    poblacion_medicion: con historial
+    efecto: 8.273
+    estado: descartar (redundancia)
   BUREAU_OVERDUE_UNION:
     tipo: flag
     poblacion_medicion: con historial
@@ -83,6 +88,11 @@ features:
     poblacion_medicion: no nulos (auto-cond.)
     efecto: 0.1606
     estado: conservar (recencia)
+  BUREAU_CREDITS_PER_YEAR:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1569
+    estado: conservar (1er orden)
   BUREAU_DAYS_CREDIT_MIN:
     tipo: continua
     poblacion_medicion: no nulos (auto-cond.)
