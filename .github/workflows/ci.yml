@@ -8,7 +8,7 @@ on:
 
 jobs:
   check:
-    name: Sintaxis y dependencias
+    name: Sintaxis, tipografia y dependencias
     runs-on: ubuntu-latest
 
     steps:

@@ -1,0 +1,152 @@
+tabla: previous_application
+nivel: SK_ID_CURR (enlace directo, sin tabla puente)
+nota: 'cobertura del 94,65% de train, la más alta de las tres auxiliares. Quien no
+  tiene solicitudes previas es de menor riesgo (5,96% frente a 8,19%), así que el
+  relleno con cero infla lo que penaliza en lugar de enmascararlo. Cruces con TARGET
+  sobre train completo: las dos que quedan a decidir por IV son provisionales y se
+  reconfirman sobre el split; los tres descartes por redundancia estructural son firmes.
+  Sobre el split hay que fijar el mínimo de denominador del ratio de rechazo (0,1204
+  con cobertura total frente a 0,1558 cubriendo el 81,95%) y refijar los cortes medidos
+  aquí: las 15 solicitudes, las 4 en doce meses, el año de adelanto en la liquidación,
+  las 60 cuotas y el 1,1 de sobreconcesión.'
+features:
+  PREV_REFUSED_LONG_TERM_FLAG:
+    tipo: flag
+    poblacion_medicion: con previas
+    efecto: 13.606
+    estado: conservar (severidad)
+  PREV_PHANTOM_FLAG:
+    tipo: flag
+    poblacion_medicion: con previas
+    efecto: 11.537
+    estado: conservar (severidad)
+  PREV_REFUSED_SCOFR_FLAG:
+    tipo: flag
+    poblacion_medicion: con algún rechazo
+    efecto: 9.8342
+    estado: conservar (el motivo del rechazo)
+  PREV_HISTORIAL_RECORTADO:
+    tipo: flag
+    poblacion_medicion: con previas
+    efecto: -3.0646
+    estado: conservar (protectora y control)
+  PREV_COUNT_COLA:
+    tipo: flag
+    poblacion_medicion: con previas
+    efecto: 2.9735
+    estado: conservar (corte medido en 15)
+  PREV_ACTIVIDAD_12M_COLA:
+    tipo: flag
+    poblacion_medicion: con previas
+    efecto: 2.4089
+    estado: conservar (solo en la interacción con la longitud)
+  HAS_PREV_APPLICATION:
+    tipo: flag
+    poblacion_medicion: global
+    efecto: 2.2366
+    estado: conservar (control y protectora)
+  PREV_EARLY_SETTLED_FLAG:
+    tipo: flag
+    poblacion_medicion: con operación terminada
+    efecto: 2.1911
+    estado: conservar (o tramos de conteo)
+  PREV_CREDIT_APPLICATION_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.1458
+    estado: conservar (1er orden, la media)
+  PREV_IMPLIED_COST_MEAN:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1334
+    estado: conservar (1er orden, en seis tramos)
+  PREV_REFUSED_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.1204
+    estado: conservar (1er orden)
+  PREV_OVERGRANTED_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.1194
+    estado: conservar (1er orden, corte 1,1)
+  PREV_APPLICATIONS_PER_YEAR:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1149
+    estado: conservar (1er orden)
+  PREV_DAYS_DECISION_MIN:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.1129
+    estado: conservar (con el recorte al lado)
+  PREV_REFUSED_COUNT:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.1122
+    estado: denominador del ratio
+  PREV_STREET_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.0924
+    estado: conservar (con la recencia al lado)
+  PREV_IMPLIED_COST_MAX:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.0852
+    estado: descartar (redundancia con la media)
+  PREV_FUTURE_DUE_MAX:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.0842
+    estado: conservar (la magnitud, no la presencia)
+  PREV_DOWN_PAYMENT_RATE_MEAN:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.0811
+    estado: conservar (continua monótona)
+  PREV_CNT_PAYMENT_MEAN:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.081
+    estado: conservar
+  PREV_NO_SUITE_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.0716
+    estado: conservar (la mitad alta)
+  PREV_COUNT_12M:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.0639
+    estado: fuente de la bandera de actividad
+  PREV_EARLY_HOUR_RATIO:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.0502
+    estado: IV (banda débil)
+  PREV_DAYS_DECISION_MAX:
+    tipo: continua
+    poblacion_medicion: no nulos (auto-cond.)
+    efecto: 0.0489
+    estado: IV (banda débil)
+  PREV_EARLY_SETTLED_RATIO:
+    tipo: continua
+    poblacion_medicion: con operación terminada
+    efecto: 0.0477
+    estado: descartar (redundancia con la bandera)
+  PREV_URGENT_PURPOSE_RATIO:
+    tipo: continua
+    poblacion_medicion: con finalidad informada
+    efecto: 0.0474
+    estado: conservar (sobre finalidad declarada)
+  PREV_EARLY_SETTLED_COUNT:
+    tipo: continua
+    poblacion_medicion: con operación terminada
+    efecto: 0.0446
+    estado: descartar (redundancia con la bandera)
+  PREV_APPLICATION_COUNT:
+    tipo: continua
+    poblacion_medicion: con previas
+    efecto: 0.021
+    estado: denominador de ratios
