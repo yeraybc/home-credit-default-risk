@@ -2,126 +2,294 @@ tabla: bureau_balance
 nivel: SK_ID_CURR (doble agregación desde SK_ID_BUREAU vía bureau)
 nota: 'cobertura del 29,99% de train, completa por cliente en el 99,78% de los casos.
   Cruces con TARGET sobre train completo: los descartes por señal son provisionales
-  y se reconfirman sobre el split; los de redundancia estructural son firmes. Medir
-  IV incremental sobre EXT_SOURCE_3 antes de fijar la lista.'
+  y se reconfirman sobre el split, los de redundancia estructural son firmes y los
+  marca el campo firmeza. Medir IV incremental sobre EXT_SOURCE_3 antes de fijar la
+  lista. Tres parámetros se eligieron comparando rendimiento contra la tasa de default
+  y no son constantes de dominio, así que hay que refijarlos sobre el split: el denominador
+  mínimo de 6 meses reportados de BB_PCT_MONTHS_DPD, el corte de 6 meses de la mora
+  reciente y el de 22 créditos de la cola.'
+metodologia:
+  efectos_sobre: train completo, no sobre el split de entrenamiento
+  alfa_bonferroni: 0.001923
+  n_features: 24
+esquema:
+  tipo: flag (efecto en pp) o continua (efecto en rank-biserial)
+  codificacion: cómo entra la feature cuando no es la columna cruda ('> 0', '| historial')
+  poblacion_medicion: sobre qué clientes se midió; los efectos NO son comparables
+    entre poblaciones distintas
+  n: tamaño de la población de medición (solo continuas)
+  n_marcados: clientes con la bandera a 1 (solo flags)
+  efecto: tamaño del efecto, en la unidad que declara `unidad`
+  unidad: pp para banderas, rank_biserial para continuas
+  p: p-valor del contraste (z-test en banderas, Mann-Whitney en continuas)
+  significativa_bonferroni: si p supera el alfa corregido que declara `metodologia`
+  decision: conservar | iv | degradada | descartar | control | referencia
+  firmeza: firme = target-independiente (redundancia estructural), no hay que rehacerlo
+    sobre el split; provisional = decidido contra el TARGET sobre train completo,
+    se reconfirma
+  control: true si la feature se queda como control pase lo que pase con su capacidad
+    predictiva
+  estado: la cadena original del ranking, verbatim, con el matiz que no cabe en `decision`
 features:
-  BB_EXITS_IN_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 5.3726
-    estado: conservar (sale del histórico en mora)
-  BB_RECENT_DPD_FLAG_REL:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 4.9243
-    estado: conservar (mora reciente, cortada sobre la recencia relativa)
-  BB_RECENT_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 4.8932
-    estado: descartar (cortada sobre la recencia absoluta, que también se descarta)
-  BB_PERSISTENT_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: trayectoria evaluable
-    efecto: 4.0463
-    estado: conservar (persistencia)
-  BB_WORSENING_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: trayectoria evaluable
-    efecto: 3.374
-    estado: conservar (deterioro)
-  BB_MANY_CREDITS_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 2.9629
-    estado: IV (no pasa Bonferroni)
-  BB_WRITEOFF_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 2.9432
-    estado: conservar (fallido)
-  BB_STATUS_WORST > 0:
-    tipo: flag
-    poblacion_medicion: con estado reportado
-    efecto: 2.7573
-    estado: descartar (duplica BB_ANY_DPD_FLAG)
-  BB_ANY_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: 2.7361
-    estado: conservar (en tres niveles)
-  BB_OVERDUE_UNION:
-    tipo: flag
-    poblacion_medicion: con historial de bureau
-    efecto: 2.7272
-    estado: conservar (codificación de mora)
-  BUREAU_OVERDUE_UNION:
-    tipo: flag
-    poblacion_medicion: con historial de bureau
-    efecto: 2.6011
-    estado: referencia (feature de bureau)
-  BB_ALL_CLOSED_FLAG:
-    tipo: flag
-    poblacion_medicion: con histórico
-    efecto: -2.1801
-    estado: descartar (redundante con el cierre que reporta bureau)
-  BB_RECOVERED_DPD_FLAG:
-    tipo: flag
-    poblacion_medicion: trayectoria evaluable
-    efecto: 0.5115
-    estado: descartar (sin señal)
-  HAS_BUREAU_BALANCE:
-    tipo: flag
-    poblacion_medicion: global
-    efecto: 0.0996
-    estado: control de composición
-  BB_MONTHS_SINCE_LAST_DPD_REL:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1584
-    estado: conservar (recencia, en tramos)
-  BB_MONTHS_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1502
-    estado: descartar (redundancia con bureau, firme)
-  BB_MONTHS_SINCE_LAST_DPD:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1379
-    estado: descartar (redundante con la relativa)
-  BB_MONTHS_TOTAL:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1151
-    estado: IV (descarte ya no estructural)
-  BB_PCT_MONTHS_DPD:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1095
-    estado: conservar (denominador mínimo de 6)
-  BB_DPD_MONTHS_COUNT:
-    tipo: continua
-    poblacion_medicion: clientes con mora
-    efecto: 0.0367
-    estado: IV (secundaria)
-  BB_CREDITS_WITH_DPD_COUNT:
-    tipo: continua
-    poblacion_medicion: clientes con mora
-    efecto: 0.027
-    estado: IV (secundaria)
-  BB_STATUS_WORST:
-    tipo: continua
-    poblacion_medicion: clientes con mora
-    efecto: 0.0065
-    estado: descartar (vacía dentro de morosos)
-  BB_N_CREDITS_WBAL:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0058
-    estado: descartar (ruido como continua)
-  BB_CENSORED_RATIO:
-    tipo: control
-    poblacion_medicion: con histórico
-    efecto: null
-    estado: control (desplaza la recencia, no es predictor)
+- nombre: BB_EXITS_IN_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 4274
+  efecto: 5.3726
+  unidad: pp
+  p: 4.405e-36
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (sale del histórico en mora)
+- nombre: BB_RECENT_DPD_FLAG_REL
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 14288
+  efecto: 4.9243
+  unidad: pp
+  p: 3.995e-87
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (mora reciente, cortada sobre la recencia relativa)
+- nombre: BB_RECENT_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 11602
+  efecto: 4.8932
+  unidad: pp
+  p: 1.385e-72
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (cortada sobre la recencia absoluta, que también se descarta)
+- nombre: BB_PERSISTENT_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: trayectoria evaluable
+  n_marcados: 6013
+  efecto: 4.0463
+  unidad: pp
+  p: 1.562e-27
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (persistencia)
+- nombre: BB_WORSENING_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: trayectoria evaluable
+  n_marcados: 9411
+  efecto: 3.374
+  unidad: pp
+  p: 3.077e-28
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (deterioro)
+- nombre: BB_MANY_CREDITS_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 749
+  efecto: 2.9629
+  unidad: pp
+  p: 0.003148
+  significativa_bonferroni: false
+  decision: iv
+  firmeza: provisional
+  estado: IV (no pasa Bonferroni)
+- nombre: BB_WRITEOFF_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 2206
+  efecto: 2.9432
+  unidad: pp
+  p: 5.921e-07
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (fallido)
+- nombre: BB_STATUS_WORST
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con estado reportado
+  n_marcados: 31052
+  efecto: 2.7573
+  unidad: pp
+  p: 8.743e-47
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (duplica BB_ANY_DPD_FLAG)
+- nombre: BB_ANY_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 31052
+  efecto: 2.7361
+  unidad: pp
+  p: 9.491e-47
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (en tres niveles)
+- nombre: BB_OVERDUE_UNION
+  tipo: flag
+  poblacion_medicion: con historial de bureau
+  n_marcados: 88419
+  efecto: 2.7272
+  unidad: pp
+  p: 3.05e-135
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (codificación de mora)
+- nombre: BUREAU_OVERDUE_UNION
+  tipo: flag
+  poblacion_medicion: con historial de bureau
+  n_marcados: 72419
+  efecto: 2.6011
+  unidad: pp
+  p: 2.407e-110
+  significativa_bonferroni: true
+  decision: referencia
+  firmeza: provisional
+  estado: referencia (feature de bureau)
+- nombre: BB_ALL_CLOSED_FLAG
+  tipo: flag
+  poblacion_medicion: con histórico
+  n_marcados: 18997
+  efecto: -2.1801
+  unidad: pp
+  p: 1.239e-22
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (redundante con el cierre que reporta bureau)
+- nombre: BB_RECOVERED_DPD_FLAG
+  tipo: flag
+  poblacion_medicion: trayectoria evaluable
+  n_marcados: 6098
+  efecto: 0.5115
+  unidad: pp
+  p: 0.1666
+  significativa_bonferroni: false
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (sin señal)
+- nombre: HAS_BUREAU_BALANCE
+  tipo: flag
+  poblacion_medicion: global
+  n_marcados: 92231
+  efecto: 0.0996
+  unidad: pp
+  p: 0.3529
+  significativa_bonferroni: false
+  decision: control
+  firmeza: provisional
+  estado: control de composición
+- nombre: BB_MONTHS_SINCE_LAST_DPD_REL
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 31052
+  efecto: 0.1584
+  unidad: rank_biserial
+  p: 1.154e-47
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (recencia, en tramos)
+- nombre: BB_MONTHS_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 92231
+  efecto: 0.1502
+  unidad: rank_biserial
+  p: 1.719e-103
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia con bureau, firme)
+- nombre: BB_MONTHS_SINCE_LAST_DPD
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 31052
+  efecto: 0.1379
+  unidad: rank_biserial
+  p: 1.705e-36
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (redundante con la relativa)
+- nombre: BB_MONTHS_TOTAL
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 92231
+  efecto: 0.1151
+  unidad: rank_biserial
+  p: 1.436e-61
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (descarte ya no estructural)
+- nombre: BB_PCT_MONTHS_DPD
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 83971
+  efecto: 0.1095
+  unidad: rank_biserial
+  p: 8.241e-67
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (denominador mínimo de 6)
+- nombre: BB_DPD_MONTHS_COUNT
+  tipo: continua
+  poblacion_medicion: clientes con mora
+  n: 31052
+  efecto: 0.0367
+  unidad: rank_biserial
+  p: 0.0006799
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (secundaria)
+- nombre: BB_CREDITS_WITH_DPD_COUNT
+  tipo: continua
+  poblacion_medicion: clientes con mora
+  n: 31052
+  efecto: 0.027
+  unidad: rank_biserial
+  p: 0.008063
+  significativa_bonferroni: false
+  decision: iv
+  firmeza: provisional
+  estado: IV (secundaria)
+- nombre: BB_STATUS_WORST
+  tipo: continua
+  poblacion_medicion: clientes con mora
+  n: 31052
+  efecto: 0.0065
+  unidad: rank_biserial
+  p: 0.4009
+  significativa_bonferroni: false
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (vacía dentro de morosos)
+- nombre: BB_N_CREDITS_WBAL
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 92231
+  efecto: 0.0058
+  unidad: rank_biserial
+  p: 0.3981
+  significativa_bonferroni: false
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (ruido como continua)
+- nombre: BB_CENSORED_RATIO
+  tipo: control
+  poblacion_medicion: con histórico
+  efecto: null
+  unidad: null
+  decision: control
+  firmeza: provisional
+  estado: control (desplaza la recencia, no es predictor)
