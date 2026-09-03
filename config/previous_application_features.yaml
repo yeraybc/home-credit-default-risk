@@ -7,7 +7,8 @@ nota: 'cobertura del 94,65% de train, la más alta de las tres auxiliares. Quien
   reconfirman sobre el split; los tres descartes por redundancia estructural son firmes.
   Sobre el split hay que fijar el mínimo de denominador del ratio de rechazo (0,1204
   con cobertura total frente a 0,1558 cubriendo el 81,95%) y refijar los cortes medidos
-  aquí: las 15 solicitudes, las 4 en doce meses y el 1,1 de sobreconcesión.'
+  aquí: las 15 solicitudes, las 4 en doce meses, el año de adelanto en la liquidación,
+  las 60 cuotas y el 1,1 de sobreconcesión.'
 features:
   PREV_REFUSED_LONG_TERM_FLAG:
     tipo: flag
@@ -19,6 +20,11 @@ features:
     poblacion_medicion: con previas
     efecto: 11.537
     estado: conservar (severidad)
+  PREV_REFUSED_SCOFR_FLAG:
+    tipo: flag
+    poblacion_medicion: con algún rechazo
+    efecto: 9.8342
+    estado: conservar (el motivo del rechazo)
   PREV_HISTORIAL_RECORTADO:
     tipo: flag
     poblacion_medicion: con previas
@@ -33,7 +39,7 @@ features:
     tipo: flag
     poblacion_medicion: con previas
     efecto: 2.4089
-    estado: codificación de PREV_COUNT_12M
+    estado: conservar (solo en la interacción con la longitud)
   HAS_PREV_APPLICATION:
     tipo: flag
     poblacion_medicion: global
@@ -109,16 +115,11 @@ features:
     poblacion_medicion: con previas
     efecto: 0.0716
     estado: conservar (la mitad alta)
-  PREV_REFUSED_SCOFR_COUNT:
-    tipo: continua
-    poblacion_medicion: con algún rechazo
-    efecto: 0.0675
-    estado: conservar (como bandera)
   PREV_COUNT_12M:
     tipo: continua
     poblacion_medicion: con previas
     efecto: 0.0639
-    estado: conservar (en tramos)
+    estado: fuente de la bandera de actividad
   PREV_EARLY_HOUR_RATIO:
     tipo: continua
     poblacion_medicion: con previas
@@ -134,16 +135,16 @@ features:
     poblacion_medicion: con operación terminada
     efecto: 0.0477
     estado: descartar (redundancia con la bandera)
+  PREV_URGENT_PURPOSE_RATIO:
+    tipo: continua
+    poblacion_medicion: con finalidad informada
+    efecto: 0.0474
+    estado: conservar (sobre finalidad declarada)
   PREV_EARLY_SETTLED_COUNT:
     tipo: continua
     poblacion_medicion: con operación terminada
     efecto: 0.0446
     estado: descartar (redundancia con la bandera)
-  PREV_URGENT_PURPOSE_COUNT:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0241
-    estado: conservar (bandera, cobertura del 3,03%)
   PREV_APPLICATION_COUNT:
     tipo: continua
     poblacion_medicion: con previas
