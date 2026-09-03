@@ -1,155 +1,375 @@
 tabla: bureau
 nivel: SK_ID_CURR
-nota: cruces con TARGET sobre train completo; recalcular IV sobre el split en FE.
-  Los descartes por senal son provisionales (CLAUDE.md 5.8).
+nota: 'cobertura del 85,69% de train (263.491 clientes con historial). El grupo sin
+  historial es de MAYOR riesgo (10,12% frente a 7,73%), así que el relleno con cero
+  enmascara lo que penaliza e infla lo que protege: toda feature se mide condicionada
+  a HAS_BUREAU_HISTORY. Cruces con TARGET sobre train completo, así que los descartes
+  por señal son provisionales y se reconfirman sobre el split; los dos de redundancia
+  estructural son firmes y los marca el campo firmeza. El solape con EXT_SOURCE_3
+  llega a 0,391 en las temporales y el conteo, que tienen que demostrar IV por encima
+  del score antes de entrar, y eso es obligatorio, no presupuesto. Pendiente de refijar
+  sobre el split: el suelo de medio año del denominador de BUREAU_CREDITS_PER_YEAR,
+  que es convención heredada de previous_application y no un corte medido.'
+metodologia:
+  efectos_sobre: train completo, no sobre el split de entrenamiento
+  alfa_bonferroni: 0.001667
+  n_features: 30
+esquema:
+  tipo: flag (efecto en pp) o continua (efecto en rank-biserial)
+  codificacion: cómo entra la feature cuando no es la columna cruda ('> 0', '| historial')
+  poblacion_medicion: sobre qué clientes se midió; los efectos NO son comparables
+    entre poblaciones distintas
+  n: tamaño de la población de medición (solo continuas)
+  n_marcados: clientes con la bandera a 1 (solo flags)
+  efecto: tamaño del efecto, en la unidad que declara `unidad`
+  unidad: pp para banderas, rank_biserial para continuas
+  p: p-valor del contraste (z-test en banderas, Mann-Whitney en continuas)
+  significativa_bonferroni: si p supera el alfa corregido que declara `metodologia`
+  decision: conservar | iv | degradada | descartar | control | referencia
+  firmeza: firme = target-independiente (redundancia estructural), no hay que rehacerlo
+    sobre el split; provisional = decidido contra el TARGET sobre train completo,
+    se reconfirma
+  control: true si la feature se queda como control pase lo que pase con su capacidad
+    predictiva
+  estado: la cadena original del ranking, verbatim, con el matiz que no cabe en `decision`
 features:
-  BUREAU_NEGATIVE_LIMIT_FLAG:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 12.719
-    estado: conservar (severidad)
-  BUREAU_CURRENT_OVERDUE_SUM > 0:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 8.5752
-    estado: conservar (mora prioritaria)
-  BUREAU_MAX_DAYS_OVERDUE > 0:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 8.273
-    estado: descartar (redundancia)
-  BUREAU_OVERDUE_UNION:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 2.6011
-    estado: conservar (mejora HAS_ANY)
-  BUREAU_BAD_DEBT_COUNT > 0:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 2.5826
-    estado: conservar (flag)
-  BUREAU_DAYS_CREDIT_UPDATE_FLAG:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 2.55
-    estado: conservar (rescatada)
-  BUREAU_ENDDATE_2_5Y_COUNT > 0:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 2.473
-    estado: 'conservar (recuperada #2)'
-  BUREAU_HAS_ANY_OVERDUE:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 2.4103
-    estado: conservar
-  HAS_BUREAU_HISTORY:
-    tipo: flag
-    poblacion_medicion: global (nulo=0)
-    efecto: -2.3949
-    estado: conservar (1er orden)
-  BUREAU_CREDITS_WITH_ANNUITY_COUNT > 0:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 1.4928
-    estado: conservar (3 niveles en FE)
-  HAS_BUREAU_FINANCIAL_DETAIL | historial:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 1.0445
-    estado: IV (banda debil)
-  HAS_BEEN_PROLONGED:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 1.0121
-    estado: IV (banda debil)
-  HAS_BUREAU_ANNUITY | historial:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 0.7471
-    estado: descartar (codif. peor)
-  BUREAU_CLOSED_AFTER_ENDDATE > 0:
-    tipo: flag
-    poblacion_medicion: con créditos cerrados
-    efecto: -0.6698
-    estado: descartar (test valido)
-  HAS_BUREAU_OVERDUE_HISTORY | historial:
-    tipo: flag
-    poblacion_medicion: con historial
-    efecto: 0.3753
-    estado: descartar (señal en valor)
-  BUREAU_DEBT_CREDIT_RATIO:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1828
-    estado: conservar (1er orden)
-  BUREAU_DAYS_CREDIT_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1606
-    estado: conservar (recencia)
-  BUREAU_CREDITS_PER_YEAR:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1569
-    estado: conservar (1er orden)
-  BUREAU_DAYS_CREDIT_MIN:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1567
-    estado: conservar (1er orden)
-  BUREAU_DAYS_ENDDATE_FACT_MIN:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1235
-    estado: descartar (redundancia)
-  BUREAU_ACTIVE_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.1208
-    estado: conservar (primario)
-  BUREAU_ACTIVE_CONSUMER_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.0977
-    estado: descartar (no supera ACTIVE_COUNT)
-  BUREAU_ACTIVE_CARD_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.0957
-    estado: descartar (no supera ACTIVE_COUNT)
-  BUREAU_CLOSED_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.0948
-    estado: conservar
-  BUREAU_MAX_OVERDUE_EVER:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0934
-    estado: conservar
-  BUREAU_DAYS_CREDIT_ENDDATE_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0906
-    estado: IV (secundaria)
-  BUREAU_ENDDATE_2_5Y_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.086
-    estado: 'conservar (recuperada #2)'
-  BUREAU_ANNUITY_ACTIVE_RATIO:
-    tipo: continua
-    poblacion_medicion: solo con cuota
-    efecto: 0.0676
-    estado: IV (secundaria)
-  BUREAU_CREDIT_TYPE_NUNIQUE:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.0119
-    estado: IV (secundaria)
-  BUREAU_LOAN_COUNT:
-    tipo: continua
-    poblacion_medicion: con historial
-    efecto: 0.0098
-    estado: denominador de ratios
+- nombre: BUREAU_NEGATIVE_LIMIT_FLAG
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 323
+  efecto: 12.719
+  unidad: pp
+  p: 1.19e-17
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (severidad)
+- nombre: BUREAU_CURRENT_OVERDUE_SUM
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 3334
+  efecto: 8.5752
+  unidad: pp
+  p: 8.722e-76
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (mora prioritaria)
+- nombre: BUREAU_MAX_DAYS_OVERDUE
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 3397
+  efecto: 8.273
+  unidad: pp
+  p: 5.971e-72
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia)
+- nombre: BUREAU_OVERDUE_UNION
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 72419
+  efecto: 2.6011
+  unidad: pp
+  p: 2.407e-110
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (mejora HAS_ANY)
+- nombre: BUREAU_BAD_DEBT_COUNT
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 5243
+  efecto: 2.5826
+  unidad: pp
+  p: 4.145e-12
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (flag)
+- nombre: BUREAU_DAYS_CREDIT_UPDATE_FLAG
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 219617
+  efecto: 2.55
+  unidad: pp
+  p: 1.769e-74
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (rescatada)
+- nombre: BUREAU_ENDDATE_2_5Y_COUNT
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 89395
+  efecto: 2.473
+  unidad: pp
+  p: 3.719e-112
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: 'conservar (recuperada #2)'
+- nombre: BUREAU_HAS_ANY_OVERDUE
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 70440
+  efecto: 2.4103
+  unidad: pp
+  p: 2.022e-93
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar
+- nombre: HAS_BUREAU_HISTORY
+  tipo: flag
+  poblacion_medicion: global (nulo=0)
+  n_marcados: 263491
+  efecto: -2.3949
+  unidad: pp
+  p: 2.331e-65
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  control: true
+  estado: conservar (1er orden)
+- nombre: BUREAU_CREDITS_WITH_ANNUITY_COUNT
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 60272
+  efecto: 1.4928
+  unidad: pp
+  p: 1.903e-33
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (3 niveles en FE)
+- nombre: HAS_BUREAU_FINANCIAL_DETAIL
+  codificacion: '| historial'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 256134
+  efecto: 1.0445
+  unidad: pp
+  p: 0.0009413
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (banda debil)
+- nombre: HAS_BEEN_PROLONGED
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 8508
+  efecto: 1.0121
+  unidad: pp
+  p: 0.0005848
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (banda debil)
+- nombre: HAS_BUREAU_ANNUITY
+  codificacion: '| historial'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 80009
+  efecto: 0.7471
+  unidad: pp
+  p: 4.021e-11
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (codif. peor)
+- nombre: BUREAU_CLOSED_AFTER_ENDDATE
+  codificacion: '> 0'
+  tipo: flag
+  poblacion_medicion: con créditos cerrados
+  n_marcados: 117474
+  efecto: -0.6698
+  unidad: pp
+  p: 5.758e-10
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (test valido)
+- nombre: HAS_BUREAU_OVERDUE_HISTORY
+  codificacion: '| historial'
+  tipo: flag
+  poblacion_medicion: con historial
+  n_marcados: 183886
+  efecto: 0.3753
+  unidad: pp
+  p: 0.0009249
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (señal en valor)
+- nombre: BUREAU_DEBT_CREDIT_RATIO
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 262408
+  efecto: 0.1828
+  unidad: rank_biserial
+  p: 0.0
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden)
+- nombre: BUREAU_DAYS_CREDIT_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 263491
+  efecto: 0.1606
+  unidad: rank_biserial
+  p: 0.0
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (recencia)
+- nombre: BUREAU_CREDITS_PER_YEAR
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 263491
+  efecto: 0.1569
+  unidad: rank_biserial
+  p: 1.096e-303
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden)
+- nombre: BUREAU_DAYS_CREDIT_MIN
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 263491
+  efecto: 0.1567
+  unidad: rank_biserial
+  p: 5.478e-303
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden)
+- nombre: BUREAU_DAYS_ENDDATE_FACT_MIN
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 230148
+  efecto: 0.1235
+  unidad: rank_biserial
+  p: 7.46e-156
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia)
+- nombre: BUREAU_ACTIVE_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.1208
+  unidad: rank_biserial
+  p: 6.784e-189
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (primario)
+- nombre: BUREAU_ACTIVE_CONSUMER_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.0977
+  unidad: rank_biserial
+  p: 1.084e-132
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (no supera ACTIVE_COUNT)
+- nombre: BUREAU_ACTIVE_CARD_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.0957
+  unidad: rank_biserial
+  p: 1.522e-130
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: provisional
+  estado: descartar (no supera ACTIVE_COUNT)
+- nombre: BUREAU_CLOSED_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.0948
+  unidad: rank_biserial
+  p: 3.514e-114
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar
+- nombre: BUREAU_MAX_OVERDUE_EVER
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 183886
+  efecto: 0.0934
+  unidad: rank_biserial
+  p: 6.372e-101
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar
+- nombre: BUREAU_DAYS_CREDIT_ENDDATE_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 250154
+  efecto: 0.0906
+  unidad: rank_biserial
+  p: 1.84e-96
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (secundaria)
+- nombre: BUREAU_ENDDATE_2_5Y_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.086
+  unidad: rank_biserial
+  p: 5.185e-132
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: 'conservar (recuperada #2)'
+- nombre: BUREAU_ANNUITY_ACTIVE_RATIO
+  tipo: continua
+  poblacion_medicion: solo con cuota
+  n: 60272
+  efecto: 0.0676
+  unidad: rank_biserial
+  p: 1.824e-16
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (secundaria)
+- nombre: BUREAU_CREDIT_TYPE_NUNIQUE
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.0119
+  unidad: rank_biserial
+  p: 0.001484
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (secundaria)
+- nombre: BUREAU_LOAN_COUNT
+  tipo: continua
+  poblacion_medicion: con historial
+  n: 263491
+  efecto: 0.0098
+  unidad: rank_biserial
+  p: 0.01956
+  significativa_bonferroni: false
+  decision: degradada
+  firmeza: provisional
+  estado: denominador de ratios

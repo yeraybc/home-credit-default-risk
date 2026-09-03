@@ -1,152 +1,346 @@
 tabla: previous_application
 nivel: SK_ID_CURR (enlace directo, sin tabla puente)
 nota: 'cobertura del 94,65% de train, la más alta de las tres auxiliares. Quien no
-  tiene solicitudes previas es de menor riesgo (5,96% frente a 8,19%), así que el
-  relleno con cero infla lo que penaliza en lugar de enmascararlo. Cruces con TARGET
-  sobre train completo: las dos que quedan a decidir por IV son provisionales y se
-  reconfirman sobre el split; los tres descartes por redundancia estructural son firmes.
-  Sobre el split hay que fijar el mínimo de denominador del ratio de rechazo (0,1204
-  con cobertura total frente a 0,1558 cubriendo el 81,95%) y refijar los cortes medidos
-  aquí: las 15 solicitudes, las 4 en doce meses, el año de adelanto en la liquidación,
-  las 60 cuotas y el 1,1 de sobreconcesión.'
+  tiene solicitudes previas es de MENOR riesgo (5,96% frente a 8,19%), al revés que
+  en bureau, así que el relleno con cero infla lo que penaliza en lugar de enmascararlo.
+  Cruces con TARGET sobre train completo: las dos que quedan a decidir por IV son
+  provisionales y se reconfirman sobre el split, los tres descartes por redundancia
+  estructural son firmes y los marca el campo firmeza. Sobre el split hay que fijar
+  el mínimo de denominador del ratio de rechazo (0,1204 con cobertura total frente
+  a 0,1558 cubriendo el 81,95%) y refijar los cortes medidos aquí: las 15 solicitudes,
+  las 4 en doce meses, el año de adelanto en la liquidación, las 60 cuotas y el 1,1
+  de sobreconcesión.'
+metodologia:
+  efectos_sobre: train completo, no sobre el split de entrenamiento
+  alfa_bonferroni: 0.001786
+  n_features: 28
+esquema:
+  tipo: flag (efecto en pp) o continua (efecto en rank-biserial)
+  codificacion: cómo entra la feature cuando no es la columna cruda ('> 0', '| historial')
+  poblacion_medicion: sobre qué clientes se midió; los efectos NO son comparables
+    entre poblaciones distintas
+  n: tamaño de la población de medición (solo continuas)
+  n_marcados: clientes con la bandera a 1 (solo flags)
+  efecto: tamaño del efecto, en la unidad que declara `unidad`
+  unidad: pp para banderas, rank_biserial para continuas
+  p: p-valor del contraste (z-test en banderas, Mann-Whitney en continuas)
+  significativa_bonferroni: si p supera el alfa corregido que declara `metodologia`
+  decision: conservar | iv | degradada | descartar | control | referencia
+  firmeza: firme = target-independiente (redundancia estructural), no hay que rehacerlo
+    sobre el split; provisional = decidido contra el TARGET sobre train completo,
+    se reconfirma
+  control: true si la feature se queda como control pase lo que pase con su capacidad
+    predictiva
+  estado: la cadena original del ranking, verbatim, con el matiz que no cabe en `decision`
 features:
-  PREV_REFUSED_LONG_TERM_FLAG:
-    tipo: flag
-    poblacion_medicion: con previas
-    efecto: 13.606
-    estado: conservar (severidad)
-  PREV_PHANTOM_FLAG:
-    tipo: flag
-    poblacion_medicion: con previas
-    efecto: 11.537
-    estado: conservar (severidad)
-  PREV_REFUSED_SCOFR_FLAG:
-    tipo: flag
-    poblacion_medicion: con algún rechazo
-    efecto: 9.8342
-    estado: conservar (el motivo del rechazo)
-  PREV_HISTORIAL_RECORTADO:
-    tipo: flag
-    poblacion_medicion: con previas
-    efecto: -3.0646
-    estado: conservar (protectora y control)
-  PREV_COUNT_COLA:
-    tipo: flag
-    poblacion_medicion: con previas
-    efecto: 2.9735
-    estado: conservar (corte medido en 15)
-  PREV_ACTIVIDAD_12M_COLA:
-    tipo: flag
-    poblacion_medicion: con previas
-    efecto: 2.4089
-    estado: conservar (solo en la interacción con la longitud)
-  HAS_PREV_APPLICATION:
-    tipo: flag
-    poblacion_medicion: global
-    efecto: 2.2366
-    estado: conservar (control y protectora)
-  PREV_EARLY_SETTLED_FLAG:
-    tipo: flag
-    poblacion_medicion: con operación terminada
-    efecto: 2.1911
-    estado: conservar (o tramos de conteo)
-  PREV_CREDIT_APPLICATION_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.1458
-    estado: conservar (1er orden, la media)
-  PREV_IMPLIED_COST_MEAN:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1334
-    estado: conservar (1er orden, en seis tramos)
-  PREV_REFUSED_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.1204
-    estado: conservar (1er orden)
-  PREV_OVERGRANTED_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.1194
-    estado: conservar (1er orden, corte 1,1)
-  PREV_APPLICATIONS_PER_YEAR:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1149
-    estado: conservar (1er orden)
-  PREV_DAYS_DECISION_MIN:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.1129
-    estado: conservar (con el recorte al lado)
-  PREV_REFUSED_COUNT:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.1122
-    estado: denominador del ratio
-  PREV_STREET_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0924
-    estado: conservar (con la recencia al lado)
-  PREV_IMPLIED_COST_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0852
-    estado: descartar (redundancia con la media)
-  PREV_FUTURE_DUE_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0842
-    estado: conservar (la magnitud, no la presencia)
-  PREV_DOWN_PAYMENT_RATE_MEAN:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0811
-    estado: conservar (continua monótona)
-  PREV_CNT_PAYMENT_MEAN:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.081
-    estado: conservar
-  PREV_NO_SUITE_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0716
-    estado: conservar (la mitad alta)
-  PREV_COUNT_12M:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0639
-    estado: fuente de la bandera de actividad
-  PREV_EARLY_HOUR_RATIO:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.0502
-    estado: IV (banda débil)
-  PREV_DAYS_DECISION_MAX:
-    tipo: continua
-    poblacion_medicion: no nulos (auto-cond.)
-    efecto: 0.0489
-    estado: IV (banda débil)
-  PREV_EARLY_SETTLED_RATIO:
-    tipo: continua
-    poblacion_medicion: con operación terminada
-    efecto: 0.0477
-    estado: descartar (redundancia con la bandera)
-  PREV_URGENT_PURPOSE_RATIO:
-    tipo: continua
-    poblacion_medicion: con finalidad informada
-    efecto: 0.0474
-    estado: conservar (sobre finalidad declarada)
-  PREV_EARLY_SETTLED_COUNT:
-    tipo: continua
-    poblacion_medicion: con operación terminada
-    efecto: 0.0446
-    estado: descartar (redundancia con la bandera)
-  PREV_APPLICATION_COUNT:
-    tipo: continua
-    poblacion_medicion: con previas
-    efecto: 0.021
-    estado: denominador de ratios
+- nombre: PREV_REFUSED_LONG_TERM_FLAG
+  tipo: flag
+  poblacion_medicion: con previas
+  n_marcados: 78
+  efecto: 13.606
+  unidad: pp
+  p: 1.182e-05
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (severidad)
+- nombre: PREV_PHANTOM_FLAG
+  tipo: flag
+  poblacion_medicion: con previas
+  n_marcados: 284
+  efecto: 11.537
+  unidad: pp
+  p: 1.382e-12
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (severidad)
+- nombre: PREV_REFUSED_SCOFR_FLAG
+  tipo: flag
+  poblacion_medicion: con algún rechazo
+  n_marcados: 6788
+  efecto: 9.8342
+  unidad: pp
+  p: 8.094e-146
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (el motivo del rechazo)
+- nombre: PREV_HISTORIAL_RECORTADO
+  tipo: flag
+  poblacion_medicion: con previas
+  n_marcados: 53934
+  efecto: -3.0646
+  unidad: pp
+  p: 2.463e-121
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  control: true
+  estado: conservar (protectora y control)
+- nombre: PREV_COUNT_COLA
+  tipo: flag
+  poblacion_medicion: con previas
+  n_marcados: 9422
+  efecto: 2.9735
+  unidad: pp
+  p: 4.071e-25
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (corte medido en 15)
+- nombre: PREV_ACTIVIDAD_12M_COLA
+  tipo: flag
+  poblacion_medicion: con previas
+  n_marcados: 45771
+  efecto: 2.4089
+  unidad: pp
+  p: 1.102e-66
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (solo en la interacción con la longitud)
+- nombre: HAS_PREV_APPLICATION
+  tipo: flag
+  poblacion_medicion: global
+  n_marcados: 291057
+  efecto: 2.2366
+  unidad: pp
+  p: 1.238e-24
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  control: true
+  estado: conservar (control y protectora)
+- nombre: PREV_EARLY_SETTLED_FLAG
+  tipo: flag
+  poblacion_medicion: con operación terminada
+  n_marcados: 47682
+  efecto: 2.1911
+  unidad: pp
+  p: 1.634e-57
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (o tramos de conteo)
+- nombre: PREV_CREDIT_APPLICATION_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 290042
+  efecto: 0.1458
+  unidad: rank_biserial
+  p: 7.812e-305
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden, la media)
+- nombre: PREV_IMPLIED_COST_MEAN
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 287433
+  efecto: 0.1334
+  unidad: rank_biserial
+  p: 8.906e-252
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden, en seis tramos)
+- nombre: PREV_REFUSED_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.1204
+  unidad: rank_biserial
+  p: 3.324e-290
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden)
+- nombre: PREV_OVERGRANTED_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 290042
+  efecto: 0.1194
+  unidad: rank_biserial
+  p: 1.342e-232
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden, corte 1,1)
+- nombre: PREV_APPLICATIONS_PER_YEAR
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 291057
+  efecto: 0.1149
+  unidad: rank_biserial
+  p: 1.396e-190
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (1er orden)
+- nombre: PREV_DAYS_DECISION_MIN
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 291057
+  efecto: 0.1129
+  unidad: rank_biserial
+  p: 4.76e-184
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (con el recorte al lado)
+- nombre: PREV_REFUSED_COUNT
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.1122
+  unidad: rank_biserial
+  p: 6.867e-254
+  significativa_bonferroni: true
+  decision: degradada
+  firmeza: provisional
+  estado: denominador del ratio
+- nombre: PREV_STREET_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.0924
+  unidad: rank_biserial
+  p: 5.112e-167
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (con la recencia al lado)
+- nombre: PREV_IMPLIED_COST_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 287433
+  efecto: 0.0852
+  unidad: rank_biserial
+  p: 4.615e-104
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia con la media)
+- nombre: PREV_FUTURE_DUE_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 147954
+  efecto: 0.0842
+  unidad: rank_biserial
+  p: 4.666e-54
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (la magnitud, no la presencia)
+- nombre: PREV_DOWN_PAYMENT_RATE_MEAN
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 268895
+  efecto: 0.0811
+  unidad: rank_biserial
+  p: 3.43e-89
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (continua monótona)
+- nombre: PREV_CNT_PAYMENT_MEAN
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 288566
+  efecto: 0.081
+  unidad: rank_biserial
+  p: 5.12e-95
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar
+- nombre: PREV_NO_SUITE_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.0716
+  unidad: rank_biserial
+  p: 2.311e-76
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (la mitad alta)
+- nombre: PREV_COUNT_12M
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.0639
+  unidad: rank_biserial
+  p: 9.817e-66
+  significativa_bonferroni: true
+  decision: degradada
+  firmeza: provisional
+  estado: fuente de la bandera de actividad
+- nombre: PREV_EARLY_HOUR_RATIO
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.0502
+  unidad: rank_biserial
+  p: 4.694e-75
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  estado: IV (banda débil)
+- nombre: PREV_DAYS_DECISION_MAX
+  tipo: continua
+  poblacion_medicion: no nulos (auto-cond.)
+  n: 291057
+  efecto: 0.0489
+  unidad: rank_biserial
+  p: 5.16e-36
+  significativa_bonferroni: true
+  decision: iv
+  firmeza: provisional
+  control: true
+  estado: IV (banda débil)
+- nombre: PREV_EARLY_SETTLED_RATIO
+  tipo: continua
+  poblacion_medicion: con operación terminada
+  n: 267623
+  efecto: 0.0477
+  unidad: rank_biserial
+  p: 8.077e-68
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia con la bandera)
+- nombre: PREV_URGENT_PURPOSE_RATIO
+  tipo: continua
+  poblacion_medicion: con finalidad informada
+  n: 35917
+  efecto: 0.0474
+  unidad: rank_biserial
+  p: 2.191e-11
+  significativa_bonferroni: true
+  decision: conservar
+  firmeza: provisional
+  estado: conservar (sobre finalidad declarada)
+- nombre: PREV_EARLY_SETTLED_COUNT
+  tipo: continua
+  poblacion_medicion: con operación terminada
+  n: 267623
+  efecto: 0.0446
+  unidad: rank_biserial
+  p: 7.175e-60
+  significativa_bonferroni: true
+  decision: descartar
+  firmeza: firme
+  estado: descartar (redundancia con la bandera)
+- nombre: PREV_APPLICATION_COUNT
+  tipo: continua
+  poblacion_medicion: con previas
+  n: 291057
+  efecto: 0.021
+  unidad: rank_biserial
+  p: 5.799e-08
+  significativa_bonferroni: true
+  decision: degradada
+  firmeza: provisional
+  estado: denominador de ratios
