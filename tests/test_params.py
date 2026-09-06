@@ -10,10 +10,14 @@ import yaml
 
 from src.config import RAIZ, cargar_config
 from src.features.params import (
+    CORTES_POR_FEATURE,
     PARAMS,
     PROCEDENCIAS,
     REAJUSTABLES,
     Parametro,
+    con_contraste_pendiente,
+    cortes_de,
+    features_con_corte,
     parametro,
     por_procedencia,
     reajustables,
@@ -49,12 +53,20 @@ def test_solo_estimado_y_medido_pueden_estar_sin_fijar():
         assert p.procedencia in REAJUSTABLES, nombre
 
 
-def test_usar_un_parametro_sin_fijar_falla_en_vez_de_devolver_none():
-    pendientes = sin_fijar()
-    assert pendientes, "si ya no queda ninguno sin fijar, este test sobra"
-    nombre = next(iter(pendientes))
+@pytest.mark.parametrize("nombre", sorted(sin_fijar()))
+def test_usar_un_parametro_sin_fijar_falla_en_vez_de_devolver_none(nombre):
+    """Uno por uno, no solo el primero: cada pendiente tiene que bloquear a quien lo use."""
     with pytest.raises(ValueError, match="sin fijar"):
         valor(nombre)
+
+
+def test_los_pendientes_son_los_tres_declarados_de_la_capa_2b():
+    """Deuda declarada, no olvidos. Si aparece uno nuevo, que se note aquí."""
+    assert set(sin_fijar()) == {
+        "umbral_continuas_rb",
+        "min_denominador_proporcion",
+        "prev_ratio_rechazo_min_solicitudes",
+    }
 
 
 def test_un_parametro_fijado_devuelve_su_valor():
@@ -92,14 +104,59 @@ def test_no_hay_dos_parametros_con_la_misma_descripcion():
         vistas[d] = nombre
 
 
-def test_params_no_redeclara_nada_de_config_yaml():
-    """El umbral de IV y los del split viven en config.yaml y no se copian aquí."""
+# --- frontera entre config.yaml y params.py -------------------------------------------------
+# config.yaml lleva infraestructura y params.py lleva cortes de modelado. La frontera se
+# comprueba en las dos direcciones: que no haya la misma clave en los dos sitios, y que las
+# claves concretas que se migraron o se eliminaron no vuelvan a colarse en config.yaml.
+
+CORTES_QUE_NO_VUELVEN_A_CONFIG = (
+    "min_iv",
+    "n_bins_max",
+    "correlation_threshold",
+    "missing_threshold",
+)
+
+
+def _claves_de_config():
     cfg = cargar_config()
-    del cfg["paths"]
-    claves_config = {k for bloque in cfg.values() for k in bloque}
-    assert not (set(PARAMS) & claves_config)
-    for prohibido in ("min_iv", "test_size", "random_state", "correlation_threshold"):
-        assert prohibido not in PARAMS, f"{prohibido} ya está en config.yaml"
+    cfg.pop("paths", None)
+    return {k for bloque in cfg.values() for k in bloque}
+
+
+def test_ninguna_clave_vive_en_los_dos_ficheros():
+    solapadas = set(PARAMS) & _claves_de_config()
+    assert not solapadas, f"mismo concepto declarable en dos sitios: {sorted(solapadas)}"
+
+
+def test_los_cortes_de_modelado_ya_no_estan_en_config_yaml():
+    """El 0,95 de correlation_threshold contra el 0,70 de aquí era el mismo control duplicado."""
+    presentes = set(CORTES_QUE_NO_VUELVEN_A_CONFIG) & _claves_de_config()
+    assert not presentes, f"volvieron a config.yaml: {sorted(presentes)}"
+
+
+def test_los_dos_cortes_migrados_estan_declarados_aqui():
+    for nombre in ("min_iv", "n_bins_max"):
+        assert nombre in PARAMS, f"{nombre} se sacó de config.yaml y no llegó a params.py"
+    assert valor("min_iv") == 0.02
+    assert valor("n_bins_max") == 10
+
+
+def test_el_umbral_de_redundancia_es_uno_solo_y_es_el_del_eda():
+    assert valor("redundancia_pearson") == 0.70
+    assert "correlation_threshold" not in PARAMS
+
+
+def test_el_umbral_unico_de_nulos_no_se_migro():
+    """El EDA decide los nulos columna a columna con IV, no con un umbral único."""
+    assert "missing_threshold" not in PARAMS
+
+
+def test_config_yaml_conserva_la_infraestructura():
+    """Migrar los cortes no puede llevarse por delante lo que el split y la API necesitan."""
+    cfg = cargar_config()
+    assert set(cfg["dataset"]) == {"target_col", "id_col", "test_size", "random_state"}
+    for bloque in ("paths", "modeling", "monitoring", "api", "mlflow"):
+        assert cfg[bloque], f"bloque {bloque} vacío o ausente"
 
 
 def test_los_umbrales_metodologicos_coinciden_con_las_recetas_del_eda():
@@ -110,10 +167,106 @@ def test_los_umbrales_metodologicos_coinciden_con_las_recetas_del_eda():
     assert valor("umbral_flags_pp") == 2.0
 
 
-@pytest.mark.parametrize("tabla", ["bureau", "bureau_balance", "previous_application"])
-def test_toda_feature_provisional_tiene_su_corte_reajustable(tabla):
-    """Las recetas declaran qué se remide sobre el split; el registro tiene que poder hacerlo."""
-    receta = yaml.safe_load((RAIZ / "config" / f"{tabla}_features.yaml").read_text())
-    provisionales = [f for f in receta["features"] if f["firmeza"] == "provisional"]
-    assert provisionales, f"{tabla} sin nada provisional, revisar la receta"
-    assert reajustables(), "no hay ni un parámetro reajustable declarado"
+# --- cruce entre las recetas del EDA y el registro de cortes --------------------------------
+
+TABLAS = ["bureau", "bureau_balance", "previous_application"]
+
+
+def _receta(tabla):
+    return yaml.safe_load((RAIZ / "config" / f"{tabla}_features.yaml").read_text())
+
+
+@pytest.mark.parametrize("tabla", TABLAS)
+def test_cada_feature_del_mapa_existe_en_su_receta(tabla):
+    """El mapa no puede referirse a features que la receta no tiene."""
+    de_la_receta = {f["nombre"] for f in _receta(tabla)["features"]}
+    del_mapa = set(CORTES_POR_FEATURE[tabla])
+    assert del_mapa <= de_la_receta, f"features inventadas: {sorted(del_mapa - de_la_receta)}"
+
+
+@pytest.mark.parametrize("tabla", TABLAS)
+def test_cada_feature_con_corte_apunta_a_un_parametro_declarado(tabla):
+    """Cada corte que lleva dentro una feature tiene que existir en el registro y ser accionable.
+
+    Accionable significa reajustable sobre el split, o de dominio pero con su contraste
+    declarado; un corte de dominio a secas dentro de una feature provisional sería un valor
+    que nadie va a revisar.
+    """
+    for feature, cortes in CORTES_POR_FEATURE[tabla].items():
+        assert cortes, f"{tabla}.{feature} está en el mapa sin ningún corte"
+        for corte in cortes:
+            p = parametro(corte)  # revienta si no está declarado
+            accionable = p.procedencia in REAJUSTABLES or p.contraste_pendiente is not None
+            assert accionable, f"{tabla}.{feature} depende de {corte}, que nadie revisa"
+
+
+@pytest.mark.parametrize("tabla", TABLAS)
+def test_una_feature_con_corte_solo_es_firme_si_su_descarte_es_estructural(tabla):
+    """Si su construcción depende de un umbral que se puede mover, casi siempre es provisional.
+
+    La excepción legítima es el descarte por redundancia estructural contra una hermana
+    construida desde el mismo corte: ahí la redundancia se mantiene con cualquier valor del
+    umbral, porque las dos salen del mismo booleano. Caso de PREV_EARLY_SETTLED_COUNT y
+    _RATIO, que correlacionan 0,8586 y 0,8539 con la bandera que sí se conserva.
+    """
+    receta = {f["nombre"]: f for f in _receta(tabla)["features"]}
+    for feature, cortes in CORTES_POR_FEATURE[tabla].items():
+        if receta[feature]["firmeza"] == "provisional":
+            continue
+        assert (
+            receta[feature]["decision"] == "descartar"
+        ), f"{tabla}.{feature} es firme, depende de {cortes} y no es un descarte"
+        hermanas = [
+            otra
+            for otra, sus_cortes in CORTES_POR_FEATURE[tabla].items()
+            if otra != feature
+            and set(sus_cortes) & set(cortes)
+            and receta[otra]["decision"] != "descartar"
+        ]
+        assert hermanas, (
+            f"{tabla}.{feature} se descarta en firme por redundancia, pero ninguna feature "
+            f"viva comparte sus cortes {cortes}"
+        )
+
+
+def test_todo_corte_reajustable_lo_usa_alguna_feature_o_es_transversal():
+    """Un corte reajustable que no usa nadie es un valor huérfano.
+
+    Los transversales no aparecen en el mapa porque no pertenecen a una feature concreta:
+    son los percentiles de application_train y los tres pendientes de la capa 2b.
+    """
+    usados = set(features_con_corte())
+    transversales = {n for n in PARAMS if n.startswith("app_")} | {
+        "umbral_continuas_rb",
+        "min_denominador_proporcion",
+    }
+    huerfanos = set(reajustables()) - usados - transversales
+    assert not huerfanos, f"cortes reajustables que no usa ninguna feature: {sorted(huerfanos)}"
+
+
+def test_el_suelo_del_denominador_es_dominio_con_su_contraste_declarado():
+    """Reclasificarlo no puede llevarse por delante el contraste que la receta pide."""
+    p = parametro("suelo_anios_denominador")
+    assert p.procedencia == "dominio"
+    assert p.contraste_pendiente is not None
+    assert "suelo_anios_denominador" in con_contraste_pendiente()
+    # las dos features que lo llevan dentro, una por tabla
+    assert cortes_de("bureau", "BUREAU_CREDITS_PER_YEAR") == ("suelo_anios_denominador",)
+    assert cortes_de("previous_application", "PREV_APPLICATIONS_PER_YEAR") == (
+        "suelo_anios_denominador",
+    )
+
+
+def test_el_cap_de_la_antiguedad_del_coche_es_estimado():
+    """64 era exactamente el p99, así que el criterio de negocio no sostenía el valor."""
+    assert parametro("app_cap_p99_own_car_age").procedencia == "estimado"
+    assert "app_own_car_age_max" not in PARAMS
+
+
+def test_cortes_de_una_tabla_desconocida_revienta():
+    with pytest.raises(KeyError, match="sin mapa de cortes"):
+        cortes_de("installments", "LO_QUE_SEA")
+
+
+def test_una_feature_sin_corte_devuelve_tupla_vacia():
+    assert cortes_de("bureau", "BUREAU_ACTIVE_COUNT") == ()

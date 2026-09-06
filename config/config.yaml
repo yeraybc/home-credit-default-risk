@@ -5,17 +5,17 @@ paths:
   models:         "models"
   reports:        "monitoring/reports"
 
+# Este fichero lleva infraestructura. Los cortes de modelado viven en src/features/params.py,
+# que es donde cada uno declara su procedencia y si hay que reajustarlo sobre el split.
+# De aqui salieron min_iv, n_bins_max y correlation_threshold (que valia 0,95 mientras el
+# umbral real del proyecto es 0,70), y se elimino missing_threshold, porque el EDA decide los
+# nulos columna a columna con IV y no con un umbral unico.
+
 dataset:
   target_col:         "TARGET"
   id_col:             "SK_ID_CURR"
   test_size:          0.2
   random_state:       42
-  missing_threshold:  0.60   # columnas con > 60% nulos se evalúan para drop
-
-feature_engineering:
-  min_iv:                0.02   # IV < 0.02 → sin valor predictivo
-  n_bins_max:            10
-  correlation_threshold: 0.95
 
 modeling:
   random_state:    42

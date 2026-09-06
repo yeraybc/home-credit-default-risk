@@ -2,6 +2,25 @@
 
 Cada parámetro declara de dónde sale, y esa procedencia es la que decide si hay que
 reestimarlo sobre el split de entrenamiento o si es una constante que se queda como está.
+
+Frontera con config.yaml, declarada para que no vuelva a haber un mismo control con dos
+valores en dos ficheros: **config.yaml lleva infraestructura** (rutas, semilla y proporción
+de la partición, nombres de columna, servicio, monitorización y mlflow) y **este módulo lleva
+los cortes de modelado**, que son los que tienen procedencia y los que pueden necesitar
+reajuste. La prueba para decidir dónde va algo es si tiene una procedencia del EDA: si la
+tiene, va aquí.
+
+Tres claves se migraron desde config.yaml al aplicar esa frontera, y una se eliminó:
+
+- `correlation_threshold` valía 0,95 mientras `redundancia_pearson` vale 0,70. Son el mismo
+  control con dos valores, el patrón que en bureau dejó 52.500 en un sitio y 52.497 en otro.
+  Gana 0,70, que es el umbral que usan las tres recetas y `metodologia-estadistica` 8.4; el
+  0,95 era andamiaje del arranque del proyecto, anterior al EDA.
+- `min_iv` y `n_bins_max` pasan aquí porque son cortes de modelado con procedencia.
+- `missing_threshold` (0,60) se **elimina sin migrar**: el EDA refutó la regla de umbral único
+  de nulos y decide columna a columna con IV. Con ella caerían `EXT_SOURCE_1` (56,4% de nulos
+  y se conserva con su bandera), `FONDKAPREMONT_MODE` (68%, pendiente de IV) y buena parte del
+  bloque edificio. Dejarla declarada invitaba a aplicar una regla que el EDA ya descartó.
 """
 
 from __future__ import annotations
@@ -23,18 +42,26 @@ REAJUSTABLES = ("estimado", "medido")
 
 @dataclass(frozen=True)
 class Parametro:
-    """Un corte del pipeline, con su valor de referencia y su procedencia."""
+    """Un corte del pipeline, con su valor de referencia y su procedencia.
+
+    `contraste_pendiente` es para el caso raro de un corte de dominio que aun así hay que
+    contrastar sobre el split: no se refija, pero el contraste queda declarado en vez de
+    perderse al reclasificarlo.
+    """
 
     valor: float | None
     procedencia: str
     descripcion: str
     fuente: str
+    contraste_pendiente: str | None = None
 
     def __post_init__(self) -> None:
         if self.procedencia not in PROCEDENCIAS:
             raise ValueError(f"procedencia fuera del vocabulario cerrado: {self.procedencia!r}")
         if self.procedencia == "dominio" and self.valor is None:
             raise ValueError("un parámetro de dominio no puede estar sin valor")
+        if self.contraste_pendiente is not None and not self.contraste_pendiente.strip():
+            raise ValueError("contraste_pendiente declarado y vacío")
 
 
 PARAMS: dict[str, Parametro] = {
@@ -88,17 +115,44 @@ PARAMS: dict[str, Parametro] = {
     ),
     "suelo_anios_denominador": Parametro(
         0.5,
-        "medido",
-        "suelo del denominador de los dos ritmos por año, para no dividir por casi cero; en "
-        "bureau es convención heredada de previous_application y no un corte medido",
+        "dominio",
+        "suelo del denominador de los dos ritmos por año, para no dividir por casi cero; no "
+        "se eligió comparando contra el default, es convención heredada de "
+        "previous_application, así que por el propio vocabulario es dominio y no medido",
         "notebook 02 celda 88 y notebook 04 celda 20",
+        contraste_pendiente=(
+            "la receta de bureau lo deja pendiente de refijar sobre el split. Al no ser un "
+            "corte medido no se refija, pero el contraste se mantiene como control: medir "
+            "BUREAU_CREDITS_PER_YEAR con varios suelos y comprobar que el gradiente monótono "
+            "del 6,12% al 16,15% no depende de este valor"
+        ),
+    ),
+    # migrados desde config.yaml al aplicar la frontera del docstring
+    "min_iv": Parametro(
+        0.02,
+        "dominio",
+        "IV por debajo del cual una feature no aporta capacidad predictiva; es la escala "
+        "estándar de credit scoring, no un corte estimado sobre este dataset",
+        "glosario-tecnico, escala de IV",
+    ),
+    "n_bins_max": Parametro(
+        10,
+        "dominio",
+        "tramos máximos del binning con el que se calculan IV y WoE",
+        "convención de binning del proyecto",
     ),
     # application_train: validez de dominio, constantes fijas
-    "app_own_car_age_max": Parametro(
+    # el EDA lo declaraba como criterio de dominio ("por encima de 64 años no es un activo
+    # financiero real"), pero 64 es exactamente el p99 y el argumento de negocio justifica
+    # capar, no capar en 64: un número de dominio sería redondo y no se movería con la
+    # muestra. Recomputado sobre los 104.582 clientes con coche, el p99 es 64,00 y por encima
+    # de 65 solo quedan 3 registros, así que el criterio no sostiene el valor por sí solo y
+    # pasa a estimado, igual que el grupo app_winsor_*.
+    "app_cap_p99_own_car_age": Parametro(
         64,
-        "dominio",
-        "cap de la antigüedad del coche; el criterio es que por encima no es un activo "
-        "financiero real, aunque el número coincida con el p99",
+        "estimado",
+        "p99 de la antigüedad del coche, no el 3xp99 del resto del grupo; el argumento de "
+        "negocio justifica que haya cap, y el valor sale de la distribución",
         "eda-application-train 4.6",
     ),
     "app_amt_req_bureau_day_max": Parametro(
@@ -257,6 +311,43 @@ PARAMS: dict[str, Parametro] = {
     ),
 }
 
+# Qué corte lleva dentro cada feature de las tres recetas. Es lo que permite comprobar que
+# ninguna feature cuya construcción depende de un umbral se quede sin ese umbral declarado, y
+# lo que en la capa 2b dice qué hay que rebarrer al refijar cada corte sobre el split.
+# Solo aparecen las features que llevan un corte: la mayoría de las provisionales lo son por
+# tener su efecto medido sobre train completo, que se remide sin que haya ningún umbral que
+# mover.
+CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
+    "bureau": {
+        "BUREAU_CREDITS_PER_YEAR": ("suelo_anios_denominador",),
+        "BUREAU_DAYS_CREDIT_UPDATE_FLAG": ("bureau_update_reciente_dias",),
+        "BUREAU_ENDDATE_2_5Y_COUNT": (
+            "bureau_enddate_tramo_min_anios",
+            "bureau_enddate_tramo_max_anios",
+        ),
+    },
+    "bureau_balance": {
+        "BB_PCT_MONTHS_DPD": ("bb_min_meses_reportados",),
+        "BB_RECENT_DPD_FLAG_REL": ("bb_mora_reciente_meses",),
+        "BB_RECENT_DPD_FLAG": ("bb_mora_reciente_meses",),
+        "BB_MANY_CREDITS_FLAG": ("bb_many_credits_corte",),
+        "BB_PERSISTENT_DPD_FLAG": ("bb_min_meses_trayectoria",),
+        "BB_WORSENING_DPD_FLAG": ("bb_min_meses_trayectoria",),
+        "BB_RECOVERED_DPD_FLAG": ("bb_min_meses_trayectoria",),
+    },
+    "previous_application": {
+        "PREV_COUNT_COLA": ("prev_count_cola",),
+        "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola",),
+        "PREV_EARLY_SETTLED_FLAG": ("prev_adelanto_liquidacion_dias",),
+        "PREV_EARLY_SETTLED_COUNT": ("prev_adelanto_liquidacion_dias",),
+        "PREV_EARLY_SETTLED_RATIO": ("prev_adelanto_liquidacion_dias",),
+        "PREV_REFUSED_LONG_TERM_FLAG": ("prev_plazo_largo_cuotas",),
+        "PREV_OVERGRANTED_RATIO": ("prev_sobreconcesion_corte",),
+        "PREV_REFUSED_RATIO": ("prev_ratio_rechazo_min_solicitudes",),
+        "PREV_APPLICATIONS_PER_YEAR": ("suelo_anios_denominador",),
+    },
+}
+
 
 def parametro(nombre: str) -> Parametro:
     """Devuelve el registro completo de un parámetro."""
@@ -290,3 +381,25 @@ def reajustables() -> dict[str, Parametro]:
 def sin_fijar() -> dict[str, Parametro]:
     """Los que todavía no tienen valor y bloquean a quien los use."""
     return {k: v for k, v in PARAMS.items() if v.valor is None}
+
+
+def con_contraste_pendiente() -> dict[str, Parametro]:
+    """Los de dominio que aun así hay que contrastar sobre el split, como control."""
+    return {k: v for k, v in PARAMS.items() if v.contraste_pendiente is not None}
+
+
+def cortes_de(tabla: str, feature: str) -> tuple[str, ...]:
+    """Cortes que lleva dentro una feature; tupla vacía si no depende de ninguno."""
+    if tabla not in CORTES_POR_FEATURE:
+        raise KeyError(f"tabla sin mapa de cortes: {tabla!r}")
+    return CORTES_POR_FEATURE[tabla].get(feature, ())
+
+
+def features_con_corte() -> dict[str, str]:
+    """Mapa inverso: por cada corte, las features de receta que lo usan."""
+    inverso: dict[str, list[str]] = {}
+    for tabla, features in CORTES_POR_FEATURE.items():
+        for feature, cortes in features.items():
+            for corte in cortes:
+                inverso.setdefault(corte, []).append(f"{tabla}.{feature}")
+    return {k: ", ".join(sorted(v)) for k, v in sorted(inverso.items())}

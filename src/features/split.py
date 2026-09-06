@@ -23,9 +23,9 @@ NOMBRE_FICHERO = "split.parquet"
 COLUMNAS = ["SK_ID_CURR", "TARGET", "split"]
 
 
-def _destino(raiz: Path | None = None) -> Path:
+def _destino() -> Path:
     """Ruta del fichero de split."""
-    return (raiz or ruta("processed_data")) / NOMBRE_FICHERO
+    return ruta("processed_data") / NOMBRE_FICHERO
 
 
 def construir_split(
@@ -34,24 +34,38 @@ def construir_split(
     destino: Path | None = None,
     persistir: bool = True,
     app: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
 ) -> pd.DataFrame:
     """Split estratificado por TARGET sobre los SK_ID_CURR de application_train.
 
     Sin argumentos toma `test_size` y `random_state` de config.yaml y lee la tabla del disco;
     `app` permite inyectar el frame de identificador y objetivo, que es lo que usan los tests.
+    Si ya hay un split persistido no lo pisa: hay que pedirlo con `sobrescribir=True`.
     """
     cfg = cargar_config()["dataset"]
     test_size = cfg["test_size"] if test_size is None else test_size
     random_state = cfg["random_state"] if random_state is None else random_state
     id_col, target_col = cfg["id_col"], cfg["target_col"]
 
+    # se comprueba antes de leer los 166MB del csv: si va a fallar, que falle barato
+    ruta_destino = destino or _destino()
+    if persistir and ruta_destino.exists() and not sobrescribir:
+        raise FileExistsError(
+            f"ya hay un split en {ruta_destino}. Rehacerlo cambia la partición y deja "
+            "inválido en silencio todo lo ajustado sobre ella: medianas, percentiles, WoE, "
+            "IV y los cortes refijados. Léelo con cargar_split(), o pasa sobrescribir=True "
+            "si de verdad quieres una partición nueva."
+        )
+
     if app is None:
         app = load_table("application_train", reduce_memory=False, usecols=[id_col, target_col])
     else:
         faltan = {id_col, target_col} - set(app.columns)
-        assert not faltan, f"al frame inyectado le faltan columnas: {sorted(faltan)}"
+        if faltan:
+            raise ValueError(f"al frame inyectado le faltan columnas: {sorted(faltan)}")
         app = app[[id_col, target_col]].copy()
-    assert app[id_col].is_unique, "application_train trae SK_ID_CURR duplicados"
+    if not app[id_col].is_unique:
+        raise ValueError(f"{id_col} trae duplicados: la partición sería ambigua")
 
     ids_train, ids_valid = train_test_split(
         app[id_col],
@@ -61,11 +75,10 @@ def construir_split(
     )
 
     split = app.assign(split="train")
-    split.loc[split[id_col].isin(set(ids_valid)), "split"] = "valid"
+    split.loc[split[id_col].isin(ids_valid), "split"] = "valid"
     split = split[COLUMNAS].sort_values(id_col).reset_index(drop=True)
 
     if persistir:
-        ruta_destino = destino or _destino()
         ruta_destino.parent.mkdir(parents=True, exist_ok=True)
         split.to_parquet(ruta_destino, index=False)
         logger.info("split escrito en %s", ruta_destino)
@@ -84,11 +97,52 @@ def cargar_split(origen: Path | None = None) -> pd.DataFrame:
     return pd.read_parquet(ruta_origen)
 
 
+PARTES = ("train", "valid")
+
+
 def mascara(split: pd.DataFrame, parte: str) -> pd.Series:
     """Máscara booleana de una de las dos partes, alineada al frame de split."""
-    if parte not in {"train", "valid"}:
-        raise ValueError(f"parte desconocida: {parte!r}. válidas: 'train' y 'valid'")
+    if parte not in PARTES:
+        raise ValueError(f"parte desconocida: {parte!r}. válidas: {PARTES}")
+    if "split" not in split.columns:
+        raise ValueError(
+            f"el frame no tiene columna 'split'; columnas: {sorted(split.columns)[:10]}"
+        )
     return split["split"].eq(parte)
+
+
+def filtrar(df: pd.DataFrame, parte: str, split: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Se queda con las filas de una parte, buscando SK_ID_CURR en columna o en el índice.
+
+    Es el accesor que usan los consumidores del pipeline, para no tener que acordarse de
+    aplicar la máscara a mano cada vez y arriesgarse a ajustar algo sobre el conjunto entero.
+    """
+    # repetida y no delegada en mascara(): falla antes de pagar el cargar_split() de abajo
+    if parte not in PARTES:
+        raise ValueError(f"parte desconocida: {parte!r}. válidas: {PARTES}")
+    split = cargar_split() if split is None else split
+    id_col = cargar_config()["dataset"]["id_col"]
+    ids = set(split.loc[mascara(split, parte), id_col])
+
+    if id_col in df.columns:
+        seleccion = df[id_col].isin(ids).to_numpy()
+    elif df.index.name == id_col:
+        seleccion = df.index.isin(ids)
+    else:
+        raise ValueError(
+            f"no encuentro {id_col} ni en las columnas ni en el índice del frame a filtrar"
+        )
+    return df.loc[seleccion]
+
+
+def solo_train(df: pd.DataFrame, split: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Las filas de entrenamiento. Todo lo que estime un parámetro se ajusta sobre esto."""
+    return filtrar(df, "train", split)
+
+
+def solo_valid(df: pd.DataFrame, split: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Las filas de validación. Solo se transforman, nunca se ajusta nada sobre ellas."""
+    return filtrar(df, "valid", split)
 
 
 def resumen_split(split: pd.DataFrame) -> pd.DataFrame:
