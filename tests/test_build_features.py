@@ -25,7 +25,10 @@ from src.features.split import cargar_split, mascara
 FILAS_CRUDAS = 307_511
 FILAS_LIMPIAS = 307_492
 COLUMNAS_CRUDAS = 122
-COLUMNAS_LIMPIAS = 90
+# 92 y no 90: FLAG_CONT_MOBILE y DEF_60_CNT_SOCIAL_CIRCLE se descartaron comparando contra la
+# tasa de default sobre train completo, así que la capa 1 ya no las elimina. Sobreviven para
+# que la 2b las juzgue sobre solo_train, que es la evidencia que vale.
+COLUMNAS_LIMPIAS = 92
 CENTINELA_MARCADO = 55_374
 POSITIVOS = 24_825
 TASA_CRUDA = 8.0729
@@ -141,7 +144,7 @@ def test_ninguna_fila_eliminada_sobrevive_en_el_split(cruda):
 # reducción no cambia ni un grupo.
 COMPLETO, PARCIAL, TODO_NULO = 6.96, 7.03, 9.23
 N_COMPLETO, N_PARCIAL, N_TODO_NULO = 81_548, 77_787, 148_157
-COLUMNAS_CON_FEATURES = 99
+COLUMNAS_CON_FEATURES = 101  # las 92 limpias más las 9 features de capa 1
 
 
 def test_la_tripartita_del_bloque_edificio_reproduce_las_cifras_del_eda(base):
@@ -200,3 +203,32 @@ def test_la_capa1_no_toca_el_recuento_de_filas(limpia, base):
     """Las features añaden columnas y no quitan clientes."""
     assert len(base) == len(limpia) == FILAS_LIMPIAS
     assert base.shape[1] == limpia.shape[1] + 9
+
+
+# --- la ruta de inferencia, contra el dato real ----------------------------------------------
+
+FILAS_TEST = 48_744
+NULOS_ANNUITY_TEST = 24
+
+
+def test_application_test_no_pierde_ni_un_cliente():
+    """Con el borrado de filas dentro de la limpieza, estos 24 desaparecían en silencio.
+
+    En una submission eso es una entrega inválida, y en la API un solicitante sin cuota
+    declarada que se queda sin score en vez de recibir uno.
+    """
+    cruda = load_table("application_test", reduce_memory=False)
+    limpia_test = cargar_y_limpiar("application_test")
+
+    assert int(cruda["AMT_ANNUITY"].isna().sum()) == NULOS_ANNUITY_TEST
+    assert len(cruda) == FILAS_TEST
+    assert len(limpia_test) == FILAS_TEST, "la ruta de inferencia no puede perder clientes"
+    assert "TARGET" not in limpia_test.columns
+
+
+def test_las_provisionales_llegan_a_la_matriz(base):
+    """Sobreviven a la capa 1 justo para que la 2b pueda decidirlas sobre el split."""
+    from src.features.cleaning import COLUMNAS_PROVISIONALES
+
+    for col in COLUMNAS_PROVISIONALES:
+        assert col in base.columns

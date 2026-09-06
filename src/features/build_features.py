@@ -5,7 +5,9 @@ Orden de las capas, que no es libre y es lo que este módulo fija:
 1. **Capa 1 sobre la tabla principal.** `limpiar_application()` corre **antes del split**, sobre
    la tabla entera. Es determinista, no estima ningún parámetro, no mira al TARGET y no cruza
    clientes, así que ejecutarla fuera de la partición no filtra nada. Es la misma razón por la
-   que las agregaciones de las tres auxiliares también van fuera.
+   que las agregaciones de las tres auxiliares también van fuera. Los descartes de columna que
+   el EDA decidió contra la tasa de default **no** se aplican aquí: sobreviven declarados en
+   `COLUMNAS_PROVISIONALES` y los juzga la capa 2b sobre el split.
 2. **Capa 0, el split**, sobre el resultado ya limpio. Se hace en este orden y no al revés
    porque la partición tiene que cubrir exactamente la población de modelado: si se partiera
    la tabla cruda, el fichero de split declararía 19 clientes que después no existen en la
@@ -25,7 +27,11 @@ import pandas as pd
 
 from src.data.loader import load_table
 from src.features.application import construir_features_capa1
-from src.features.cleaning import filas_a_eliminar, limpiar_application
+from src.features.cleaning import (
+    filas_a_eliminar,
+    limpiar_application,
+    limpiar_application_entrenamiento,
+)
 from src.features.split import construir_split
 
 logger = logging.getLogger(__name__)
@@ -39,10 +45,17 @@ REDUCIR_MEMORIA = False
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
     """Carga la tabla principal y le aplica la limpieza determinista.
 
-    Vale igual para `application_test`, que no trae TARGET: la limpieza no lo necesita.
+    Vale igual para `application_test`, y ahí está la diferencia que importa: la tabla que
+    trae etiquetas es la de entrenamiento y es la única a la que se le pueden quitar filas.
+    Sobre test se limpia sin borrar a nadie, que si no se perderían los 24 clientes sin cuota
+    declarada.
     """
     app = load_table(nombre, reduce_memory=REDUCIR_MEMORIA)
-    limpio = limpiar_application(app)
+    limpio = (
+        limpiar_application_entrenamiento(app)
+        if "TARGET" in app.columns
+        else limpiar_application(app)
+    )
     logger.info(
         "%s: %s filas x %s columnas -> %s x %s",
         nombre,

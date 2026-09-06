@@ -10,15 +10,18 @@ import pandas as pd
 import pytest
 
 from src.features.cleaning import (
-    COLUMNAS_SUELTAS,
+    COLUMNAS_FIRMES,
+    COLUMNAS_PROVISIONALES,
     FILAS_POR_CATEGORIA,
     FILAS_POR_NULO,
     aplicar_centinela,
     columnas_a_eliminar,
     columnas_edificio_redundantes,
+    columnas_pendientes_de_decidir,
     filas_a_eliminar,
     informe_limpieza,
     limpiar_application,
+    limpiar_application_entrenamiento,
 )
 from src.features.params import valor
 
@@ -128,7 +131,7 @@ def test_el_recuento_de_columnas_cuadra(app):
 
 
 def test_la_limpieza_no_reordena_ni_duplica(app):
-    limpio = limpiar_application(app)
+    limpio = limpiar_application_entrenamiento(app)
     assert limpio["SK_ID_CURR"].is_unique
     assert limpio["SK_ID_CURR"].is_monotonic_increasing
     assert list(limpio.index) == list(range(len(limpio)))
@@ -153,11 +156,74 @@ def test_no_revienta_si_faltan_columnas(app):
     sin_target = app.drop(columns=["TARGET", "FLAG_MOBIL", "OBS_60_CNT_SOCIAL_CIRCLE"])
     limpio = limpiar_application(sin_target)
     assert "FLAG_DAYS_EMPLOYED_ANOMALY" in limpio.columns
-    assert len(limpio) == len(sin_target) - 6
+    assert len(limpio) == len(sin_target), "la limpieza de inferencia no puede perder clientes"
 
 
 def test_todo_lo_que_se_elimina_declara_su_motivo(app):
     for col, motivo in columnas_a_eliminar(app).items():
         assert motivo.strip(), f"{col} se elimina sin motivo declarado"
-    for motivo in {**FILAS_POR_CATEGORIA, **FILAS_POR_NULO, **COLUMNAS_SUELTAS}.values():
+    for motivo in {**FILAS_POR_CATEGORIA, **FILAS_POR_NULO, **COLUMNAS_FIRMES}.values():
         assert motivo.strip()
+
+
+# --- la ruta de inferencia no puede perder clientes ------------------------------------------
+
+
+def test_la_limpieza_base_no_toca_el_numero_de_filas(app):
+    """Es la que corre sobre application_test y sobre la petición de la API."""
+    limpio = limpiar_application(app)
+    assert len(limpio) == len(app)
+    assert set(limpio["SK_ID_CURR"]) == set(app["SK_ID_CURR"])
+
+
+def test_la_limpieza_base_conserva_el_indice_de_quien_llama(app):
+    """En serving la predicción se alinea de vuelta contra la petición por el índice."""
+    desplazado = app.set_index(pd.Index(range(500, 500 + len(app))))
+    limpio = limpiar_application(desplazado)
+    assert list(limpio.index) == list(desplazado.index)
+
+
+def test_la_limpieza_de_entrenamiento_si_quita_las_filas(app):
+    limpio = limpiar_application_entrenamiento(app)
+    assert len(limpio) == len(app) - 6
+
+
+def test_quitar_filas_sin_target_revienta_en_vez_de_perder_clientes(app):
+    """El caso real: application_test trae 24 nulos de AMT_ANNUITY y se irían en silencio."""
+    with pytest.raises(ValueError, match="ningún cliente puede desaparecer"):
+        limpiar_application_entrenamiento(app.drop(columns=["TARGET"]))
+
+
+# --- descartes provisionales: los decide la capa 2b, no esta ---------------------------------
+
+
+def test_las_provisionales_sobreviven_a_la_capa_1(app):
+    """Si se eliminaran aquí, la 2b no tendría la columna que tiene que juzgar."""
+    limpio = limpiar_application(app)
+    for col in COLUMNAS_PROVISIONALES:
+        assert col in limpio.columns, f"{col} se descartó contra el TARGET y no puede caer aquí"
+
+
+def test_ninguna_provisional_se_declara_tambien_como_firme():
+    assert not set(COLUMNAS_PROVISIONALES) & set(COLUMNAS_FIRMES)
+
+
+def test_cada_provisional_declara_que_hay_que_remedir(app):
+    pendientes = columnas_pendientes_de_decidir(app)
+    assert set(pendientes) == set(COLUMNAS_PROVISIONALES)
+    for col, descarte in pendientes.items():
+        assert "solo_train" in descarte.remedir, f"{col} no dice qué remedir sobre el split"
+
+
+def test_el_informe_declara_las_aplazadas_aparte_de_las_eliminadas(app):
+    inf = informe_limpieza(app)
+    aplazadas = set(inf.loc[inf.tipo == "columna aplazada", "objeto"])
+    eliminadas = set(inf.loc[inf.tipo == "columna", "objeto"])
+    assert aplazadas == set(COLUMNAS_PROVISIONALES)
+    assert not aplazadas & eliminadas
+
+
+def test_el_informe_no_revienta_si_faltan_columnas_de_fila(app):
+    """La limpieza tolera que falten; el informe tenía guardas solo en una de las dos listas."""
+    inf = informe_limpieza(app.drop(columns=["CODE_GENDER", "AMT_ANNUITY"]))
+    assert not inf.empty
