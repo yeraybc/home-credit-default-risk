@@ -18,6 +18,8 @@ from src.features.params import (
     con_contraste_pendiente,
     cortes_de,
     features_con_corte,
+    fijar_operativo,
+    operativos_pendientes,
     parametro,
     por_procedencia,
     reajustables,
@@ -91,7 +93,7 @@ def test_el_centinela_del_dataset_esta_declarado_una_sola_vez():
     Declararlo por tabla es el patrón que en bureau dio 52.500 en un sitio y 52.497 en otro
     para el mismo control.
     """
-    con_ese_valor = [n for n, p in PARAMS.items() if p.valor == 365243]
+    con_ese_valor = [n for n, p in PARAMS.items() if p.valor_referencia == 365243]
     assert con_ese_valor == ["centinela_365243"], con_ese_valor
 
 
@@ -270,3 +272,72 @@ def test_cortes_de_una_tabla_desconocida_revienta():
 
 def test_una_feature_sin_corte_devuelve_tupla_vacia():
     assert cortes_de("bureau", "BUREAU_ACTIVE_COUNT") == ()
+
+
+# --- valor operativo: la referencia del EDA no basta por sí sola para usar un reajustable ---
+# La capa 2a/2b que fija estos valores sobre solo_train() todavía no existe, así que estos
+# tests describen el contrato que tendrá que cumplir, no un flujo ya integrado.
+
+
+@pytest.fixture
+def restaurar_params():
+    """Snapshot de PARAMS para deshacer cualquier fijar_operativo() que haga el test.
+
+    Los Parametro son inmutables (frozen), así que una copia superficial del dict basta:
+    fijar_operativo() reemplaza la entrada entera, nunca muta un Parametro existente.
+    """
+    original = dict(PARAMS)
+    yield
+    PARAMS.clear()
+    PARAMS.update(original)
+
+
+def test_todo_reajustable_empieza_sin_operativo_fijado():
+    """Hoy no existe la capa 2a/2b que llama a fijar_operativo(), así que todos son pendientes."""
+    assert set(operativos_pendientes()) == set(reajustables())
+
+
+@pytest.mark.parametrize("nombre", sorted(reajustables()))
+def test_valor_revienta_para_cualquier_reajustable_sin_operativo(nombre):
+    """No solo los tres sin referencia: los que ya tienen cifra del EDA tampoco valen tal cual."""
+    with pytest.raises(ValueError, match="sin fijar"):
+        valor(nombre)
+
+
+def test_fijar_operativo_permite_usar_el_valor(restaurar_params):
+    fijar_operativo("app_winsor_amt_income_total", 1_500_000, n_train=245_993)
+    assert valor("app_winsor_amt_income_total") == 1_500_000
+    assert "app_winsor_amt_income_total" not in operativos_pendientes()
+    # la referencia del EDA queda intacta al lado, como rastro de auditoría
+    assert parametro("app_winsor_amt_income_total").valor_referencia == 1_417_500
+
+
+def test_fijar_operativo_exige_n_train_positivo(restaurar_params):
+    with pytest.raises(ValueError, match="positivo"):
+        fijar_operativo("app_winsor_cnt_children", 8, n_train=0)
+
+
+def test_fijar_operativo_sobre_un_dominio_revienta():
+    with pytest.raises(ValueError, match="no es reajustable"):
+        fijar_operativo("redundancia_pearson", 0.8, n_train=1000)
+
+
+def test_un_dominio_no_admite_valor_operativo_directo():
+    with pytest.raises(ValueError, match="no tiene valor operativo"):
+        Parametro(1, "dominio", "d", "f", valor_operativo=2, n_train_operativo=10)
+
+
+def test_valor_operativo_sin_n_train_asociado_revienta():
+    with pytest.raises(ValueError, match="n_train_operativo"):
+        Parametro(None, "medido", "d", "f", valor_operativo=2)
+
+
+def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train(
+    restaurar_params,
+):
+    """El número que ya vivía en PARAMS no basta solo, aunque sea el mismo que se acabe fijando."""
+    referencia = parametro("prev_plazo_largo_cuotas").valor_referencia
+    with pytest.raises(ValueError, match="sin fijar"):
+        valor("prev_plazo_largo_cuotas")
+    fijar_operativo("prev_plazo_largo_cuotas", referencia, n_train=245_993)
+    assert valor("prev_plazo_largo_cuotas") == referencia

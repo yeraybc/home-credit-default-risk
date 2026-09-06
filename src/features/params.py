@@ -25,7 +25,7 @@ Tres claves se migraron desde config.yaml al aplicar esa frontera, y una se elim
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # `dominio`   constante fija de plausibilidad de negocio o convención metodológica del
 #             proyecto. No se reestima: no sale de los datos.
@@ -44,24 +44,42 @@ REAJUSTABLES = ("estimado", "medido")
 class Parametro:
     """Un corte del pipeline, con su valor de referencia y su procedencia.
 
+    `valor_referencia` es la cifra que salió del EDA sobre el conjunto completo: queda como
+    documentación y nunca la usa el pipeline para transformar datos. Lo que de verdad se
+    consume es `valor_operativo`, que para un reajustable (`estimado`/`medido`) empieza vacío
+    y solo lo rellena `fijar_operativo()` con el resultado de recalcular sobre `solo_train()`.
+    Esto evita que la capa 2a/2b use por accidente la cifra medida sobre el conjunto entero.
+
     `contraste_pendiente` es para el caso raro de un corte de dominio que aun así hay que
     contrastar sobre el split: no se refija, pero el contraste queda declarado en vez de
     perderse al reclasificarlo.
     """
 
-    valor: float | None
+    valor_referencia: float | None
     procedencia: str
     descripcion: str
     fuente: str
     contraste_pendiente: str | None = None
+    valor_operativo: float | None = None
+    n_train_operativo: int | None = None
 
     def __post_init__(self) -> None:
         if self.procedencia not in PROCEDENCIAS:
             raise ValueError(f"procedencia fuera del vocabulario cerrado: {self.procedencia!r}")
-        if self.procedencia == "dominio" and self.valor is None:
+        if self.procedencia == "dominio" and self.valor_referencia is None:
             raise ValueError("un parámetro de dominio no puede estar sin valor")
         if self.contraste_pendiente is not None and not self.contraste_pendiente.strip():
             raise ValueError("contraste_pendiente declarado y vacío")
+        if self.procedencia == "dominio" and self.valor_operativo is not None:
+            raise ValueError(
+                "un parámetro de dominio no tiene valor operativo: usa valor_referencia"
+            )
+        if self.valor_operativo is not None and self.n_train_operativo is None:
+            raise ValueError(
+                "valor_operativo fijado sin n_train_operativo: no queda rastro de origen"
+            )
+        if self.n_train_operativo is not None and self.n_train_operativo <= 0:
+            raise ValueError("n_train_operativo tiene que ser positivo")
 
 
 PARAMS: dict[str, Parametro] = {
@@ -357,13 +375,38 @@ def parametro(nombre: str) -> Parametro:
 
 
 def valor(nombre: str):  # noqa: ANN201 - devuelve el tipo que declare el parámetro
-    """Valor del parámetro. Falla si aún no se ha fijado, en vez de devolver None."""
+    """Valor que consume el pipeline. Falla si aún no se ha fijado, en vez de devolver None.
+
+    Para un reajustable (`estimado`/`medido`) es el `valor_operativo`, que solo existe tras
+    pasar por `fijar_operativo()`: la referencia del EDA sobre el conjunto completo nunca se
+    devuelve aquí, para que no se cuele en una transformación sin haber pasado por el split.
+    """
     p = parametro(nombre)
-    if p.valor is None:
+    if p.procedencia in REAJUSTABLES:
+        if p.valor_operativo is None:
+            raise ValueError(
+                f"{nombre!r} está sin fijar (procedencia {p.procedencia!r}): {p.descripcion}. "
+                "Hay que recalcularlo sobre solo_train() y fijarlo con fijar_operativo()."
+            )
+        return p.valor_operativo
+    return p.valor_referencia
+
+
+def fijar_operativo(nombre: str, valor_nuevo: float, n_train: int) -> None:
+    """Único punto de escritura del valor operativo de un reajustable.
+
+    Exige `n_train`, el tamaño de la partición de entrenamiento usada para calcularlo: no
+    basta con poner un número, tiene que declarar cuántas filas lo sostienen. No relee el
+    split por su cuenta, quien llama ya lo filtró con `solo_train()` y aquí solo se registra
+    el resultado.
+    """
+    p = parametro(nombre)
+    if p.procedencia not in REAJUSTABLES:
         raise ValueError(
-            f"{nombre!r} está sin fijar (procedencia {p.procedencia!r}): {p.descripcion}"
+            f"{nombre!r} no es reajustable (procedencia {p.procedencia!r}); "
+            "no lleva valor operativo"
         )
-    return p.valor
+    PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
 
 
 def por_procedencia(procedencia: str) -> dict[str, Parametro]:
@@ -379,8 +422,21 @@ def reajustables() -> dict[str, Parametro]:
 
 
 def sin_fijar() -> dict[str, Parametro]:
-    """Los que todavía no tienen valor y bloquean a quien los use."""
-    return {k: v for k, v in PARAMS.items() if v.valor is None}
+    """Los que el EDA nunca llegó a medir: sin referencia y, por tanto, sin operativo posible."""
+    return {k: v for k, v in PARAMS.items() if v.valor_referencia is None}
+
+
+def operativos_pendientes() -> dict[str, Parametro]:
+    """Reajustables con referencia del EDA que todavía no se han refijado sobre solo_train().
+
+    Hoy son todos los reajustables, porque la capa 2a/2b que llama a fijar_operativo() no
+    existe todavía. Sirve de lista de tareas cuando se escriba esa capa.
+    """
+    return {
+        k: v
+        for k, v in PARAMS.items()
+        if v.procedencia in REAJUSTABLES and v.valor_operativo is None
+    }
 
 
 def con_contraste_pendiente() -> dict[str, Parametro]:

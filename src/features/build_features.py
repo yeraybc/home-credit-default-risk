@@ -24,6 +24,7 @@ import logging
 import pandas as pd
 
 from src.data.loader import load_table
+from src.features.application import construir_features_capa1
 from src.features.cleaning import filas_a_eliminar, limpiar_application
 from src.features.split import construir_split
 
@@ -35,8 +36,8 @@ logger = logging.getLogger(__name__)
 REDUCIR_MEMORIA = False
 
 
-def preparar_application(nombre: str = "application_train") -> pd.DataFrame:
-    """Carga la tabla principal y le aplica la limpieza determinista de capa 1.
+def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
+    """Carga la tabla principal y le aplica la limpieza determinista.
 
     Vale igual para `application_test`, que no trae TARGET: la limpieza no lo necesita.
     """
@@ -53,15 +54,25 @@ def preparar_application(nombre: str = "application_train") -> pd.DataFrame:
     return limpio
 
 
-def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """La tabla principal limpia y su partición, en ese orden.
+def preparar_application(nombre: str = "application_train") -> pd.DataFrame:
+    """La capa 1 entera sobre la tabla principal: limpieza más features sin parámetro.
 
-    Devuelve `(limpio, split)`. El split se persiste; si ya existe hay que pedir
+    Las dos mitades se dejan invocables por separado porque cada una tiene su propia puerta
+    de salida: la limpieza se mide en filas y columnas, y las features en la tripartita del
+    bloque edificio.
+    """
+    return construir_features_capa1(cargar_y_limpiar(nombre))
+
+
+def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """La tabla principal con la capa 1 aplicada y su partición, en ese orden.
+
+    Devuelve `(base, split)`. El split se persiste; si ya existe hay que pedir
     `sobrescribir=True`, porque rehacerlo invalida todo lo que se haya ajustado sobre él.
     """
-    limpio = preparar_application()
-    split = construir_split(app=limpio, sobrescribir=sobrescribir)
-    return limpio, split
+    base = preparar_application()
+    split = construir_split(app=base, sobrescribir=sobrescribir)
+    return base, split
 
 
 def informe_base(app_cruda: pd.DataFrame, limpio: pd.DataFrame) -> pd.DataFrame:

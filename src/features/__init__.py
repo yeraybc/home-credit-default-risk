@@ -1,4 +1,4 @@
-"""src.features — ingeniería de features: WoE, aggregations, ratios, listado de categorías,
+"""src.features — feature engineering: WoE, aggregations, ratios, listado de categorías,
 recomendaciones de codificación, evaluadores de señal."""
 
 from src.features.eval import EvaluadorSenal
