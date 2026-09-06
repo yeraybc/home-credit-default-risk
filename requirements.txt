@@ -1,6 +1,6 @@
 # Dependencias de ejecucion, fijadas a las versiones con las que corren los notebooks.
 # Solo se declara lo que se importa de verdad en src/ y notebooks/.
-# scikit-learn, statsmodels, xgboost y lightgbm entraran con la fase de modelado.
+# statsmodels, xgboost y lightgbm entraran con la fase de modelado.
 
 pandas==2.3.3
 numpy==2.0.2
@@ -8,6 +8,12 @@ scipy==1.13.1
 matplotlib==3.9.4
 seaborn==0.13.2
 PyYAML==6.0.3
+
+# feature engineering (fase 3). 1.6.1 es la ultima con wheels para cp39, y cumple los dos
+# minimos que necesita el pipeline: set_output desde 1.2 y TargetEncoder desde 1.3.
+scikit-learn==1.6.1
+# no se importa directamente: es el motor con el que pandas escribe y lee el parquet del split
+pyarrow==21.0.0
 
 # entorno de notebooks
 ipython==8.18.1
