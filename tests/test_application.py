@@ -19,6 +19,7 @@ from src.features.application import (
     construir_features_capa1,
     informe_capa1,
 )
+from src.features.cleaning import limpiar_application
 from src.features.params import valor
 
 
@@ -164,28 +165,146 @@ def test_el_informe_declara_el_denominador_de_cada_bandera(app):
 
 
 # --- disciplina de capas ---------------------------------------------------------------------
+# Los tres cortes que la capa 1 tiene derecho a pedir, todos de dominio. Se listan para que
+# quitar uno también se note, no solo añadir uno de más.
+PARAMETROS_DE_CAPA1 = {"dias_por_anio", "centinela_365243", "app_amt_req_bureau_day_max"}
+MODULOS_DE_CAPA1 = ("cleaning.py", "application.py", "build_features.py")
+MODULOS_QUE_PIDEN = {"cleaning.py", "application.py"}  # los dos que la sonda parchea
 
 
-def test_la_capa1_solo_consume_parametros_de_dominio():
+@pytest.fixture
+def consumidos_por_capa1(app, monkeypatch):
+    """Los parámetros que la capa 1 pide al correr, no los que aparecen escritos en el fuente.
+
+    Esto se comprobaba escaneando el fuente con un regex y se le escapaban dos formas de
+    llamada perfectamente normales: las comillas simples y el nombre en una variable
+    (`n = "..."; valor(n)`), que es justo como se escribirá un bucle sobre varios cortes en la
+    capa 2a. Sondear la ejecución no depende de cómo esté escrita la llamada.
+
+    Para un reajustable se devuelve la referencia en vez de llamar a `valor()`, que hoy
+    reventaría por su cuenta. No es un atajo: es lo que hace que el test siga sirviendo cuando
+    el punto 1.3 empiece a llamar a `fijar_operativo()` y `valor()` deje de reventar. Ahí el
+    respaldo en ejecución desaparece y esta comprobación se queda sola.
+    """
+    from src.features import application as mod_app
+    from src.features import cleaning as mod_clean
+    from src.features.params import REAJUSTABLES, parametro
+    from src.features.params import valor as valor_real
+
+    pedidos: list[str] = []
+
+    def espia(nombre):
+        pedidos.append(nombre)
+        p = parametro(nombre)
+        return p.valor_referencia if p.procedencia in REAJUSTABLES else valor_real(nombre)
+
+    monkeypatch.setattr(mod_app, "valor", espia)
+    monkeypatch.setattr(mod_clean, "valor", espia)
+    construir_features_capa1(limpiar_application(app))
+    return pedidos
+
+
+def test_la_capa1_solo_consume_parametros_de_dominio(consumidos_por_capa1):
     """Un `estimado` o un `medido` dentro de la capa 1 sería un parámetro sin ajustar.
 
     La capa 1 corre sobre la tabla entera, antes del split, así que si consumiera un corte
-    reajustable estaría usando la cifra del EDA medida sobre el conjunto completo. Hoy
-    `valor()` revienta con esos, pero eso protege por accidente: esto lo comprueba a propósito.
+    reajustable estaría usando la cifra del EDA medida sobre el conjunto completo.
     """
-    import re
-
-    from src.config import RAIZ
     from src.features.params import parametro
 
-    usados = set()
-    for modulo in ("cleaning.py", "application.py"):
-        fuente = (RAIZ / "src" / "features" / modulo).read_text()
-        usados |= set(re.findall(r'valor\("([a-z0-9_]+)"\)', fuente))
-
-    assert usados, "no se encontró ninguna llamada a valor(), revisar el patrón"
-    for nombre in sorted(usados):
+    assert consumidos_por_capa1, "la capa 1 no pidió ni un parámetro, revisar la sonda"
+    for nombre in sorted(set(consumidos_por_capa1)):
         assert parametro(nombre).procedencia == "dominio", (
             f"la capa 1 consume {nombre!r}, que es "
             f"{parametro(nombre).procedencia!r} y no está ajustado sobre el split"
         )
+
+
+def test_la_capa1_pide_exactamente_los_tres_cortes_declarados(consumidos_por_capa1):
+    """Comprobar solo la procedencia deja pasar que una llamada desaparezca sin que nadie mire."""
+    assert set(consumidos_por_capa1) == PARAMETROS_DE_CAPA1
+
+
+def test_ningun_otro_modulo_de_capa1_pide_parametros():
+    """La sonda parchea dos módulos; si un tercero importara `valor()`, no lo vería pasar."""
+    from src.config import RAIZ
+
+    con_valor = {
+        m for m in MODULOS_DE_CAPA1 if "import valor" in (RAIZ / "src" / "features" / m).read_text()
+    }
+    assert not con_valor - MODULOS_QUE_PIDEN, f"la sonda no cubre {sorted(con_valor)}"
+    assert con_valor == MODULOS_QUE_PIDEN
+
+
+# --- contrato de esquema ---------------------------------------------------------------------
+# Lo que impide que la misma feature signifique una cosa en entrenamiento y otra en serving.
+# Las piezas del módulo son permisivas a propósito; el contrato lo exige preparar_application().
+
+
+@pytest.fixture
+def completo():
+    """Un frame con todas las columnas de origen declaradas, que es lo que exige el contrato."""
+    from src.features.application import ORIGEN_POR_FEATURE
+
+    todas = sorted({c for cols in ORIGEN_POR_FEATURE.values() for c in cols})
+    return pd.DataFrame({c: [1.0, 2.0] for c in todas})
+
+
+def test_el_contrato_pasa_con_todas_las_columnas_declaradas(completo):
+    from src.features.application import verificar_contrato_capa1
+
+    verificar_contrato_capa1(completo)  # no levanta
+
+
+def test_el_contrato_falla_si_falta_una_columna_de_origen(completo):
+    """Sin dos del bloque, BUILDING_INFO_COUNT baja de escala sin cambiar de nombre."""
+    from src.features.application import verificar_contrato_capa1
+
+    with pytest.raises(ValueError, match="faltan columnas de origen"):
+        verificar_contrato_capa1(completo.drop(columns=["APARTMENTS_AVG", "BASEMENTAREA_AVG"]))
+
+
+def test_el_contrato_falla_si_sobra_una_columna_del_bloque(completo):
+    """El caso simétrico: si la limpieza dejara de quitar MODE y MEDI, el conteo cambiaría."""
+    from src.features.application import verificar_contrato_capa1
+
+    con_extra = completo.assign(APARTMENTS_MODE=[0.1, 0.2], APARTMENTS_MEDI=[0.1, 0.2])
+    with pytest.raises(ValueError, match="no coincide con el contrato"):
+        verificar_contrato_capa1(con_extra)
+
+
+def test_el_contrato_falla_si_sobra_una_consulta_al_buro(completo):
+    from src.features.application import verificar_contrato_capa1
+
+    with pytest.raises(ValueError, match="consultas al buró"):
+        verificar_contrato_capa1(completo.assign(AMT_REQ_CREDIT_BUREAU_DECADE=[1.0, 2.0]))
+
+
+def test_el_contrato_cubre_exactamente_las_features_que_se_construyen(completo):
+    """Una feature nueva sin origen declarado se quedaría fuera del contrato sin que nadie mire."""
+    from src.features.application import FEATURES_CAPA1, construir_features_capa1
+
+    construidas = [c for c in construir_features_capa1(completo).columns if c not in completo]
+    assert set(construidas) == set(FEATURES_CAPA1)
+
+
+def test_ninguna_feature_de_capa1_depende_de_una_columna_provisional():
+    """Si dependiera, la feature saldría de un dato que la capa 2b puede borrar.
+
+    Hoy no pasa, pero por casualidad y no por diseño: nada lo impedía hasta este test.
+    """
+    from src.features.application import ORIGEN_POR_FEATURE
+    from src.features.cleaning import COLUMNAS_PROVISIONALES
+
+    for feature, origen in ORIGEN_POR_FEATURE.items():
+        chocan = set(origen) & set(COLUMNAS_PROVISIONALES)
+        assert not chocan, f"{feature} sale de {sorted(chocan)}, que la 2b puede eliminar"
+
+
+def test_los_dos_juegos_de_sufijos_del_edificio_son_conceptos_distintos():
+    """Compartían el nombre `SUFIJOS_EDIFICIO` con contenidos distintos en cada módulo."""
+    from src.features.application import SUFIJOS_BLOQUE_EDIFICIO
+    from src.features.cleaning import SUFIJOS_REDUNDANTES_EDIFICIO
+
+    assert set(SUFIJOS_REDUNDANTES_EDIFICIO) < set(SUFIJOS_BLOQUE_EDIFICIO)
+    assert "_AVG" not in SUFIJOS_REDUNDANTES_EDIFICIO, "la versión que se conserva no se elimina"

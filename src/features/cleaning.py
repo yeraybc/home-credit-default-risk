@@ -30,7 +30,7 @@ import pandas as pd
 
 from src.features.params import valor
 
-# --- filas -----------------------------------------------------------------------------------
+# - filas -
 # Las cinco son residuales y suman 19 filas, con 2 de solape. Las tres de nulos son el
 # resultado matemático que el EDA marcó como MCAR: con 0% de default, su delta es exactamente
 # la media global invertida, así que no hay nada que imputar ni señal que preservar.
@@ -47,7 +47,7 @@ FILAS_POR_NULO = {
 # contar exactamente lo mismo
 VALOR_CATEGORIA_FUERA = {"CODE_GENDER": "XNA", "NAME_FAMILY_STATUS": "Unknown"}
 
-# --- columnas --------------------------------------------------------------------------------
+# - columnas -
 # Firmes: el motivo es estructural y no depende del TARGET, así que aguanta igual sobre train,
 # sobre validación y sobre lo que llegue a la API. Se ejecutan aquí.
 COLUMNAS_FIRMES = {
@@ -112,7 +112,10 @@ COLUMNAS_PROVISIONALES = {
 # escribirse a mano, porque hay tres columnas que terminan en _MODE y no pertenecen al grupo:
 # las cuatro categóricas del bloque, que no tienen AVG ni MEDI, y TOTALAREA_MODE, que es el
 # concepto 15 y no tiene pareja.
-SUFIJOS_EDIFICIO = ("_MODE", "_MEDI")
+# Solo los dos que se eliminan. `application.SUFIJOS_BLOQUE_EDIFICIO` son los tres que
+# identifican el bloque entero: este es subconjunto de aquel, y son dos conceptos distintos que
+# antes compartían el nombre `SUFIJOS_EDIFICIO` en los dos módulos.
+SUFIJOS_REDUNDANTES_EDIFICIO = ("_MODE", "_MEDI")
 
 
 def columnas_edificio_redundantes(app: pd.DataFrame) -> list[str]:
@@ -121,7 +124,7 @@ def columnas_edificio_redundantes(app: pd.DataFrame) -> list[str]:
     return sorted(
         c
         for c in app.columns
-        for suf in SUFIJOS_EDIFICIO
+        for suf in SUFIJOS_REDUNDANTES_EDIFICIO
         if c.endswith(suf) and c[: -len(suf)] in con_avg
     )
 
@@ -195,7 +198,7 @@ def limpiar_application(app: pd.DataFrame) -> pd.DataFrame:
     desaparecer. Conserva el índice de quien llama, para que la predicción se pueda alinear
     de vuelta con la petición.
     """
-    limpio = app.drop(columns=list(columnas_a_eliminar(app))).copy()
+    limpio = app.drop(columns=list(columnas_a_eliminar(app)))
     limpio = aplicar_centinela(limpio)
     limpio = aplicar_caps_de_dominio(limpio)
     return limpio

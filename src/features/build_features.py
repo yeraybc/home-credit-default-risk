@@ -26,7 +26,7 @@ import logging
 import pandas as pd
 
 from src.data.loader import load_table
-from src.features.application import construir_features_capa1
+from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
     limpiar_application,
@@ -73,8 +73,14 @@ def preparar_application(nombre: str = "application_train") -> pd.DataFrame:
     Las dos mitades se dejan invocables por separado porque cada una tiene su propia puerta
     de salida: la limpieza se mide en filas y columnas, y las features en la tripartita del
     bloque edificio.
+
+    Aquí es donde se exige el contrato de esquema, y no dentro de las features: sus piezas son
+    permisivas a propósito, porque a la API puede llegar un frame parcial, pero la matriz que
+    ve el modelo tiene que salir siempre de las mismas columnas de origen.
     """
-    return construir_features_capa1(cargar_y_limpiar(nombre))
+    limpio = cargar_y_limpiar(nombre)
+    verificar_contrato_capa1(limpio)
+    return construir_features_capa1(limpio)
 
 
 def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -88,13 +94,34 @@ def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFra
     return base, split
 
 
-def informe_base(app_cruda: pd.DataFrame, limpio: pd.DataFrame) -> pd.DataFrame:
-    """Puerta de salida de la capa 1: qué entra, qué sale y cuánto se mueve la tasa."""
+def informe_base(
+    app_cruda: pd.DataFrame, limpio: pd.DataFrame, con_features: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Puerta de salida de la capa 1: qué entra, qué sale y cuánto se mueve la tasa.
+
+    Con `con_features` añade el recuento de columnas de la segunda mitad, que si no hay que
+    contar a mano y acaba citado de memoria: las cifras del cierre de este punto se escribieron
+    una vez desde un commit anterior, cuando dos descartes pasaron a provisionales y la limpieza
+    dejó de llevárselos por delante.
+    """
     fuera = filas_a_eliminar(app_cruda)
+    columnas = {"medida": "columnas", "cruda": app_cruda.shape[1], "limpia": limpio.shape[1]}
+    filas_extra = []
+    if con_features is not None:
+        columnas["con features"] = con_features.shape[1]
+        # sin cruda ni limpia: en esas dos columnas la medida no existe, y un 0 se leería
+        # como que se midió y salió cero
+        filas_extra.append(
+            {
+                "medida": "features de capa 1",
+                "con features": con_features.shape[1] - limpio.shape[1],
+            }
+        )
     return pd.DataFrame(
         [
             {"medida": "filas", "cruda": len(app_cruda), "limpia": len(limpio)},
-            {"medida": "columnas", "cruda": app_cruda.shape[1], "limpia": limpio.shape[1]},
+            columnas,
+            *filas_extra,
             {
                 "medida": "filas eliminadas (netas)",
                 "cruda": int(fuera.sum()),

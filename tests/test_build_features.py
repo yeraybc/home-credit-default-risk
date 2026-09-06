@@ -139,15 +139,31 @@ def test_ninguna_fila_eliminada_sobrevive_en_el_split(cruda):
 
 
 # --- puerta de salida del punto 1.2, las features de capa 1 ----------------------------------
-# La tripartita del bloque edificio es la cifra que la fija. El EDA la midió sobre 43 columnas
-# numéricas y tras la limpieza solo sobreviven 15, así que lo que se comprueba aquí es que la
-# reducción no cambia ni un grupo.
+# La tripartita del bloque edificio es la cifra que la fija. El notebook la computó sobre 15
+# columnas, los 14 _AVG más TOTALAREA_MODE, aunque su prosa describa el bloque como 46; el
+# detalle de los tres recuentos está en el comentario de cabecera de application.py. Aquí
+# sobreviven esas mismas 15 tras la limpieza y la clasificación no cambia ni un grupo.
+#
+# Las tasas sí son las del EDA. Los n **no**: el notebook corrió sobre las 307.511 crudas y da
+# 81.552, 77.794 y 148.165. Los de aquí son los de la población de modelado, esos mismos menos
+# las 19 filas que la limpieza quita (4, 7 y 8 respectivamente). No es una diferencia a
+# reconciliar, es que la población cambió.
 COMPLETO, PARCIAL, TODO_NULO = 6.96, 7.03, 9.23
 N_COMPLETO, N_PARCIAL, N_TODO_NULO = 81_548, 77_787, 148_157
+N_CRUDOS_DEL_EDA = (81_552, 77_794, 148_165)
 COLUMNAS_CON_FEATURES = 101  # las 92 limpias más las 9 features de capa 1
+FEATURES_DE_CAPA1 = 9
 
 
-def test_la_tripartita_del_bloque_edificio_reproduce_las_cifras_del_eda(base):
+def test_los_n_de_la_puerta_son_los_del_eda_menos_las_filas_limpiadas():
+    """Que la diferencia sea exactamente las 19, y no un desajuste que nadie ha mirado."""
+    nuestros = (N_COMPLETO, N_PARCIAL, N_TODO_NULO)
+    assert [c - n for c, n in zip(N_CRUDOS_DEL_EDA, nuestros)] == [4, 7, 8]
+    assert sum(N_CRUDOS_DEL_EDA) - sum(nuestros) == FILAS_NETAS
+    assert sum(nuestros) == FILAS_LIMPIAS
+
+
+def test_la_tripartita_del_bloque_edificio_reproduce_las_tasas_del_eda(base):
     n_cols = int(base["BUILDING_INFO_COUNT"].max())
     grupo = np.select(
         [base["BUILDING_INFO_COUNT"].eq(n_cols), base["BUILDING_INFO_COUNT"].eq(0)],
@@ -202,7 +218,16 @@ def test_los_ratios_de_capa1_no_inventan_datos(base):
 def test_la_capa1_no_toca_el_recuento_de_filas(limpia, base):
     """Las features añaden columnas y no quitan clientes."""
     assert len(base) == len(limpia) == FILAS_LIMPIAS
-    assert base.shape[1] == limpia.shape[1] + 9
+    assert base.shape[1] == limpia.shape[1] + FEATURES_DE_CAPA1
+
+
+def test_el_informe_declara_el_recorrido_entero_de_columnas(cruda, limpia, base):
+    """122, 92 y 101 salen del informe, para que el cierre no tenga que contarlas a mano."""
+    inf = informe_base(cruda, limpia, base).set_index("medida")
+    assert inf.loc["columnas", "cruda"] == COLUMNAS_CRUDAS
+    assert inf.loc["columnas", "limpia"] == COLUMNAS_LIMPIAS
+    assert inf.loc["columnas", "con features"] == COLUMNAS_CON_FEATURES
+    assert inf.loc["features de capa 1", "con features"] == FEATURES_DE_CAPA1
 
 
 # --- la ruta de inferencia, contra el dato real ----------------------------------------------
