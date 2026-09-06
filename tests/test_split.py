@@ -20,10 +20,13 @@ from src.features.split import (
     solo_valid,
 )
 
-# cifras del EDA que la partición tiene que reproducir
-CLIENTES = 307_511
+# cifras que la partición tiene que reproducir. Son las de la población de modelado, o sea
+# después de la limpieza determinista de capa 1: la partición se hace sobre la tabla ya limpia
+# para que cubra exactamente los clientes que llegan a la matriz. Las 19 filas que la limpieza
+# quita son todas TARGET a 0, así que los positivos del EDA no se mueven y la tasa sube un poco.
+CLIENTES = 307_492
 POSITIVOS = 24_825
-TASA = 8.0729
+TASA = 8.0734
 
 # la ruta sale del resolutor único del proyecto, no de un parents[N] propio
 RUTA_SPLIT = ruta("processed_data") / NOMBRE_FICHERO
@@ -38,7 +41,12 @@ def split():
 
 
 @sin_split
-def test_el_split_reproduce_las_cifras_del_eda(split):
+def test_el_split_reproduce_las_cifras_de_la_poblacion_de_modelado(split):
+    """Ojo: no son las del EDA, que describen la tabla cruda (307.511 filas y 8,0729%).
+
+    La partición se hace sobre la tabla ya limpia, así que sus cifras son las de después de
+    la capa 1. Las dos son correctas y describen poblaciones distintas.
+    """
     assert len(split) == CLIENTES
     assert int(split["TARGET"].sum()) == POSITIVOS
     assert round(split["TARGET"].mean() * 100, 4) == TASA
