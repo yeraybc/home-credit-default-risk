@@ -78,7 +78,7 @@ def test_la_bandera_del_edificio_es_binaria_y_separa_el_todo_nulo(app):
 # --- los otros dos bloques -------------------------------------------------------------------
 
 
-def test_la_bandera_del_buro_exige_las_seis_columnas(app):
+def test_la_bandera_del_buro_sale_de_las_columnas_del_prefijo(app):
     assert columnas_buro(app) == [
         "AMT_REQ_CREDIT_BUREAU_DAY",
         "AMT_REQ_CREDIT_BUREAU_YEAR",
@@ -87,9 +87,32 @@ def test_la_bandera_del_buro_exige_las_seis_columnas(app):
     assert list(con["HAS_BUREAU_INFO"]) == [1, 0, 1, 1, 1, 1]
 
 
-def test_la_bandera_social_exige_las_dos_columnas(app):
+def test_la_bandera_social_marca_el_bloque_ausente(app):
     con = anadir_banderas_ausencia(app)
     assert list(con["HAS_SOCIAL_INFO"]) == [1, 1, 0, 1, 1, 1]
+
+
+def test_las_dos_banderas_de_bloque_exigen_el_bloque_entero_y_no_una_columna():
+    """Con `any` en lugar de `all` las dos darían exactamente lo mismo, y no está cubierto.
+
+    Sobre `application_train` el nulo es idéntico en las seis consultas al buró y en las dos
+    del círculo social, así que los fixtures de arriba, que copian esa alineación, no
+    distinguen una versión de la otra: las dos cuentan 41.516 y 1.021. Donde sí se separan es
+    en lo que llegue a la API, que puede traer media consulta al buró, y ahí `any` marcaría
+    como informado a quien no lo está. Hace falta un frame que rompa la alineación a propósito.
+    """
+    parcial = pd.DataFrame(
+        {
+            "AMT_REQ_CREDIT_BUREAU_DAY": [1.0, 1.0],
+            "AMT_REQ_CREDIT_BUREAU_YEAR": [2.0, np.nan],
+            "OBS_30_CNT_SOCIAL_CIRCLE": [3.0, 3.0],
+            "DEF_30_CNT_SOCIAL_CIRCLE": [0.0, np.nan],
+        }
+    )
+    con = anadir_banderas_ausencia(parcial)
+
+    assert list(con["HAS_BUREAU_INFO"]) == [1, 0]
+    assert list(con["HAS_SOCIAL_INFO"]) == [1, 0]
 
 
 def test_las_banderas_de_los_scores_marcan_el_nulo(app):
