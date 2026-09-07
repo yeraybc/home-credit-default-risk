@@ -183,6 +183,13 @@ PARAMS: dict[str, Parametro] = {
     "app_winsor_factor": Parametro(
         3.0, "dominio", "múltiplo del p99 al que se winsoriza", "eda-application-train 4.6"
     ),
+    "app_winsor_percentil": Parametro(
+        0.99,
+        "dominio",
+        "percentil sobre el que se aplica el múltiplo; va aquí y no como literal en el "
+        "transformer por lo mismo que el factor, que los dos definen el mismo corte",
+        "eda-application-train 4.6",
+    ),
     "app_winsor_amt_income_total": Parametro(
         1_417_500,
         "estimado",
@@ -191,6 +198,17 @@ PARAMS: dict[str, Parametro] = {
     ),
     "app_winsor_def_30_cnt_social_circle": Parametro(
         6, "estimado", "3xp99 de impagos en el círculo social", "eda-application-train 4.6"
+    ),
+    # el EDA lo declara junto al de 30 días ("DEF_30/60 (6)") y le da el mismo valor. Está aquí
+    # y no fuera porque la columna sobrevive a la limpieza: su descarte se decidió contra la
+    # tasa de default, así que es provisional y la juzga la capa 2b. Sin este corte, la 2b la
+    # juzgaría con la cola sin capar mientras su gemela DEF_30 sí la lleva capada, que es el
+    # mismo control con dos tratamientos.
+    "app_winsor_def_60_cnt_social_circle": Parametro(
+        6,
+        "estimado",
+        "3xp99 de impagos a 60 días en el círculo social, la cola de mayor señal de la tabla",
+        "eda-application-train 4.6",
     ),
     "app_winsor_obs_30_cnt_social_circle": Parametro(
         30, "estimado", "3xp99 de observados en el círculo social", "eda-application-train 4.6"

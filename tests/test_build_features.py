@@ -277,3 +277,49 @@ def test_las_provisionales_llegan_a_la_matriz(base):
 
     for col in COLUMNAS_PROVISIONALES:
         assert col in base.columns
+
+
+# --- puerta de salida del punto 1.3, los 3xp99 reestimados sobre el split --------------------
+# Lo que el bloque pide es la comparación entre lo reestimado y la referencia del EDA, "para que
+# la desviación quede medida y no supuesta". Sale cero en las diez, y por eso este test **no**
+# es la guarda contra ajustar fuera del split: con desviación cero no distingue un ajuste sobre
+# train de uno sobre la tabla entera. Esa guarda vive en tests/test_transformers.py, donde el
+# fixture da percentiles distintos de la referencia a propósito.
+N_TRAIN = 245_993
+LIMITES_SOBRE_TRAIN = {
+    "AMT_INCOME_TOTAL": (1_417_500, N_TRAIN),
+    "DEF_30_CNT_SOCIAL_CIRCLE": (6, 245_162),
+    "DEF_60_CNT_SOCIAL_CIRCLE": (6, 245_162),
+    "OBS_30_CNT_SOCIAL_CIRCLE": (30, 245_162),
+    "AMT_REQ_CREDIT_BUREAU_QRT": (6, 212_866),
+    "AMT_REQ_CREDIT_BUREAU_MON": (12, 212_866),
+    "AMT_REQ_CREDIT_BUREAU_WEEK": (3, 212_866),
+    "CNT_CHILDREN": (9, N_TRAIN),
+    "CNT_FAM_MEMBERS": (15, N_TRAIN),
+    "OWN_CAR_AGE": (64, 83_745),
+}
+
+
+@pytest.fixture(scope="module")
+def winsor(base):
+    from src.features.split import solo_train
+    from src.features.transformers import Winsorizador
+
+    entrenamiento = solo_train(base)
+    assert len(entrenamiento) == N_TRAIN
+    return Winsorizador().fit(entrenamiento)
+
+
+def test_los_3xp99_reestimados_sobre_train_reproducen_la_referencia_del_eda(winsor):
+    from src.features.transformers import informe_winsorizacion
+
+    assert winsor.limites_ == {c: float(v) for c, (v, _) in LIMITES_SOBRE_TRAIN.items()}
+    assert winsor.n_ajuste_ == {c: n for c, (_, n) in LIMITES_SOBRE_TRAIN.items()}
+    assert (informe_winsorizacion(winsor)["% desviación"] == 0).all()
+
+
+def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor):
+    """OBS_60 es descarte firme y DEF_60 provisional: solo una de las dos se capa."""
+    assert "OBS_60_CNT_SOCIAL_CIRCLE" not in base.columns
+    assert "OBS_60_CNT_SOCIAL_CIRCLE" not in winsor.limites_
+    assert "DEF_60_CNT_SOCIAL_CIRCLE" in winsor.limites_
