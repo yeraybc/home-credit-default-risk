@@ -409,3 +409,87 @@ def test_la_capa1_entrega_exactamente_las_features_del_punto():
     from src.features.application import FEATURES_CAPA1
 
     assert set(FEATURES_CAPA1) == FEATURES_QUE_ENTREGA_EL_PUNTO
+
+
+# --- la capa 1 no cruza filas ------------------------------------------------------------------
+# Es la premisa que permite correr esta capa **antes** del split, y es lo primero que declara el
+# docstring de build_features. Si una sola columna dependiera de las demás filas (una media, una
+# mediana, un percentil, un rango), calcularla sobre la tabla entera metería en cada fila
+# información de las otras, incluidas las de validación, y sería fuga con otro nombre.
+#
+# La comprobación es de código y no de datos: si hubiera una operación que cruza filas, la caza
+# igual un frame sintético que 307.492 reales, siempre que tenga varias filas y valores
+# variados. Por eso vive aquí y no en el fichero de integración, que se salta entero en CI.
+
+
+@pytest.fixture
+def con_bordes():
+    """Seis clientes elegidos por sus casos límite, no al azar.
+
+    Cada uno ejercita una rama distinta de la capa 1: el centinela, el cap de dominio, el
+    denominador a cero y el nulo del LTV, y los dos extremos de la completitud del bloque.
+    """
+    return pd.DataFrame(
+        {
+            "SK_ID_CURR": range(1, 7),
+            "TARGET": [0, 1, 0, 1, 0, 0],
+            # bloque edificio con sus tres versiones, para que la limpieza tenga qué eliminar
+            "APARTMENTS_AVG": [0.1, np.nan, 0.3, np.nan, np.nan, 0.5],
+            "APARTMENTS_MODE": [0.1, np.nan, 0.3, np.nan, np.nan, 0.5],
+            "APARTMENTS_MEDI": [0.1, np.nan, 0.3, np.nan, np.nan, 0.5],
+            "TOTALAREA_MODE": [0.2, np.nan, np.nan, np.nan, np.nan, 0.6],
+            "HOUSETYPE_MODE": ["block", np.nan, "block", np.nan, np.nan, "block"],
+            # el cliente 4 pasa del cap de dominio, que es 5
+            "AMT_REQ_CREDIT_BUREAU_DAY": [0.0, np.nan, 1.0, 9.0, 0.0, 2.0],
+            "AMT_REQ_CREDIT_BUREAU_YEAR": [1.0, np.nan, 2.0, 3.0, 1.0, 4.0],
+            "OBS_30_CNT_SOCIAL_CIRCLE": [2.0, 1.0, np.nan, 0.0, 3.0, 1.0],
+            "DEF_30_CNT_SOCIAL_CIRCLE": [0.0, 0.0, np.nan, 0.0, 1.0, 0.0],
+            "EXT_SOURCE_1": [0.5, np.nan, 0.4, np.nan, 0.6, 0.3],
+            "EXT_SOURCE_3": [0.5, 0.4, np.nan, 0.3, 0.6, 0.2],
+            "DAYS_BIRTH": [-14610, -21915, -10958, -18263, -25568, -12775],
+            # el cliente 2 trae el centinela crudo, que la limpieza convierte en nulo
+            "DAYS_EMPLOYED": [-1000.0, 365243.0, -500.0, -2000.0, 0.0, -3000.0],
+            "AMT_CREDIT": [100.0, 200.0, 300.0, 400.0, 500.0, 600.0],
+            # el 4 sin precio declarado y el 5 con precio cero: los dos denominadores raros
+            "AMT_GOODS_PRICE": [100.0, 100.0, 150.0, np.nan, 0.0, 250.0],
+            # columnas que la limpieza elimina, para que ese camino también corra
+            "FLAG_MOBIL": [1, 1, 1, 1, 1, 1],
+            "FLAG_EMP_PHONE": [1, 0, 1, 1, 0, 1],
+            "OBS_60_CNT_SOCIAL_CIRCLE": [2.0, 1.0, np.nan, 0.0, 3.0, 1.0],
+        }
+    )
+
+
+def _capa1(frame):
+    """La capa 1 entera: limpieza que no borra filas, más las features."""
+    return construir_features_capa1(limpiar_application(frame))
+
+
+def test_la_capa1_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_entera(con_bordes):
+    """Cada cliente sale idéntico calculado solo que acompañado de los demás.
+
+    Es lo que sostiene el orden de las capas. Comprobado además contra el dato real fuera de
+    los tests: 306 clientes, 300 al azar y 6 de borde dirigidos, ninguna de las diez columnas
+    cambia.
+    """
+    juntas = _capa1(con_bordes)
+    nuevas = [c for c in juntas.columns if c not in con_bordes.columns]
+    assert nuevas, "la capa 1 no añadió ninguna columna, revisar el montaje"
+
+    for i in con_bordes.index:
+        sola = _capa1(con_bordes.loc[[i]])
+        for c in nuevas:
+            a, b = juntas.loc[i, c], sola.loc[i, c]
+            iguales = a == b or (pd.isna(a) and pd.isna(b))
+            assert iguales, f"{c} cambia en el cliente {i} al calcularlo solo: {a} frente a {b}"
+
+
+def test_el_contraste_de_filas_cubre_los_casos_de_borde(con_bordes):
+    """Si el frame no ejercitara las ramas raras, el test de arriba sería casi vacuo."""
+    juntas = _capa1(con_bordes)
+
+    assert juntas["FLAG_DAYS_EMPLOYED_ANOMALY"].sum() == 1, "falta el centinela"
+    assert juntas["AMT_REQ_CREDIT_BUREAU_DAY"].max() == valor("app_amt_req_bureau_day_max")
+    assert juntas["LTV"].isna().sum() == 2, "faltan el precio nulo y el precio a cero"
+    assert juntas["BUILDING_INFO_COUNT"].eq(0).any(), "falta un cliente sin dato del edificio"
+    assert juntas["BUILDING_INFO_COUNT"].max() == 2, "falta un cliente con el bloque completo"
