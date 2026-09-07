@@ -106,6 +106,71 @@ def test_no_hay_dos_parametros_con_la_misma_descripcion():
         vistas[d] = nombre
 
 
+# --- frontera entre las cifras del EDA y el código del pipeline ------------------------------
+# `valor()` impide que un corte declarado se consuma sin refijarlo sobre el split. Lo que
+# ninguna puerta cubría es la **cifra suelta**: un 8,0729 escrito a mano dentro de una función
+# no pasa por `valor()` ni aparece en PARAMS, y es exactamente el mismo problema, una medición
+# hecha sobre la población completa usada como si fuera una constante.
+#
+# Estas son las que el EDA midió **contra el objetivo**. Como constante de un test valen, que
+# ahí solo comprueban que el cómputo no se ha movido y no transforman ni una fila. Dentro de
+# `src/` serían un parámetro del EDA consumido sin refijar.
+#
+# Los recuentos de forma no están aquí a propósito y no son fuga: 122 columnas, 307.511 filas,
+# las 19 que se eliminan o las 15 del bloque edificio son estructura del dataset, valen igual
+# en train, en validación, en application_test y en la API, y no salen de estimar nada.
+CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
+    8.0729, 8.0734, 8.07,      # tasa de default global, cruda y limpia
+    24_825,                    # positivos
+    6.96, 7.03, 9.23, 6.99,    # tripartita del bloque edificio
+    7.72, 10.34, 2.62,         # bandera del buró y su delta
+    8.09, 3.53,                # bandera del círculo social
+    8.52, 7.50, 9.31, 7.77,    # los dos scores externos
+    1.02, 1.55,                # sus deltas en puntos porcentuales
+}  # fmt: skip
+
+# params.py es la excepción, y por diseño: ahí una cifra medida está obligada a declarar su
+# procedencia, y `valor()` la bloquea hasta que alguien la refija sobre solo_train(). El
+# problema que persigue este test es la cifra suelta fuera del registro.
+MODULO_DEL_REGISTRO = "params.py"
+
+
+def test_ninguna_cifra_medida_contra_el_target_vive_en_src():
+    """Una tasa de default escrita a mano en `src/` es un corte del EDA sin refijar.
+
+    No pasa por `valor()`, no aparece en PARAMS y nadie la va a remedir sobre el split, así que
+    esquiva entera la disciplina que el resto del registro impone. El escaneo es del árbol
+    sintáctico y no del texto: una cifra citada en un comentario o en un docstring no cuenta,
+    que documentar el hallazgo del EDA es justo lo que hay que hacer.
+
+    Es una lista cerrada, no una regla general: cubre las cifras que el EDA publicó, y una
+    medición nueva hay que añadirla aquí. Lo que garantiza es que las publicadas no se cuelen.
+    """
+    import ast
+
+    from src.config import RAIZ
+
+    encontradas, constantes = [], 0
+    for fichero in sorted((RAIZ / "src").rglob("*.py")):
+        if fichero.name == MODULO_DEL_REGISTRO:
+            continue
+        for nodo in ast.walk(ast.parse(fichero.read_text())):
+            if not isinstance(nodo, ast.Constant) or isinstance(nodo.value, bool):
+                continue
+            if not isinstance(nodo.value, (int, float)):
+                continue
+            constantes += 1
+            if nodo.value in CIFRAS_MEDIDAS_CONTRA_EL_TARGET:
+                ruta = fichero.relative_to(RAIZ)
+                encontradas.append(f"{ruta}:{nodo.lineno} -> {nodo.value}")
+
+    assert constantes > 50, f"el escaneo solo vio {constantes} constantes, revisar el recorrido"
+    assert not encontradas, (
+        "cifras medidas contra el TARGET dentro de src/, que nadie va a refijar sobre el "
+        f"split: {encontradas}"
+    )
+
+
 # --- frontera entre config.yaml y params.py -------------------------------------------------
 # config.yaml lleva infraestructura y params.py lleva cortes de modelado. La frontera se
 # comprueba en las dos direcciones: que no haya la misma clave en los dos sitios, y que las
