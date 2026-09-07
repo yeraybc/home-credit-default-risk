@@ -42,6 +42,14 @@ CORTES_WINSOR: dict[str, str] = {
 # no hay un activo financiero real, así que el múltiplo no tiene sentido aquí.
 FACTOR_POR_COLUMNA: dict[str, float] = {"OWN_CAR_AGE": 1.0}
 
+# Los dos ratios que llevan una columna winsorizada en el denominador, y que por eso no están en
+# la capa 1 con LTV y los otros: construirlos antes del winsorizador dejaría el error de captura
+# de 117M de ingreso dentro del divisor de la carga, que es justo lo que el cap corrige.
+RATIOS_POSTERIORES: dict[str, tuple[str, str]] = {
+    "ANNUITY_TO_INCOME_RATIO": ("AMT_ANNUITY", "AMT_INCOME_TOTAL"),
+    "CHILDREN_TO_FAM_RATIO": ("CNT_CHILDREN", "CNT_FAM_MEMBERS"),
+}
+
 
 class Winsorizador(BaseEstimator, TransformerMixin):
     """Capa por arriba al múltiplo del percentil, reestimado en el `fit`.
@@ -114,6 +122,60 @@ class Winsorizador(BaseEstimator, TransformerMixin):
         if input_features is None:
             return np.asarray(self.feature_names_in_, dtype=object)
         return np.asarray(input_features, dtype=object)
+
+
+class RatiosPosteriores(BaseEstimator, TransformerMixin):
+    """Los dos ratios que se construyen detrás del winsorizador.
+
+    No aprende nada: el `fit` existe para el contrato y para dejar anotado qué derivadas va a
+    producir, que es lo que tiene que devolver `get_feature_names_out`. Va detrás por el orden
+    del `Pipeline`, no por su contenido.
+    """
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> RatiosPosteriores:
+        """Anota qué ratios puede construir con las columnas que trae el frame.
+
+        Permisivo igual que la capa 1, porque a la API puede llegar un frame parcial, y por eso
+        se anota: sin esto, `get_feature_names_out` prometería columnas que `transform` no va a
+        crear en cuanto le llegue un frame más pobre que el del ajuste.
+        """
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.n_features_in_ = X.shape[1]
+        self.derivadas_ = tuple(
+            nombre
+            for nombre, (num, den) in RATIOS_POSTERIORES.items()
+            if num in X.columns and den in X.columns
+        )
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Numerador entre denominador, con el cero del divisor a NaN y no a infinito.
+
+        Hoy `AMT_INCOME_TOTAL` y `CNT_FAM_MEMBERS` no tienen ni un cero ni un nulo en la tabla,
+        pero esto corre también sobre application_test y sobre lo que llegue a la API. La
+        winsorización solo capa por arriba, así que tampoco puede fabricar un cero nuevo.
+        """
+        check_is_fitted(self)
+        X = X.copy()
+        for nombre in self.derivadas_:
+            num, den = RATIOS_POSTERIORES[nombre]
+            faltan = [c for c in (num, den) if c not in X.columns]
+            if faltan:
+                raise ValueError(
+                    f"{nombre} se ajustó y el frame no trae {sorted(faltan)}. "
+                    "Saltárselo daría una matriz distinta de la del entrenamiento"
+                )
+            X[nombre] = X[num] / X[den].replace(0, np.nan)
+        return X
+
+    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
+        """Las de entrada más las derivadas que de verdad se construyen."""
+        check_is_fitted(self)
+        entrada = list(self.feature_names_in_ if input_features is None else input_features)
+        # las que ya vengan en el frame no se duplican: `transform` las reescribe en su sitio
+        return np.asarray(
+            entrada + [c for c in self.derivadas_ if c not in entrada], dtype=object
+        )
 
 
 def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:

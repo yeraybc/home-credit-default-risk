@@ -19,6 +19,8 @@ from src.features.params import valor
 from src.features.transformers import (
     CORTES_WINSOR,
     FACTOR_POR_COLUMNA,
+    RATIOS_POSTERIORES,
+    RatiosPosteriores,
     Winsorizador,
     informe_winsorizacion,
 )
@@ -188,6 +190,100 @@ def test_una_columna_sin_corte_declarado_revienta(frame):
     """Todo corte pasa por params.py, no como cifra suelta en el transformer."""
     with pytest.raises(ValueError, match="sin corte declarado"):
         Winsorizador(columnas=("AMT_CREDIT",)).fit(frame)
+
+
+# --- RatiosPosteriores, que existe por el orden y no por su contenido ------------------------
+
+
+def test_los_dos_ratios_salen_de_la_columna_ya_winsorizada(frame):
+    """El test que justifica que este transformer exista.
+
+    Construir la carga antes del winsorizador dejaría los 117M de ingreso en el denominador, y
+    el cliente con el error de captura saldría con una carga de casi cero, o sea leído como el
+    de menor riesgo de la tabla en vez de como un dato roto.
+    """
+    frame["AMT_ANNUITY"] = 1_000.0
+    tubo = Pipeline([("winsor", Winsorizador()), ("derivadas", RatiosPosteriores())])
+    salida = tubo.fit_transform(frame)
+
+    limite = tubo.named_steps["winsor"].limites_["AMT_INCOME_TOTAL"]
+    roto = salida.iloc[-1]
+    assert roto["ANNUITY_TO_INCOME_RATIO"] == pytest.approx(1_000.0 / limite)
+    assert roto["ANNUITY_TO_INCOME_RATIO"] != pytest.approx(1_000.0 / 117_000_000.0)
+
+
+def test_el_orden_inverso_da_un_resultado_distinto(frame):
+    """Si diera lo mismo, el orden del Pipeline sería decorativo y no habría nada que proteger."""
+    frame["AMT_ANNUITY"] = 1_000.0
+    correcto = Pipeline([("winsor", Winsorizador()), ("derivadas", RatiosPosteriores())])
+    invertido = Pipeline([("derivadas", RatiosPosteriores()), ("winsor", Winsorizador())])
+    a = correcto.fit_transform(frame)["ANNUITY_TO_INCOME_RATIO"]
+    b = invertido.fit_transform(frame)["ANNUITY_TO_INCOME_RATIO"]
+    assert not a.equals(b)
+
+
+def test_el_fixture_trae_el_error_de_captura_que_hace_visible_el_orden(frame):
+    """Guardián: sin un extremo muy por encima del corte, los dos tests de arriba no dicen nada.
+
+    El margen es de un orden de magnitud y no más porque el percentil interpola y el propio
+    extremo tira de él hacia arriba: con 99 valores en 1.000 y uno en 117M, el corte sale en
+    3.512.970 y el extremo queda 33 veces por encima, no 117.000.
+    """
+    limite = Winsorizador().fit(frame).limites_["AMT_INCOME_TOTAL"]
+    assert frame["AMT_INCOME_TOTAL"].max() > 10 * limite
+
+
+def test_el_ratio_protege_el_denominador_cero(frame):
+    frame.loc[0, "CNT_FAM_MEMBERS"] = 0.0
+    salida = RatiosPosteriores().fit_transform(frame)
+    assert pd.isna(salida.loc[0, "CHILDREN_TO_FAM_RATIO"])
+    assert not np.isinf(salida["CHILDREN_TO_FAM_RATIO"].dropna()).any()
+
+
+def test_los_ratios_son_idempotentes(frame):
+    t = RatiosPosteriores().fit(frame)
+    una = t.transform(frame)
+    pd.testing.assert_frame_equal(t.transform(una), una)
+
+
+def test_solo_anuncia_los_ratios_que_puede_construir(frame):
+    """Sin numerador no hay ratio, y get_feature_names_out no puede prometerlo."""
+    parcial = frame.drop(columns=["CNT_CHILDREN"])
+    t = RatiosPosteriores().fit(parcial)
+    assert t.derivadas_ == ("ANNUITY_TO_INCOME_RATIO",)
+    assert "CHILDREN_TO_FAM_RATIO" not in t.transform(parcial).columns
+    assert list(t.get_feature_names_out()) == list(t.transform(parcial).columns)
+
+
+def test_revienta_si_falta_en_transform_una_columna_que_estaba_en_fit(frame):
+    t = RatiosPosteriores().fit(frame)
+    with pytest.raises(ValueError, match="no trae"):
+        t.transform(frame.drop(columns=["AMT_INCOME_TOTAL"]))
+
+
+def test_los_ratios_no_tocan_ninguna_columna_de_entrada(frame):
+    salida = RatiosPosteriores().fit_transform(frame)
+    for columna in frame.columns:
+        pd.testing.assert_series_equal(salida[columna], frame[columna])
+
+
+def test_get_feature_names_out_de_los_ratios_casa_con_la_salida(frame):
+    t = RatiosPosteriores().fit(frame)
+    assert list(t.get_feature_names_out()) == list(t.transform(frame).columns)
+    assert set(RATIOS_POSTERIORES) <= set(t.get_feature_names_out())
+
+
+def test_ningun_ratio_posterior_se_construye_ya_en_la_capa_1():
+    """Si la capa 1 se adelantara, el denominador llevaría el error de captura sin capar."""
+    from src.features.application import FEATURES_CAPA1
+
+    assert not set(RATIOS_POSTERIORES) & set(FEATURES_CAPA1)
+
+
+def test_todo_denominador_posterior_es_una_columna_winsorizada():
+    """Es lo que separa estos dos ratios de LTV, que sí va en la capa 1."""
+    for _, (_, den) in RATIOS_POSTERIORES.items():
+        assert den in CORTES_WINSOR
 
 
 # --- los cortes salen del registro, no de literales -------------------------------------------
