@@ -308,3 +308,104 @@ def test_los_dos_juegos_de_sufijos_del_edificio_son_conceptos_distintos():
 
     assert set(SUFIJOS_REDUNDANTES_EDIFICIO) < set(SUFIJOS_BLOQUE_EDIFICIO)
     assert "_AVG" not in SUFIJOS_REDUNDANTES_EDIFICIO, "la versión que se conserva no se elimina"
+
+
+# --- el contrato contra un ancla independiente -----------------------------------------------
+# Los tests de arriba no pueden cazar una declaración equivocada, porque el fixture `completo` se
+# construye desde ORIGEN_POR_FEATURE, o sea desde lo que deberían estar comprobando: quitando
+# TOTALAREA_MODE de COLUMNAS_EDIFICIO el fixture también lo pierde, declarado y derivado siguen
+# coincidiendo y los cinco pasan. Lo único que lo cazaba era la integración contra el dato real,
+# y ese fichero entero se salta en CI porque data/raw no viaja con el repo. Medido: con esa
+# mutación puesta, el alcance que CI ejecuta daba 187 en verde igual que el árbol sano.
+#
+# El ancla tiene que ser independiente del contrato, así que aquí se declara el esquema del
+# dataset **en otra forma**: los 14 conceptos del bloque en vez de las 15 columnas, y las 6
+# ventanas del buró en vez de sus 6 nombres completos. Borrar algo del contrato no toca estas
+# listas, y el contraste lo caza. No son cifras del EDA: son el esquema del csv, idéntico en
+# train, en application_test y en lo que reciba la API.
+CONCEPTOS_EDIFICIO = (
+    "APARTMENTS",
+    "BASEMENTAREA",
+    "COMMONAREA",
+    "ELEVATORS",
+    "ENTRANCES",
+    "FLOORSMAX",
+    "FLOORSMIN",
+    "LANDAREA",
+    "LIVINGAPARTMENTS",
+    "LIVINGAREA",
+    "NONLIVINGAPARTMENTS",
+    "NONLIVINGAREA",
+    "YEARS_BEGINEXPLUATATION",
+    "YEARS_BUILD",
+)
+VENTANAS_BURO = ("HOUR", "DAY", "WEEK", "MON", "QRT", "YEAR")
+# el concepto 15, que no tiene pareja AVG ni MEDI y por eso sobrevive a la limpieza siendo _MODE
+CONCEPTO_SUELTO = "TOTALAREA_MODE"
+FEATURES_QUE_ENTREGA_EL_PUNTO = {
+    "BUILDING_INFO_COUNT",
+    "HAS_BUILDING_INFO",
+    "HAS_BUREAU_INFO",
+    "HAS_SOCIAL_INFO",
+    "FLAG_EXT_SOURCE_1_NULL",
+    "FLAG_EXT_SOURCE_3_NULL",
+    "AGE_YEARS",
+    "EMPLOYED_TO_AGE_RATIO",
+    "LTV",
+}
+
+
+@pytest.fixture
+def esquema_crudo():
+    """El bloque tal como llega del csv: las tres versiones por concepto y las categóricas."""
+    from src.features.application import CATEGORICAS_EDIFICIO, SUFIJOS_BLOQUE_EDIFICIO
+
+    cols = [f"{c}{s}" for c in CONCEPTOS_EDIFICIO for s in SUFIJOS_BLOQUE_EDIFICIO]
+    cols += [CONCEPTO_SUELTO, *CATEGORICAS_EDIFICIO]
+    cols += [f"AMT_REQ_CREDIT_BUREAU_{v}" for v in VENTANAS_BURO]
+    return pd.DataFrame({c: [0.0] for c in cols})
+
+
+def test_el_contrato_del_edificio_es_lo_que_deja_la_regla_de_limpieza(esquema_crudo):
+    """Las 15 no son un número: son el bloque menos las versiones que la limpieza elimina.
+
+    Pasa el esquema crudo por la regla real de `cleaning` y contrasta el resultado contra el
+    contrato. Caza las dos direcciones a la vez: que el contrato se quede corto, y que la regla
+    de limpieza deje de quitar lo que quitaba.
+    """
+    from src.features.application import COLUMNAS_EDIFICIO, columnas_edificio_numericas
+    from src.features.cleaning import columnas_edificio_redundantes
+
+    limpio = esquema_crudo.drop(columns=columnas_edificio_redundantes(esquema_crudo))
+    assert set(COLUMNAS_EDIFICIO) == set(columnas_edificio_numericas(limpio))
+
+
+def test_el_contrato_del_edificio_es_un_avg_por_concepto_mas_el_suelto():
+    """La misma lista por el otro camino, sin pasar por la limpieza: dos derivaciones que cuadran.
+
+    Si solo se comprobara contra la regla, un fallo en `columnas_edificio_redundantes` que se
+    compensara con otro en el contrato pasaría desapercibido.
+    """
+    from src.features.application import COLUMNAS_EDIFICIO
+
+    esperadas = {f"{c}_AVG" for c in CONCEPTOS_EDIFICIO} | {CONCEPTO_SUELTO}
+    assert set(COLUMNAS_EDIFICIO) == esperadas
+
+
+def test_el_contrato_del_buro_son_las_seis_ventanas(esquema_crudo):
+    """Quitar una de las seis no rompe nada visible: la bandera se calcularía sobre cinco."""
+    from src.features.application import COLUMNAS_BURO, columnas_buro
+
+    assert set(COLUMNAS_BURO) == set(columnas_buro(esquema_crudo))
+    assert set(COLUMNAS_BURO) == {f"AMT_REQ_CREDIT_BUREAU_{v}" for v in VENTANAS_BURO}
+
+
+def test_la_capa1_entrega_exactamente_las_features_del_punto():
+    """Perder una feature en silencio es tan malo como añadir una sin declarar.
+
+    `test_el_contrato_cubre_exactamente_las_features_que_se_construyen` compara construidas
+    contra declaradas y no ve el caso de que desaparezcan las dos a la vez.
+    """
+    from src.features.application import FEATURES_CAPA1
+
+    assert set(FEATURES_CAPA1) == FEATURES_QUE_ENTREGA_EL_PUNTO
