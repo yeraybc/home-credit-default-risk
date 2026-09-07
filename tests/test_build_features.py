@@ -154,6 +154,15 @@ N_CRUDOS_DEL_EDA = (81_552, 77_794, 148_165)
 COLUMNAS_CON_FEATURES = 101  # las 92 limpias más las 9 features de capa 1
 FEATURES_DE_CAPA1 = 9
 
+GRUPOS = ("completo", "parcial", "todo nulo")
+
+
+def _tripartita(conteo, target, top):
+    """n y tasa de los tres grupos de completitud, para el denominador que se le pase."""
+    grupo = np.select([conteo.eq(top), conteo.eq(0)], ["completo", "todo nulo"], default="parcial")
+    tab = pd.DataFrame({"g": grupo, "t": target}).groupby("g")["t"].agg(["size", "mean"])
+    return [(int(tab.loc[k, "size"]), round(tab.loc[k, "mean"] * 100, 2)) for k in GRUPOS]
+
 
 def test_los_n_de_la_puerta_son_los_del_eda_menos_las_filas_limpiadas():
     """Que la diferencia sea exactamente las 19, y no un desajuste que nadie ha mirado."""
@@ -165,29 +174,40 @@ def test_los_n_de_la_puerta_son_los_del_eda_menos_las_filas_limpiadas():
 
 def test_la_tripartita_del_bloque_edificio_reproduce_las_tasas_del_eda(base):
     n_cols = int(base["BUILDING_INFO_COUNT"].max())
-    grupo = np.select(
-        [base["BUILDING_INFO_COUNT"].eq(n_cols), base["BUILDING_INFO_COUNT"].eq(0)],
-        ["completo", "todo nulo"],
-        default="parcial",
-    )
-    tab = pd.DataFrame({"g": grupo, "t": base["TARGET"]}).groupby("g")["t"].agg(["size", "mean"])
-    tasas = (tab["mean"] * 100).round(2)
 
     assert n_cols == 15, "el bloque edificio ya no tiene las 15 columnas que sobreviven"
-    assert [tasas["completo"], tasas["parcial"], tasas["todo nulo"]] == [
-        COMPLETO,
-        PARCIAL,
-        TODO_NULO,
+    assert _tripartita(base["BUILDING_INFO_COUNT"], base["TARGET"], n_cols) == [
+        (N_COMPLETO, COMPLETO),
+        (N_PARCIAL, PARCIAL),
+        (N_TODO_NULO, TODO_NULO),
     ]
-    assert [
-        tab.loc["completo", "size"],
-        tab.loc["parcial", "size"],
-        tab.loc["todo nulo", "size"],
-    ] == [
-        N_COMPLETO,
-        N_PARCIAL,
-        N_TODO_NULO,
-    ]
+
+
+# Cuánto pesa TOTALAREA_MODE dentro del denominador, que es lo que sostiene el comentario de
+# cabecera de application.py. Los recuentos de 43 y 15 clasifican idéntico, y de ahí es fácil
+# concluir de más y dar por bueno cualquier denominador mientras las categóricas se queden
+# fuera. No: quitando esa columna quedan las 14 con pareja, que es el recuento de 42 del
+# notebook una vez colapsan sus pares, y la tripartita se mueve.
+TRIPARTITA_SIN_TOTALAREA = [(81_562, 6.96), (77_128, 7.05), (148_802, 9.22)]
+SOLO_TIENEN_TOTALAREA = 645
+COMPLETOS_QUE_LO_PIERDEN = 14
+
+
+def test_totalarea_mode_mueve_la_tripartita_y_por_eso_esta_en_el_contrato(base):
+    """Sin ella, 645 clientes con dato del edificio pasan a leerse como si no tuvieran ninguno."""
+    from src.features.application import COLUMNAS_EDIFICIO
+
+    con_pareja = [c for c in COLUMNAS_EDIFICIO if c != "TOTALAREA_MODE"]
+    conteo = base[con_pareja].notna().sum(axis=1)
+
+    completa = [(N_COMPLETO, COMPLETO), (N_PARCIAL, PARCIAL), (N_TODO_NULO, TODO_NULO)]
+    assert len(con_pareja) == 14
+    assert _tripartita(conteo, base["TARGET"], 14) == TRIPARTITA_SIN_TOTALAREA
+    assert TRIPARTITA_SIN_TOTALAREA != completa, "si coincidieran, el test no diría nada"
+    assert int(conteo.eq(0).sum() - base["BUILDING_INFO_COUNT"].eq(0).sum()) == SOLO_TIENEN_TOTALAREA
+    assert int(conteo.eq(14).sum() - base["BUILDING_INFO_COUNT"].eq(15).sum()) == (
+        COMPLETOS_QUE_LO_PIERDEN
+    )
 
 
 def test_las_banderas_de_ausencia_reproducen_su_cobertura(base):

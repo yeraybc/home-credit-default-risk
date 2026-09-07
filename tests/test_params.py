@@ -123,6 +123,7 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     8.0729, 8.0734, 8.07,      # tasa de default global, cruda y limpia
     24_825,                    # positivos
     6.96, 7.03, 9.23, 6.99,    # tripartita del bloque edificio
+    7.05, 9.22,                # la misma sin TOTALAREA_MODE en el denominador
     7.72, 10.34, 2.62,         # bandera del buró y su delta
     8.09, 3.53,                # bandera del círculo social
     8.52, 7.50, 9.31, 7.77,    # los dos scores externos

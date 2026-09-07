@@ -29,11 +29,16 @@ from src.features.params import valor
 #       salen las tasas publicadas. La prosa y su propio código no cuentan lo mismo.
 #   43  es lo que esta función devuelve antes de limpiar: las 42 con sufijo más TOTALAREA_MODE.
 #
-# Las tres clasifican igual porque el nulo del bloque es por fila y no por columna: en los 14
-# conceptos por sus dos versiones, o sea 28 pares, no hay ni una fila donde _MODE o _MEDI esté
-# presente con su _AVG nulo. Por eso 43 colapsa a las 15 que sobreviven a la limpieza sin una
-# sola discrepancia, y por eso da igual cuál de los tres recuentos se use mientras las cuatro
-# categóricas se queden fuera. Lo único que cambia el resultado es meterlas.
+# De los tres, 43 y 15 clasifican idéntico, y por una razón concreta: el nulo del bloque es por
+# fila y no por columna, o sea que en los 14 conceptos por sus dos versiones redundantes, 28
+# pares, no hay ni una fila donde _MODE o _MEDI esté presente con su _AVG nulo. Por eso 43
+# colapsa a las 15 que sobreviven a la limpieza sin una sola discrepancia.
+#
+# El de 46 no clasifica igual, y no se arregla sacándole las cuatro categóricas: lo que queda
+# son 42, que dan 6,96%, 7,05% y 9,22%. TOTALAREA_MODE es tan portante como ellas, porque 645
+# clientes tienen ahí su único dato del edificio y sin esa columna pasan a leerse como todo
+# nulo, que es el grupo que carga la señal, más 14 que perderían el completo. Las dos
+# sensibilidades están fijadas en tests/test_build_features.py.
 CATEGORICAS_EDIFICIO = (
     "FONDKAPREMONT_MODE",
     "HOUSETYPE_MODE",
