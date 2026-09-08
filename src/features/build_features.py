@@ -112,7 +112,7 @@ def matriz_de_features(base: pd.DataFrame) -> pd.DataFrame:
 
 
 def ajustar_capa2a(
-    base: pd.DataFrame, split: pd.DataFrame | None = None
+    base: pd.DataFrame, split: pd.DataFrame | None = None, sobrescribir: bool = False
 ) -> tuple[Winsorizador, pd.DataFrame]:
     """Ajusta el winsorizador sobre el 80% de entrenamiento y registra lo reestimado.
 
@@ -125,11 +125,14 @@ def ajustar_capa2a(
 
     Devuelve `(winsorizador, informe)`, y el informe es la puerta del punto: los diez cortes
     reestimados frente a la referencia del EDA, con su desviación.
+
+    Reajustar sobre otra población exige `sobrescribir=True`: el registro ya trae lo de la
+    primera vez y pisarlo en silencio dejaría el valor de un ajuste con el rastro del otro.
     """
     entrenamiento = matriz_de_features(solo_train(base, split))
     winsorizador = Winsorizador().fit(entrenamiento)
     logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
-    return winsorizador, registrar_limites(winsorizador)
+    return winsorizador, registrar_limites(winsorizador, sobrescribir)
 
 
 def informe_base(

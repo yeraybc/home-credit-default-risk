@@ -413,19 +413,33 @@ def valor(nombre: str):  # noqa: ANN201 - devuelve el tipo que declare el parám
     return p.valor_referencia
 
 
-def fijar_operativo(nombre: str, valor_nuevo: float, n_train: int) -> None:
+def fijar_operativo(
+    nombre: str, valor_nuevo: float, n_train: int, sobrescribir: bool = False
+) -> None:
     """Único punto de escritura del valor operativo de un reajustable.
 
     Exige `n_train`, el tamaño de la partición de entrenamiento usada para calcularlo: no
     basta con poner un número, tiene que declarar cuántas filas lo sostienen. No relee el
     split por su cuenta, quien llama ya lo filtró con `solo_train()` y aquí solo se registra
     el resultado.
+
+    Refijar uno ya fijado exige `sobrescribir=True`, la misma guarda que `construir_split()`.
+    Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
+    del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
+    dejan la segunda cifra con el n de la segunda y nadie se entera. Hoy solo hay un
+    consumidor, `ajustar_capa2a()`; el riesgo aparece en cuanto haya el segundo.
     """
     p = parametro(nombre)
     if p.procedencia not in REAJUSTABLES:
         raise ValueError(
             f"{nombre!r} no es reajustable (procedencia {p.procedencia!r}); "
             "no lleva valor operativo"
+        )
+    if p.valor_operativo is not None and not sobrescribir:
+        raise ValueError(
+            f"{nombre!r} ya está fijado en {p.valor_operativo} sobre {p.n_train_operativo} "
+            f"filas y se intenta poner {valor_nuevo} sobre {n_train}. Refijarlo invalida todo "
+            "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
         )
     PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
 

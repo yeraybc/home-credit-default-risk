@@ -205,7 +205,7 @@ def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:
     return pd.DataFrame(filas)
 
 
-def registrar_limites(winsorizador: Winsorizador) -> pd.DataFrame:
+def registrar_limites(winsorizador: Winsorizador, sobrescribir: bool = False) -> pd.DataFrame:
     """Deja en `params.py` lo reestimado, y devuelve el informe de la puerta.
 
     Va aquí y no dentro del `fit` a propósito. `fijar_operativo()` escribe en un diccionario a
@@ -216,8 +216,13 @@ def registrar_limites(winsorizador: Winsorizador) -> pd.DataFrame:
     El `n_train` que se declara es el de los **no nulos de cada columna**, no el de la
     partición: es el que de verdad sostiene el percentil. En `OWN_CAR_AGE` son los clientes con
     coche y no todos los de entrenamiento, y la diferencia es de tres veces.
+
+    `sobrescribir` viaja hasta `fijar_operativo()`, que rechaza refijar un corte ya fijado si
+    no se le pide explícitamente.
     """
     informe = informe_winsorizacion(winsorizador)
     for columna, limite in winsorizador.limites_.items():
-        fijar_operativo(CORTES_WINSOR[columna], limite, winsorizador.n_ajuste_[columna])
+        fijar_operativo(
+            CORTES_WINSOR[columna], limite, winsorizador.n_ajuste_[columna], sobrescribir
+        )
     return informe

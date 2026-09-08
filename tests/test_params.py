@@ -378,6 +378,29 @@ def test_fijar_operativo_permite_usar_el_valor(restaurar_params):
     assert parametro("app_winsor_amt_income_total").valor_referencia == 1_417_500
 
 
+def test_refijar_uno_ya_fijado_revienta_en_vez_de_pisarlo(restaurar_params):
+    """Sin esta guarda, dos ajustes sobre poblaciones distintas los resuelve un upsert.
+
+    Gana el último y nadie se entera: es el mecanismo del orden del registro que en el EDA dejó
+    una feature con el efecto de una población y la justificación de otra. Aquí la consecuencia
+    sería un límite ajustado sobre una partición con el n de otra.
+    """
+    fijar_operativo("app_winsor_cnt_children", 9, n_train=245_993)
+    with pytest.raises(ValueError, match="ya está fijado"):
+        fijar_operativo("app_winsor_cnt_children", 99, n_train=12)
+    # y el primero sigue en pie, que el intento fallido no puede dejarlo a medias
+    assert valor("app_winsor_cnt_children") == 9
+    assert parametro("app_winsor_cnt_children").n_train_operativo == 245_993
+
+
+def test_refijar_con_sobrescribir_explicito_si_pisa(restaurar_params):
+    """La dirección contraria: pedirlo a las claras sí vale, como en `construir_split()`."""
+    fijar_operativo("app_winsor_cnt_children", 9, n_train=245_993)
+    fijar_operativo("app_winsor_cnt_children", 99, n_train=12, sobrescribir=True)
+    assert valor("app_winsor_cnt_children") == 99
+    assert parametro("app_winsor_cnt_children").n_train_operativo == 12
+
+
 def test_fijar_operativo_exige_n_train_positivo(restaurar_params):
     with pytest.raises(ValueError, match="positivo"):
         fijar_operativo("app_winsor_cnt_children", 8, n_train=0)

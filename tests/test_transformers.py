@@ -378,6 +378,15 @@ def test_registrar_no_deja_pendiente_ningun_corte_del_winsorizador(frame, regist
     assert not set(CORTES_WINSOR.values()) & set(operativos_pendientes())
 
 
+def test_registrar_dos_veces_revienta_y_con_permiso_no(frame, registro_limpio):
+    """El segundo ajuste no puede pisar al primero sin pedirlo, y la guarda viaja hasta aquí."""
+    w = Winsorizador().fit(frame)
+    registrar_limites(w)
+    with pytest.raises(ValueError, match="ya está fijado"):
+        registrar_limites(Winsorizador().fit(frame.iloc[:50]))
+    registrar_limites(Winsorizador().fit(frame.iloc[:50]), sobrescribir=True)
+
+
 def test_todos_los_cortes_del_winsorizador_son_reajustables():
     """Uno de dominio haría reventar a `fijar_operativo`, que los rechaza por diseño."""
     from src.features.params import REAJUSTABLES, parametro
