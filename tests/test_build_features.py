@@ -17,7 +17,12 @@ import pytest
 
 from src.config import RAIZ
 from src.data.loader import load_table
-from src.features.build_features import cargar_y_limpiar, informe_base, preparar_application
+from src.features.build_features import (
+    cargar_y_limpiar,
+    informe_base,
+    matriz_de_features,
+    preparar_application,
+)
 from src.features.cleaning import filas_a_eliminar
 from src.features.split import cargar_split, mascara
 
@@ -369,3 +374,69 @@ def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor
     assert "OBS_60_CNT_SOCIAL_CIRCLE" not in base.columns
     assert "OBS_60_CNT_SOCIAL_CIRCLE" not in winsor.limites_
     assert "DEF_60_CNT_SOCIAL_CIRCLE" in winsor.limites_
+
+
+# --- puerta de salida del punto 1.4, el ensamblado de las capas 2 -----------------------------
+# El reparto de buckets suma las 101 que ve el ColumnTransformer, que son las 99 de la matriz más
+# los dos ratios que añade el 1.3. Cuidado con el otro 101, el de COLUMNAS_CON_FEATURES: ese
+# lleva la etiqueta y el identificador dentro, y no los dos ratios. Coinciden por casualidad.
+COLUMNAS_DEL_COLUMNTRANSFORMER = 101
+COLUMNAS_DE_LA_MATRIZ_FINAL = 139
+COLUMNAS_DE_OHE = 52
+BUCKETS = {"num": 48, "ohe": 14, "ord": 1, "woe": 1, "tgt": 1, "bin": 36}
+
+
+@sin_csv
+def test_la_matriz_final_sale_de_101_columnas_y_da_139():
+    """La cifra de la puerta del 1.4, contra la tabla real y no contra el frame sintético."""
+    from src.features.build_features import ajustar_pipeline
+    from src.features.pipeline import informe_buckets
+    from src.features.split import solo_train
+    from src.features.transformers import RatiosPosteriores, Winsorizador
+
+    base, split = preparar_application(), cargar_split()
+    entrenamiento = solo_train(base, split)
+    matriz = matriz_de_features(entrenamiento)
+    previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
+    salida = ajustar_pipeline(base, split).transform(matriz)
+
+    assert previo.shape[1] == COLUMNAS_DEL_COLUMNTRANSFORMER
+    assert dict(zip(informe_buckets(previo)["bucket"], informe_buckets(previo)["entran"])) == BUCKETS
+    assert sum(BUCKETS.values()) == COLUMNAS_DEL_COLUMNTRANSFORMER
+    assert salida.shape[1] == COLUMNAS_DE_LA_MATRIZ_FINAL
+    assert len(salida) == len(entrenamiento)
+
+
+@sin_csv
+def test_el_ohe_expande_sus_14_columnas_en_52():
+    """El resto de la aritmética: 48 + 52 + 1 + 1 + 1 + 36 son las 139."""
+    from src.features.build_features import ajustar_pipeline
+
+    base, split = preparar_application(), cargar_split()
+    ohe = ajustar_pipeline(base, split).named_steps["columnas"].named_transformers_["ohe"]
+
+    assert len(ohe.named_steps["codifica"].get_feature_names_out()) == COLUMNAS_DE_OHE
+    assert (
+        BUCKETS["num"] + COLUMNAS_DE_OHE + BUCKETS["ord"] + BUCKETS["woe"] + BUCKETS["tgt"]
+        + BUCKETS["bin"]
+    ) == COLUMNAS_DE_LA_MATRIZ_FINAL
+
+
+@sin_csv
+def test_los_dos_101_no_son_el_mismo_y_se_distinguen():
+    """El guardián que el plan pedía: coinciden en número y no en contenido.
+
+    El de la capa 1 lleva `TARGET` y `SK_ID_CURR`; el del ColumnTransformer lleva en su lugar los
+    dos ratios del 1.3. Confundirlos deja un conteo equivocado pasando por bueno.
+    """
+    from src.features.transformers import RatiosPosteriores, Winsorizador
+
+    base = preparar_application()
+    matriz = matriz_de_features(base)
+    previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
+
+    assert base.shape[1] == COLUMNAS_CON_FEATURES == COLUMNAS_DEL_COLUMNTRANSFORMER
+    assert {"TARGET", "SK_ID_CURR"} <= set(base.columns)
+    assert not {"TARGET", "SK_ID_CURR"} & set(previo.columns)
+    assert {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} <= set(previo.columns)
+    assert not {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} & set(base.columns)

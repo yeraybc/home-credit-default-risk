@@ -36,8 +36,16 @@ from src.features.pipeline import (
     verificar_contrato_columnas,
 )
 
-N = 60
+# Seiscientas y no sesenta: con sesenta, **ninguna celda categórica llega a las 100 que exige
+# `n_min_categoria`**, así que el AgrupadorDeRaras colapsaba las catorce columnas del bucket a un
+# nivel único y el OHE trabajaba sobre constantes que después se llevaba el VarianceThreshold.
+# Los tests pasaban igual, midiendo una matriz degenerada. Lo vigila `test_el_fixture_no_colapsa`.
+N = 600
 COLUMNAS_ENTRADA = 101
+N_POSITIVOS = 100
+N_NULOS_OCUPACION = 100
+N_FIN_DE_SEMANA = 200
+N_ORGANIZACION_MINORITARIA = 150
 
 
 @pytest.fixture
@@ -48,25 +56,37 @@ def entrada():
     contrato, el fixture la trae sola y no hay dos sitios que sincronizar.
     """
     frame = pd.DataFrame({c: np.linspace(1.0, 100.0, N) for c in NUMERICAS})
-    frame[COL_HORA] = list(range(24)) + list(range(24)) + list(range(12))
+    # los cuatro numeradores y denominadores de los dos ratios posteriores, separados: con el
+    # mismo linspace en todas las columnas los dos ratios salían constantes a 1,0 y el
+    # VarianceThreshold se los llevaba, así que no llegaban a la matriz
+    frame["AMT_INCOME_TOTAL"] = np.linspace(1_000.0, 50_000.0, N)
+    frame["AMT_ANNUITY"] = np.linspace(100.0, 5_000.0, N)[::-1]
+    frame["CNT_CHILDREN"] = np.tile([0.0, 1.0, 2.0, 3.0], N // 4)
+    frame["CNT_FAM_MEMBERS"] = frame["CNT_CHILDREN"] + 2.0
+    frame[COL_HORA] = list(range(24)) * (N // 24)
     for c in BINARIAS:
-        frame[c] = ([0] * (N - 5)) + ([1] * 5)
+        frame[c] = ([0] * (N - 50)) + ([1] * 50)
     for c in CATEGORICAS_OHE:
         if c == COL_FRANJA:
             continue
         frame[c] = ["uno", "dos"] * (N // 2)
-    frame[COL_DIA] = (["MONDAY"] * 40) + (["SATURDAY"] * 20)
+    # una con más de dos niveles: es la única forma de distinguir `drop="if_binary"` de
+    # `drop="first"`, porque sobre una binaria las dos sacan una columna igual
+    frame["NAME_TYPE_SUITE"] = ["uno", "dos", "tres", "cuatro"] * (N // 4)
+    frame[COL_DIA] = (["MONDAY"] * (N - N_FIN_DE_SEMANA)) + (["SATURDAY"] * N_FIN_DE_SEMANA)
     frame[COL_EDUCACION] = [JERARQUIA_EDUCACION[i % len(JERARQUIA_EDUCACION)] for i in range(N)]
     # con riesgo diferencial: alternándolas, las dos salían con la misma tasa, el WoE era
     # constante y el VarianceThreshold se llevaba la columna
-    frame[COL_ORGANIZACION] = (["banca"] * 45) + (["obra"] * 15)
-    frame[COL_OCUPACION] = (["oficio"] * 50) + ([None] * 10)
+    frame[COL_ORGANIZACION] = (["banca"] * (N - N_ORGANIZACION_MINORITARIA)) + (
+        ["obra"] * N_ORGANIZACION_MINORITARIA
+    )
+    frame[COL_OCUPACION] = (["oficio"] * (N - N_NULOS_OCUPACION)) + ([None] * N_NULOS_OCUPACION)
     return frame
 
 
 @pytest.fixture
 def objetivo():
-    return pd.Series(([0] * 50) + ([1] * 10))
+    return pd.Series(([0] * (N - N_POSITIVOS)) + ([1] * N_POSITIVOS))
 
 
 # --- el contrato de columnas -----------------------------------------------------------------
@@ -146,7 +166,7 @@ def test_el_nulo_de_la_ocupacion_pasa_a_ser_un_nivel(entrada):
     salida = aplicar_dominio(entrada)
 
     assert not salida[COL_OCUPACION].isna().any()
-    assert (salida[COL_OCUPACION] == NIVEL_SIN_OCUPACION).sum() == 10
+    assert (salida[COL_OCUPACION] == NIVEL_SIN_OCUPACION).sum() == N_NULOS_OCUPACION
 
 
 def test_el_paso_de_dominio_es_idempotente(entrada):
@@ -224,8 +244,8 @@ def test_el_dia_recodificado_sobrevive_a_una_segunda_pasada(entrada):
     una = aplicar_dominio(entrada)
     dos = aplicar_dominio(una)
 
-    assert (una[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == 20
-    assert (dos[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == 20
+    assert (una[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == N_FIN_DE_SEMANA
+    assert (dos[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == N_FIN_DE_SEMANA
 
 
 # --- el contrato de la maquinaria de scikit-learn ---------------------------------------------
@@ -324,9 +344,6 @@ def test_el_fixture_usa_categorias_que_de_verdad_no_estaban(entrada):
 # --- el orden de los dos primeros pasos, que es fuga estructural -----------------------------
 
 
-REPETICIONES = 10
-
-
 @pytest.fixture
 def entrada_con_extremo(entrada):
     """Un cliente con el error de captura de 117M en el ingreso, que es donde el orden se nota.
@@ -334,26 +351,18 @@ def entrada_con_extremo(entrada):
     Sin un valor por encima del cap, el winsorizador no recorta nada y los dos órdenes dan lo
     mismo: el fixture normal no distingue los dos casos.
 
-    Va con las filas repetidas y no con las 60 de siempre por la interpolación del percentil: con
-    un solo extremo en 60 filas, el p99 cae al 41% del camino hacia él y el triple se queda por
-    encima, así que no recorta nada. Con 600 el p99 se apoya en la masa, que es la situación de
-    las 245.993 de verdad.
+    Con pocas filas esto no funcionaría: con un solo extremo en 60, el p99 cae al 41% del camino
+    hacia él y el triple se queda por encima, así que no recortaría nada. Con las 600 del fixture
+    el p99 se apoya en la masa, que es la situación de las 245.993 de verdad.
     """
-    frame = pd.concat([entrada] * REPETICIONES, ignore_index=True)
+    frame = entrada.copy()
     frame["AMT_INCOME_TOTAL"] = 1_000.0
     frame.loc[frame.index[-1], "AMT_INCOME_TOTAL"] = 117_000_000.0
     frame["AMT_ANNUITY"] = 10_000.0
     return frame
 
 
-@pytest.fixture
-def objetivo_con_extremo(objetivo):
-    return pd.concat([objetivo] * REPETICIONES, ignore_index=True)
-
-
-def test_la_carga_de_cuota_se_calcula_sobre_el_ingreso_ya_recortado(
-    entrada_con_extremo, objetivo_con_extremo
-):
+def test_la_carga_de_cuota_se_calcula_sobre_el_ingreso_ya_recortado(entrada_con_extremo, objetivo):
     """La fuga estructural que caza: `derivadas` colocado delante de `winsor`.
 
     Con ese orden el error de captura de 117M se queda dentro del denominador de la carga, que es
@@ -361,7 +370,7 @@ def test_la_carga_de_cuota_se_calcula_sobre_el_ingreso_ya_recortado(
     cambian su ratio, y 9 los que cambian el de hijos sobre miembros: la matriz sale distinta y
     ni el conteo de columnas ni ninguna otra cifra lo delatan.
     """
-    p = construir_pipeline().fit(entrada_con_extremo, objetivo_con_extremo)
+    p = construir_pipeline().fit(entrada_con_extremo, objetivo)
     salida = p.transform(entrada_con_extremo)
     limite = p.named_steps["winsor"].limites_["AMT_INCOME_TOTAL"]
     cuota = entrada_con_extremo["AMT_ANNUITY"].iloc[-1]
@@ -371,11 +380,89 @@ def test_la_carga_de_cuota_se_calcula_sobre_el_ingreso_ya_recortado(
     assert salida["ANNUITY_TO_INCOME_RATIO"].iloc[-1] != pytest.approx(cuota / ingreso_crudo)
 
 
-def test_el_fixture_del_extremo_dispara_de_verdad_el_cap(entrada_con_extremo, objetivo_con_extremo):
+def test_el_fixture_del_extremo_dispara_de_verdad_el_cap(entrada_con_extremo, objetivo):
     """Guardián: sin un ingreso por encima del límite, el test de arriba no distingue nada."""
-    p = construir_pipeline().fit(entrada_con_extremo, objetivo_con_extremo)
+    p = construir_pipeline().fit(entrada_con_extremo, objetivo)
     limite = p.named_steps["winsor"].limites_["AMT_INCOME_TOTAL"]
     ingreso_crudo = entrada_con_extremo["AMT_INCOME_TOTAL"].iloc[-1]
 
     assert ingreso_crudo > limite, "el ingreso extremo no llega a recortarse"
     assert ingreso_crudo / limite > 100, "la diferencia tiene que ser de órdenes de magnitud"
+
+
+# --- el ancla del conteo de columnas de salida -----------------------------------------------
+
+
+def _niveles_por_columna(entrada):
+    """Los niveles que ve el OHE de cada categórica, ya pasada por el paso de dominio."""
+    tras_dominio = aplicar_dominio(entrada)
+    return {c: tras_dominio[c].nunique(dropna=False) for c in CATEGORICAS_OHE}
+
+
+def test_cada_categorica_saca_una_columna_por_nivel_salvo_las_binarias(entrada, objetivo):
+    """El fallo que caza: `drop="first"`, que le quita un nivel a todas y no solo a las binarias.
+
+    Sobre el dato real baja el OHE de 52 columnas a 43 sin que nada mas se mueva, y con un
+    modelo sin regularizar eso es informacion perdida en las categoricas de varios niveles.
+    """
+    p = construir_pipeline().fit(entrada, objetivo)
+    codificador = p.named_steps["columnas"].named_transformers_["ohe"].named_steps["codifica"]
+    salen = dict(zip(CATEGORICAS_OHE, (len(c) for c in codificador.categories_)))
+    niveles = _niveles_por_columna(entrada)
+
+    for columna, k in niveles.items():
+        esperadas = 1 if k == 2 else k
+        real = len(
+            [c for c in codificador.get_feature_names_out() if c.startswith(f"{columna}_")]
+        )
+        assert real == esperadas, f"{columna} tiene {k} niveles y saca {real} columnas"
+        assert salen[columna] == k
+
+
+def test_el_fixture_trae_una_categorica_de_mas_de_dos_niveles(entrada):
+    """Guardián: solo con binarias, `if_binary` y `first` sacan lo mismo y el test es vacuo."""
+    niveles = _niveles_por_columna(entrada)
+
+    assert max(niveles.values()) > 2, f"todas las categóricas son binarias: {niveles}"
+
+
+def test_el_total_de_columnas_de_salida_cuadra_bucket_a_bucket(entrada, objetivo):
+    """La aritmética completa, calculada aparte y no leída del pipeline ya ajustado."""
+    niveles = _niveles_por_columna(entrada)
+    esperado = (
+        len(NUMERICAS)
+        + sum(1 if k == 2 else k for k in niveles.values())
+        + 3  # ordinal, WoE y target encoding, una columna cada uno
+        + len(BINARIAS)
+    )
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    assert salida.shape[1] == esperado
+
+
+def test_el_fixture_no_colapsa_las_categoricas_en_su_residual(entrada, objetivo):
+    """Guardián del fixture, y el que destapó que estaba aguado.
+
+    Con 60 filas ninguna celda llegaba a `n_min_categoria`, así que el agrupador mandaba las
+    catorce columnas enteras a su residual y el OHE codificaba constantes que el VarianceThreshold
+    se llevaba después. Los tests de esta sección pasaban midiendo una matriz degenerada.
+    """
+    p = construir_pipeline().fit(entrada, objetivo)
+    agrupador = p.named_steps["columnas"].named_transformers_["ohe"].named_steps["agrupa"]
+    codificador = p.named_steps["columnas"].named_transformers_["ohe"].named_steps["codifica"]
+
+    assert agrupador.raras_ == {}, f"el fixture tiene celdas raras: {agrupador.raras_}"
+    assert min(len(c) for c in codificador.categories_) >= 2, "alguna columna quedó con un nivel"
+
+
+def test_el_fixture_da_ratios_posteriores_que_varian(entrada, objetivo):
+    """Guardián: con el mismo linspace en todas, los dos ratios salen constantes y se caen.
+
+    Los eliminaba el VarianceThreshold antes de llegar a la matriz, así que ningún test sobre
+    ellos medía nada. Es el mismo aguado que colapsaba las categóricas, en otra columna.
+    """
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    for ratio in ("ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"):
+        assert ratio in salida.columns, f"{ratio} no llegó a la matriz"
+        assert salida[ratio].nunique() > 1, f"{ratio} es constante y no mide nada"
