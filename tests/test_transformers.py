@@ -867,3 +867,42 @@ def test_el_prior_va_repartido_por_la_tasa_global_y_no_a_partes_iguales():
 
     assert abs(woe) < 0.5, "el prior pesa más que el dato y lo manda lejos de la media"
     assert woe < 0, "cuatro clientes sin fallar no pueden salir del lado de más riesgo"
+
+
+# El caso que hace visible el cruce entre columnas: un valor que es raro en una y común en la
+# otra. Con dos columnas de niveles disjuntos el cruce no se nota, porque cada reemplazo cae en
+# el vacío, y con dos columnas idénticas tampoco, porque da el mismo resultado.
+N_COMPARTIDO_EN_OTRA = 400
+
+
+@pytest.fixture
+def dos_columnas():
+    """`compartido` es raro en `cat` (20 obs) y masivo en `otra` (400), y las dos tienen raras."""
+    return pd.DataFrame(
+        {
+            "cat": (["comun"] * 580) + (["compartido"] * 20),
+            "otra": (["compartido"] * N_COMPARTIDO_EN_OTRA) + (["otro"] * 180) + (["rarita"] * 20),
+        }
+    )
+
+
+def test_lo_raro_de_una_columna_no_se_reetiqueta_en_otra(dos_columnas):
+    """El fallo que caza: aplicar el conjunto de raras de cada columna a todas las demás.
+
+    Es invisible sobre el dato real, donde solo `NAME_INCOME_TYPE` tiene celdas raras, y también
+    con dos columnas de niveles disjuntos. Hace falta el nivel compartido con rareza distinta.
+    """
+    a = AgrupadorDeRaras().fit(dos_columnas)
+    salida = a.transform(dos_columnas)
+
+    assert a.raras_ == {"cat": ("compartido",), "otra": ("rarita",)}
+    assert salida["otra"].value_counts()["compartido"] == N_COMPARTIDO_EN_OTRA
+    assert residual_de("cat") not in set(salida["otra"])
+
+
+def test_el_fixture_comparte_un_nivel_con_rareza_distinta(dos_columnas):
+    """Guardián: sin el nivel compartido, cruzar las raras entre columnas no cambia nada."""
+    raras_cat = set(AgrupadorDeRaras().fit(dos_columnas).raras_["cat"])
+
+    assert raras_cat & set(dos_columnas["otra"]), "las dos columnas no comparten ningún nivel"
+    assert (dos_columnas["otra"] == "compartido").sum() >= valor("n_min_categoria")
