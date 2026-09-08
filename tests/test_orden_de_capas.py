@@ -24,7 +24,6 @@ import pandas as pd
 import pytest
 
 from src.features import build_features as mod
-from src.features import params as params_mod
 from src.features.build_features import ajustar_capa2a, matriz_de_features
 from src.features.cleaning import filas_a_eliminar
 
@@ -103,15 +102,6 @@ def base_y_split():
         {"SK_ID_CURR": range(1, 11), "split": ["train"] * 5 + ["valid"] * 5}
     )
     return base, split
-
-
-@pytest.fixture(autouse=True)
-def registro_limpio():
-    """`ajustar_capa2a` escribe en el dict de módulo de params.py; se deja como estaba."""
-    copia = dict(params_mod.PARAMS)
-    yield
-    params_mod.PARAMS.clear()
-    params_mod.PARAMS.update(copia)
 
 
 def test_la_capa2a_se_ajusta_sobre_la_particion_y_no_sobre_la_tabla_entera(base_y_split):

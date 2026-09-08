@@ -341,25 +341,17 @@ def test_una_feature_sin_corte_devuelve_tupla_vacia():
 
 
 # --- valor operativo: la referencia del EDA no basta por sí sola para usar un reajustable ---
-# La capa 2a/2b que fija estos valores sobre solo_train() todavía no existe, así que estos
-# tests describen el contrato que tendrá que cumplir, no un flujo ya integrado.
-
-
-@pytest.fixture
-def restaurar_params():
-    """Snapshot de PARAMS para deshacer cualquier fijar_operativo() que haga el test.
-
-    Los Parametro son inmutables (frozen), así que una copia superficial del dict basta:
-    fijar_operativo() reemplaza la entrada entera, nunca muta un Parametro existente.
-    """
-    original = dict(PARAMS)
-    yield
-    PARAMS.clear()
-    PARAMS.update(original)
+# De la capa que fija estos valores sobre solo_train() está la 2a del winsorizador, en
+# `ajustar_capa2a()`; el resto de la 2a y la 2b todavía no, así que para esos cortes estos tests
+# describen el contrato que tendrán que cumplir y no un flujo ya integrado.
 
 
 def test_todo_reajustable_empieza_sin_operativo_fijado():
-    """Hoy no existe la capa 2a/2b que llama a fijar_operativo(), así que todos son pendientes."""
+    """Al importar el módulo nadie ha fijado nada, y así tiene que llegar a cada test.
+
+    Lo sostiene la fixture `restaurar_params` de conftest.py: `ajustar_capa2a()` ya fija los diez
+    cortes del winsorizador, así que sin ella este test dependería de qué haya corrido antes.
+    """
     assert set(operativos_pendientes()) == set(reajustables())
 
 
@@ -370,7 +362,7 @@ def test_valor_revienta_para_cualquier_reajustable_sin_operativo(nombre):
         valor(nombre)
 
 
-def test_fijar_operativo_permite_usar_el_valor(restaurar_params):
+def test_fijar_operativo_permite_usar_el_valor():
     fijar_operativo("app_winsor_amt_income_total", 1_500_000, n_train=245_993)
     assert valor("app_winsor_amt_income_total") == 1_500_000
     assert "app_winsor_amt_income_total" not in operativos_pendientes()
@@ -378,7 +370,7 @@ def test_fijar_operativo_permite_usar_el_valor(restaurar_params):
     assert parametro("app_winsor_amt_income_total").valor_referencia == 1_417_500
 
 
-def test_refijar_uno_ya_fijado_revienta_en_vez_de_pisarlo(restaurar_params):
+def test_refijar_uno_ya_fijado_revienta_en_vez_de_pisarlo():
     """Sin esta guarda, dos ajustes sobre poblaciones distintas los resuelve un upsert.
 
     Gana el último y nadie se entera: es el mecanismo del orden del registro que en el EDA dejó
@@ -393,7 +385,7 @@ def test_refijar_uno_ya_fijado_revienta_en_vez_de_pisarlo(restaurar_params):
     assert parametro("app_winsor_cnt_children").n_train_operativo == 245_993
 
 
-def test_refijar_con_sobrescribir_explicito_si_pisa(restaurar_params):
+def test_refijar_con_sobrescribir_explicito_si_pisa():
     """La dirección contraria: pedirlo a las claras sí vale, como en `construir_split()`."""
     fijar_operativo("app_winsor_cnt_children", 9, n_train=245_993)
     fijar_operativo("app_winsor_cnt_children", 99, n_train=12, sobrescribir=True)
@@ -401,7 +393,7 @@ def test_refijar_con_sobrescribir_explicito_si_pisa(restaurar_params):
     assert parametro("app_winsor_cnt_children").n_train_operativo == 12
 
 
-def test_fijar_operativo_exige_n_train_positivo(restaurar_params):
+def test_fijar_operativo_exige_n_train_positivo():
     with pytest.raises(ValueError, match="positivo"):
         fijar_operativo("app_winsor_cnt_children", 8, n_train=0)
 
@@ -421,9 +413,7 @@ def test_valor_operativo_sin_n_train_asociado_revienta():
         Parametro(None, "medido", "d", "f", valor_operativo=2)
 
 
-def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train(
-    restaurar_params,
-):
+def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train():
     """El número que ya vivía en PARAMS no basta solo, aunque sea el mismo que se acabe fijando."""
     referencia = parametro("prev_plazo_largo_cuotas").valor_referencia
     with pytest.raises(ValueError, match="sin fijar"):

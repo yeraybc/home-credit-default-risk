@@ -333,23 +333,17 @@ def test_los_3xp99_reestimados_sobre_train_reproducen_la_referencia_del_eda(wins
 def test_ajustar_capa2a_ajusta_sobre_train_y_registra_lo_reestimado(base):
     """El camino completo, que es lo que el test de arriba no cubre: fija sobre solo_train().
 
-    Restaura `PARAMS` al salir porque `fijar_operativo` escribe en un dict de módulo, y este
-    fichero corre antes que test_params.py, que comprueba que ningún reajustable arranca fijado.
+    Escribe de verdad en `PARAMS`, y quien lo deshace es la fixture autouse de conftest.py: sin
+    ella este fichero, que corre antes que test_params.py, le rompería allí dos tests.
     """
-    from src.features import params as mod
     from src.features.build_features import ajustar_capa2a
     from src.features.params import parametro, valor
 
-    copia = dict(mod.PARAMS)
-    try:
-        w, inf = ajustar_capa2a(base)
-        assert w.limites_ == {c: float(v) for c, (v, _) in LIMITES_SOBRE_TRAIN.items()}
-        assert (inf["% desviación"] == 0).all()
-        assert valor("app_winsor_amt_income_total") == 1_417_500
-        assert parametro("app_cap_p99_own_car_age").n_train_operativo == 83_745
-    finally:
-        mod.PARAMS.clear()
-        mod.PARAMS.update(copia)
+    w, inf = ajustar_capa2a(base)
+    assert w.limites_ == {c: float(v) for c, (v, _) in LIMITES_SOBRE_TRAIN.items()}
+    assert (inf["% desviación"] == 0).all()
+    assert valor("app_winsor_amt_income_total") == 1_417_500
+    assert parametro("app_cap_p99_own_car_age").n_train_operativo == 83_745
 
 
 def test_el_contrato_de_nombres_es_el_de_la_matriz_y_no_el_de_la_base(base):
