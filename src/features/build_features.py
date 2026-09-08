@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
+from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config
 from src.data.loader import load_table
@@ -34,6 +35,7 @@ from src.features.cleaning import (
     limpiar_application,
     limpiar_application_entrenamiento,
 )
+from src.features.pipeline import construir_pipeline
 from src.features.split import construir_split, solo_train
 from src.features.transformers import Winsorizador, registrar_limites
 
@@ -133,6 +135,27 @@ def ajustar_capa2a(
     winsorizador = Winsorizador().fit(entrenamiento)
     logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
     return winsorizador, registrar_limites(winsorizador, sobrescribir)
+
+
+def ajustar_pipeline(base: pd.DataFrame, split: pd.DataFrame | None = None) -> Pipeline:
+    """Ajusta el pipeline entero de las capas 2 sobre el 80% de entrenamiento.
+
+    Es **la única forma sancionada de ajustarlo**, y existe por eso. `construir_pipeline()`
+    devuelve el objeto sin ajustar, así que cualquiera podía hacerle `fit` con la tabla entera y
+    nada lo distinguía: sobre el dato real los diez cortes de la capa 2a salen idénticos con
+    partición y sin ella, o sea que la cifra no delata la fuga. Teniendo un solo camino, la
+    guarda se pone una vez y se prueba una vez.
+
+    El orden de las dos operaciones es el mismo que en `ajustar_capa2a()`: primero se filtra la
+    partición, que necesita el identificador, y después se quita.
+    """
+    entrenamiento = solo_train(base, split)
+    cfg = cargar_config()["dataset"]
+    pipeline = construir_pipeline().fit(
+        matriz_de_features(entrenamiento), entrenamiento[cfg["target_col"]]
+    )
+    logger.info("capas 2 ajustadas sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
+    return pipeline
 
 
 def informe_base(
