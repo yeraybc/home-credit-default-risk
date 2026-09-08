@@ -108,6 +108,30 @@ PARAMS: dict[str, Parametro] = {
         "quién se agrupa es decisión por tasa y se refija aparte",
         "eda-bureau 5.3, agrupamiento de CREDIT_TYPE",
     ),
+    # Suavizado del WoE, convención y no corte medido. Son observaciones de prior, repartidas
+    # entre buenos y malos **según la tasa global de train** y no a partes iguales: a partes
+    # iguales el prior implícito es 50/50, que no describe una cartera del 8% de default, y al
+    # nivel que ya está por encima de la media lo aleja de cero en vez de acercarlo (medido:
+    # `Industry: type 8`, n = 17, pasaba de +0,8920 a +1,0097).
+    #
+    # Con 20, un nivel necesita 20 observaciones propias para que su tasa pese tanto como el
+    # prior, o sea que conserva n/(n+20) de su propia señal: el de 17 clientes se queda con la
+    # mitad y el de 54.554 no se mueve. Barrido sobre train en 5, 10, 20, 50 y 100: por debajo
+    # sigue fiándose demasiado de 17 observaciones, y por encima empieza a erosionar niveles con
+    # señal real, como `Industry: type 13`, que baja del 77% al 58% de la suya con 56 clientes y
+    # 7 impagos.
+    #
+    # Aparte de eso, impide el log de cero. Sobre train hoy ningún nivel de ORGANIZATION_TYPE se
+    # queda sin positivos ni sin negativos, pero sí puede pasar en un fold del CV de la Fase 4 o
+    # en lo que llegue a la API.
+    "suavizado_woe": Parametro(
+        20,
+        "dominio",
+        "observaciones de prior con las que se suaviza el WoE de cada nivel, repartidas entre "
+        "buenos y malos según la tasa global de entrenamiento, para que un nivel con poca "
+        "evidencia propia converja al comportamiento medio en vez de a su propio azar",
+        "convención de suavizado bayesiano de WoE",
+    ),
     "min_denominador_proporcion": Parametro(
         None,
         "medido",

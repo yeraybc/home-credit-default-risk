@@ -74,6 +74,14 @@ def residual_de(columna: str) -> str:
     return f"{PREFIJO_RESIDUAL}{columna}"
 
 
+SUFIJO_WOE = "_WOE"
+
+
+def nombre_woe(columna: str) -> str:
+    """El nombre que lleva la columna una vez deja de ser categoría y pasa a ser un número."""
+    return f"{columna}{SUFIJO_WOE}"
+
+
 def _clave(serie: pd.Series) -> pd.Series:
     """La columna con el nulo convertido en un nivel contable."""
     if (serie == NULO).any():
@@ -295,6 +303,109 @@ def informe_agrupamiento(agrupador: AgrupadorDeRaras) -> pd.DataFrame:
     informe = agrupador.detalle_.copy()
     informe["categoría"] = informe["categoría"].map(_nombre)
     return informe
+
+
+class WoEEncoder(BaseEstimator, TransformerMixin):
+    """Sustituye cada nivel por su peso de la evidencia, ajustado sobre el 80% de entrenamiento.
+
+    Es la codificación de las categóricas de cardinalidad alta, donde el OHE saca una columna por
+    nivel y el ordinal no tiene orden que respetar. Va por nivel y sin binning: el binning es de
+    continuas y vive en `iv.py`, que es del bloque 5.
+
+    **Signo:** positivo significa que el nivel falla más que la media, o sea `log` de la razón
+    entre la proporción de malos y la de buenos. Es la dirección que declara el glosario del
+    proyecto ("log-odds de default") y la que comparten todos los efectos del EDA, donde el signo
+    positivo es siempre más riesgo. La convención clásica de scorecard es la inversa, así que
+    quien venga de ahí tiene que leer esto una vez: invertirla es cambiarle el signo al `log`.
+
+    **Es capa 2b:** el TARGET entra en el cálculo, así que ajustar fuera de train sería fuga de
+    etiqueta y no solo de segundo orden.
+    """
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> WoEEncoder:
+        """Calcula la tabla de cada columna. Se llama sobre `solo_train()`, nunca sobre todo."""
+        if y is None:
+            raise ValueError(
+                "WoEEncoder es capa 2b y necesita el TARGET: sin él no hay malos ni buenos que "
+                "contar y no hay peso de la evidencia que calcular"
+            )
+        alfa = valor("suavizado_woe")
+        objetivo = pd.Series(np.asarray(y), index=X.index)
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.n_features_in_ = X.shape[1]
+        self.tablas_ = {
+            columna: self._tabla(_clave(X[columna]), objetivo, alfa)
+            for columna in X.select_dtypes(include=["object", "category"]).columns
+        }
+        return self
+
+    @staticmethod
+    def _tabla(clave: pd.Series, objetivo: pd.Series, alfa: float) -> pd.Series:
+        """El WoE de cada nivel, con `alfa` observaciones de prior repartidas por la tasa global.
+
+        **El reparto no es a partes iguales y esa es la pieza que importa.** Sumar la misma
+        constante a los dos recuentos arrima cada nivel a un prior implícito de 50/50, que no
+        tiene nada que ver con una cartera del 8% de default: al nivel que ya está por encima de
+        la media lo empuja más arriba todavía. Medido sobre train, `Industry: type 8` (n = 17)
+        pasaba de +0,8920 a +1,0097, o sea que el suavizado lo alejaba de cero justo en el nivel
+        más pequeño de los 58. Repartiendo el prior según la tasa global, un nivel sin evidencia
+        propia converge al comportamiento medio, que es WoE cero, venga de la dirección que venga.
+
+        Los denominadores son los totales pelados y no llevan el prior sumado. Con el reparto a
+        partes iguales sí hacía falta corregirlos, porque el prior infla las dos partes en
+        proporciones distintas (0,0584 frente a 0,0051 sobre train). Repartido por la tasa
+        global los dos factores de inflado valen lo mismo, `alfa` por niveles entre el total, y
+        se cancelan dentro del `log`: comprobado sobre train, la diferencia entre corregir y no
+        corregir es de 2,8e-16. Escribirlo sería una línea que no cambia ningún resultado.
+        """
+        malos = objetivo.groupby(clave, observed=True).sum()
+        buenos = objetivo.groupby(clave, observed=True).count() - malos
+        prior_malos = alfa * malos.sum() / (malos.sum() + buenos.sum())
+        prior_buenos = alfa - prior_malos
+        parte_malos = (malos + prior_malos) / malos.sum()
+        parte_buenos = (buenos + prior_buenos) / buenos.sum()
+        return np.log(parte_malos / parte_buenos)
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Aplica las tablas ajustadas. Estricto donde el `fit` es permisivo.
+
+        El nivel que no se vio al ajustar sale a 0, que es el WoE neutro: la API va a recibir
+        organizaciones nuevas y no puede reventar ni inventarles un riesgo.
+        """
+        check_is_fitted(self)
+        faltan = [c for c in self.tablas_ if c not in X.columns]
+        if faltan:
+            raise ValueError(
+                f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
+                "Saltárselas daría una matriz distinta de la del entrenamiento"
+            )
+        X = X.copy()
+        for columna, tabla in self.tablas_.items():
+            X[columna] = _clave(X[columna]).map(tabla).astype(float).fillna(0.0)
+        return X.rename(columns={c: nombre_woe(c) for c in self.tablas_})
+
+    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
+        """Las de entrada con el sufijo puesto: la columna deja de ser la categoría original.
+
+        Sin el sufijo, la matriz acabaría con una columna llamada `ORGANIZATION_TYPE` que ya no
+        lleva una organización sino un número, y el `ColumnTransformer` va con
+        `verbose_feature_names_out=False`, así que tampoco queda el nombre del bucket que lo diga.
+        """
+        check_is_fitted(self)
+        entrada = self.feature_names_in_ if input_features is None else input_features
+        nombres = [nombre_woe(c) if c in self.tablas_ else c for c in entrada]
+        return np.asarray(nombres, dtype=object)
+
+
+def informe_woe(encoder: WoEEncoder) -> pd.DataFrame:
+    """Puerta del punto: la tabla de WoE nivel a nivel, con lo que la sostiene."""
+    check_is_fitted(encoder)
+    filas = [
+        {"columna": columna, "nivel": _nombre(nivel), "woe": woe}
+        for columna, tabla in encoder.tablas_.items()
+        for nivel, woe in tabla.items()
+    ]
+    return pd.DataFrame(filas, columns=["columna", "nivel", "woe"])
 
 
 def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:

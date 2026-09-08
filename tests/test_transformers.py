@@ -20,6 +20,7 @@ from src.features.transformers import (
     COLUMNAS_DETALLE,
     NULO,
     AgrupadorDeRaras,
+    _clave,
     CORTES_WINSOR,
     FACTOR_POR_COLUMNA,
     RATIOS_POSTERIORES,
@@ -27,6 +28,9 @@ from src.features.transformers import (
     Winsorizador,
     informe_agrupamiento,
     informe_winsorizacion,
+    WoEEncoder,
+    informe_woe,
+    nombre_woe,
     registrar_limites,
     residual_de,
 )
@@ -635,3 +639,231 @@ def test_el_informe_declara_el_n_de_cada_categoria_absorbida(categorico):
     assert len(inf) == len(RARAS)
     assert dict(zip(inf["categoría"], inf["n"])) == {"rara_alta": 9, "rara_baja": 5}
     assert set(inf["residual"]) == {RESIDUAL}
+
+
+# --- WoEEncoder, capa 2b ---------------------------------------------------------------------
+# Aquí sí entra el TARGET al cálculo, así que ajustar fuera de train es fuga de etiqueta y no
+# solo de segundo orden. El fixture lleva un nivel sin ningún positivo a propósito: es el que
+# daría infinito sin suavizado, y es el caso que la tabla real no tiene hoy pero puede tener en
+# cualquier fold del CV de la Fase 4.
+
+NIVEL_SIN_MALOS = "impoluto"
+
+
+@pytest.fixture
+def organizacion():
+    """Cuatro niveles con tasas separadas, uno de ellos sin ni un positivo."""
+    filas = (
+        [("banca", 0)] * 180
+        + [("banca", 1)] * 20
+        + [("obra", 0)] * 100
+        + [("obra", 1)] * 100
+        + [(NIVEL_SIN_MALOS, 0)] * 40
+        + [("mixto", 0)] * 90
+        + [("mixto", 1)] * 10
+    )
+    valores, objetivo = zip(*filas)
+    return pd.DataFrame({"org": list(valores)}), pd.Series(objetivo)
+
+
+def test_el_signo_es_positivo_donde_se_falla_mas_que_la_media(organizacion):
+    """La dirección que declara el glosario: positivo es más riesgo, no menos."""
+    X, y = organizacion
+    tabla = WoEEncoder().fit(X, y).tablas_["org"]
+
+    assert tabla["obra"] > 0, "el nivel que más falla tiene que salir positivo"
+    assert tabla["banca"] < 0
+    assert tabla["obra"] > tabla["banca"] > tabla[NIVEL_SIN_MALOS]
+
+
+def test_el_orden_del_woe_sigue_al_de_la_tasa(organizacion):
+    """Guardián de la dirección: si el fixture no separase las tasas, el signo no diría nada."""
+    X, y = organizacion
+    tasas = y.groupby(X["org"]).mean().sort_values()
+    tabla = WoEEncoder().fit(X, y).tablas_["org"]
+
+    assert list(tabla[tasas.index].sort_values().index) == list(tasas.index)
+
+
+def test_el_nivel_sin_ningun_positivo_da_un_woe_finito(organizacion):
+    """Sin suavizado sale menos infinito, y con él se arrastra a toda la matriz."""
+    X, y = organizacion
+    tabla = WoEEncoder().fit(X, y).tablas_["org"]
+
+    assert np.isfinite(tabla[NIVEL_SIN_MALOS])
+    assert (y[X["org"] == NIVEL_SIN_MALOS] == 1).sum() == 0, "el fixture perdió su nivel impoluto"
+
+
+def test_el_nivel_sin_ningun_negativo_tambien_da_finito():
+    """La otra cola del mismo problema, que el fixture principal no tiene."""
+    X = pd.DataFrame({"org": ["todos_malos"] * 30 + ["normal"] * 200})
+    y = pd.Series([1] * 30 + [0] * 180 + [1] * 20)
+
+    assert np.isfinite(WoEEncoder().fit(X, y).tablas_["org"]["todos_malos"])
+
+
+def test_sin_suavizado_el_nivel_impoluto_se_iria_a_infinito(organizacion):
+    """Comprueba que el problema existe de verdad y el suavizado no es decorativo."""
+    X, y = organizacion
+    malos = y.groupby(X["org"]).sum()
+    buenos = y.groupby(X["org"]).count() - malos
+    # el log de cero es justo lo que este test demuestra, así que su aviso se acota aquí en vez
+    # de dejarlo suelto contaminando el recuento de la suite
+    with np.errstate(divide="ignore"):
+        crudo = np.log((malos / malos.sum()) / (buenos / buenos.sum()))
+
+    assert not np.isfinite(crudo[NIVEL_SIN_MALOS])
+
+
+def test_ajustar_sin_target_revienta(organizacion):
+    """Es capa 2b de verdad: sin etiqueta no hay malos ni buenos que contar."""
+    X, _ = organizacion
+    with pytest.raises(ValueError, match="TARGET"):
+        WoEEncoder().fit(X)
+
+
+def test_la_tabla_sale_de_la_particion_con_la_que_se_ajusta(organizacion):
+    """La fuga que caza: ajustar sobre el conjunto entero en vez de sobre train."""
+    X, y = organizacion
+    entero_X = pd.concat([X, pd.DataFrame({"org": ["banca"] * 300})], ignore_index=True)
+    entero_y = pd.concat([y, pd.Series([1] * 300)], ignore_index=True)
+
+    solo_entrenamiento = WoEEncoder().fit(X, y).tablas_["org"]["banca"]
+    sobre_todo = WoEEncoder().fit(entero_X, entero_y).tablas_["org"]["banca"]
+
+    assert solo_entrenamiento < 0 < sobre_todo
+
+
+def test_transform_no_reajusta_la_tabla(organizacion):
+    """La validación se transforma, nunca se ajusta nada sobre ella."""
+    X, y = organizacion
+    e = WoEEncoder().fit(X.iloc[:200], y.iloc[:200])
+    antes = e.tablas_["org"].copy()
+    e.transform(X)
+
+    pd.testing.assert_series_equal(e.tablas_["org"], antes)
+
+
+def test_el_nivel_no_visto_sale_a_cero(organizacion):
+    """La API va a recibir organizaciones nuevas y no puede reventar ni inventarles riesgo."""
+    X, y = organizacion
+    e = WoEEncoder().fit(X, y)
+
+    assert e.transform(pd.DataFrame({"org": ["jamas_vista"]}))[nombre_woe("org")].tolist() == [0.0]
+
+
+def test_el_nulo_es_un_nivel_con_su_propio_woe():
+    """El nulo no se salta ni se imputa: tiene su peso como cualquier otro nivel."""
+    X = pd.DataFrame({"org": ["banca"] * 200 + [None] * 100})
+    y = pd.Series([0] * 190 + [1] * 10 + [1] * 60 + [0] * 40)
+    e = WoEEncoder().fit(X, y)
+
+    assert NULO in e.tablas_["org"].index
+    assert e.tablas_["org"][NULO] > 0, "el nulo falla más que la media y tiene que salir positivo"
+    assert not e.transform(X)[nombre_woe("org")].isna().any()
+
+
+def test_la_columna_cambia_de_nombre_al_dejar_de_ser_categoria(organizacion):
+    """Sin el sufijo, la matriz llevaría una ORGANIZATION_TYPE que ya no es una organización."""
+    X, y = organizacion
+    salida = WoEEncoder().fit(X, y).transform(X)
+
+    assert "org" not in salida.columns
+    assert nombre_woe("org") in salida.columns
+    assert salida[nombre_woe("org")].dtype == float
+
+
+def test_get_feature_names_out_casa_con_la_salida(organizacion):
+    X, y = organizacion
+    e = WoEEncoder().fit(X, y)
+
+    assert list(e.get_feature_names_out()) == list(e.transform(X).columns)
+
+
+def test_las_columnas_no_categoricas_se_dejan_en_paz(organizacion):
+    """El bucket que le entrega el ColumnTransformer es categórico; lo demás pasa intacto."""
+    X, y = organizacion
+    X = X.assign(numero=1.0)
+    e = WoEEncoder().fit(X, y)
+
+    assert "numero" not in e.tablas_
+    assert "numero" in e.transform(X).columns
+
+
+def test_woe_transform_revienta_si_falta_una_columna_ajustada(organizacion):
+    """Estricto donde el fit es permisivo, igual que los otros tres."""
+    X, y = organizacion
+    e = WoEEncoder().fit(X, y)
+    with pytest.raises(ValueError, match="columnas ajustadas"):
+        e.transform(pd.DataFrame({"otra": [1]}))
+
+
+def test_woe_transform_sin_fit_revienta(organizacion):
+    from sklearn.exceptions import NotFittedError
+
+    X, _ = organizacion
+    with pytest.raises(NotFittedError):
+        WoEEncoder().transform(X)
+
+
+def test_el_informe_de_woe_lista_un_nivel_por_fila(organizacion):
+    X, y = organizacion
+    inf = informe_woe(WoEEncoder().fit(X, y))
+
+    assert list(inf.columns) == ["columna", "nivel", "woe"]
+    assert len(inf) == X["org"].nunique()
+    assert np.isfinite(inf["woe"]).all()
+
+
+def test_sin_riesgo_diferencial_el_woe_es_cero_exacto():
+    """El invariante que obliga a suavizar los dos denominadores y no solo los numeradores.
+
+    Con todos los niveles de composición idéntica, la proporción suavizada de cada uno vale 1/C
+    en las dos distribuciones, así que el `log` de su razón es cero clavado. Suavizar solo el
+    numerador rompe esa normalización y saca un WoE distinto de cero donde no hay ni una pizca
+    de evidencia, con los niveles desbalanceados de esta tabla (8% de malos) desplazados todos a
+    la vez en la misma dirección.
+    """
+    niveles = ["a", "b", "c", "d"]
+    X = pd.DataFrame({"org": [n for n in niveles for _ in range(100)]})
+    y = pd.Series([1] * 10 + [0] * 90).repeat(1).tolist() * len(niveles)
+    tabla = WoEEncoder().fit(X, pd.Series(y)).tablas_["org"]
+
+    assert tabla.abs().max() == pytest.approx(0.0, abs=1e-12)
+
+
+def test_el_nivel_pequeno_por_encima_de_la_media_tambien_se_acerca_a_cero():
+    """El bug que delató `Industry: type 8`, fijado como propiedad.
+
+    El suavizado aditivo a partes iguales arrima cada nivel a un prior de 50/50, así que al que
+    ya está por encima de la media lo empuja más arriba todavía. Sobre train alejaba de cero el
+    nivel más pequeño de los 58, que es justo lo contrario de para lo que sirve suavizar. Con el
+    prior repartido por la tasa global, la poca evidencia propia acerca al comportamiento medio
+    venga de la dirección que venga, así que este test se mira en las dos.
+    """
+    X = pd.DataFrame({"org": ["arriba"] * 17 + ["abajo"] * 39 + ["masa"] * 3_000})
+    y = pd.Series([1] * 3 + [0] * 14 + [1] * 1 + [0] * 38 + [1] * 240 + [0] * 2_760)
+    crudo = WoEEncoder._tabla(_clave(X["org"]), y, 0.0)
+    suave = WoEEncoder().fit(X, y).tablas_["org"]
+
+    assert crudo["arriba"] > 0, "el fixture perdió el nivel pequeño de riesgo alto"
+    assert crudo["abajo"] < 0, "y el de riesgo bajo, que es el que ya funcionaba"
+    for nivel in ("arriba", "abajo"):
+        assert abs(suave[nivel]) < abs(crudo[nivel]), f"{nivel} se alejó de cero al suavizar"
+
+
+def test_el_prior_va_repartido_por_la_tasa_global_y_no_a_partes_iguales():
+    """La otra dirección del mismo fallo, sobre la fórmula y no sobre su efecto.
+
+    Con una cartera al 5% de malos, repartir el prior a partes iguales le mete a cada nivel
+    tantos malos como buenos. En un nivel de 4 clientes y ningún impago eso pesa más que el dato
+    propio y lo saca a +2,59, o sea que el nivel sin un solo default acaba siendo el de más
+    riesgo de la tabla. Con el reparto por la tasa global sale -0,191: cerca de cero, y del lado
+    que le corresponde a cuatro clientes que no han fallado.
+    """
+    X = pd.DataFrame({"org": ["vacio"] * 4 + ["masa"] * 4_000})
+    y = pd.Series([0] * 4 + [1] * 200 + [0] * 3_800)
+    woe = WoEEncoder().fit(X, y).tablas_["org"]["vacio"]
+
+    assert abs(woe) < 0.5, "el prior pesa más que el dato y lo manda lejos de la media"
+    assert woe < 0, "cuatro clientes sin fallar no pueden salir del lado de más riesgo"
