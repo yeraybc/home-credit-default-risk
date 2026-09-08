@@ -5,6 +5,9 @@ de un percentil, y por eso **se ajusta solo sobre el 80% de entrenamiento**. No 
 pero calcularlo sobre la tabla entera dejaría que el 20% de validación participase en elegir el
 umbral que después se le aplica a él mismo.
 
+La puerta de rareza del agrupador es capa 2a por el mismo criterio: cuenta sobre la covariable y
+no mira la etiqueta. Lo que sí será capa 2b es la tabla de WoE, donde el TARGET entra al cálculo.
+
 Los valores del EDA viven en `params.py` como referencia y nunca se consumen: `valor()` revienta
 para cualquier reajustable sin fijar. Quien los reestima es el `fit` de aquí.
 """
@@ -49,6 +52,38 @@ RATIOS_POSTERIORES: dict[str, tuple[str, str]] = {
     "ANNUITY_TO_INCOME_RATIO": ("AMT_ANNUITY", "AMT_INCOME_TOTAL"),
     "CHILDREN_TO_FAM_RATIO": ("CNT_CHILDREN", "CNT_FAM_MEMBERS"),
 }
+
+
+# El nulo es un nivel más para agrupar y para el WoE, así que necesita una clave con la que
+# contarlo y agruparlo. Va como cadena y no como `object()` porque tiene que sobrevivir a un
+# `value_counts` y a un `groupby`, y se comprueba al ajustar que ninguna categoría real la use.
+NULO = "__NULO__"
+
+# El registro de una celda movida. Va declarado porque el frame se arma por trozos y uno vacío
+# tiene que traer las mismas columnas que uno lleno, o el informe cambia de forma según el dato.
+COLUMNAS_DETALLE = ["columna", "categoría", "n", "residual"]
+
+# El residual lleva el nombre de su columna a propósito: si todas compartieran un "Other" pelado,
+# el ColumnTransformer sacaría un nivel con el mismo nombre desde varias columnas y el IV del
+# bloque 5 no podría decir de cuál viene cada uno.
+PREFIJO_RESIDUAL = "Other_"
+
+
+def residual_de(columna: str) -> str:
+    """El nivel al que van a parar las categorías raras de esa columna."""
+    return f"{PREFIJO_RESIDUAL}{columna}"
+
+
+def _clave(serie: pd.Series) -> pd.Series:
+    """La columna con el nulo convertido en un nivel contable."""
+    if (serie == NULO).any():
+        raise ValueError(f"{serie.name} trae una categoría literal {NULO!r}, que es la del nulo")
+    return serie.astype(object).where(serie.notna(), NULO)
+
+
+def _nombre(categoria: object) -> object:
+    """El nombre legible de un nivel, con la clave del nulo deshecha."""
+    return "(nulo)" if categoria is NULO or categoria == NULO else categoria
 
 
 class Winsorizador(BaseEstimator, TransformerMixin):
@@ -165,6 +200,101 @@ class RatiosPosteriores(BaseEstimator, TransformerMixin):
         return np.asarray(
             entrada + [c for c in self.derivadas_ if c not in entrada], dtype=object
         )
+
+
+class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
+    """Manda a un residual propio de cada columna las categorías que no llegan al mínimo.
+
+    Un solo criterio, el de rareza, que sale de `n_min_categoria`. **No compara tasas ni elige
+    vecino**, y esa ausencia está medida y no supuesta: las celdas que caen aquí tienen 3, 8, 12
+    y 18 observaciones, así que su tasa observada es ruido de muestreo. El plan de la fase ya
+    había medido este caso exacto con un Fisher entre los dos lados de `NAME_INCOME_TYPE` (p =
+    0,0207, pero probabilidad 0,186 de ver cero positivos en 20 obs a la tasa base) y su
+    conclusión era colapsar en un residual único si la separación no se sostenía. No se sostiene.
+
+    El residual lleva el nombre de su columna, así que dos columnas nunca comparten nivel y el
+    IV del bloque 5 puede juzgar cada uno por separado. Aquí no se decide nada más, igual que
+    con las cuatro categóricas del bloque edificio.
+
+    **Es capa 2a y no 2b:** el `fit` no mira el TARGET. El parámetro que estima es un recuento
+    sobre la covariable, así que se ajusta sobre train por la misma razón que el winsorizador.
+
+    Trabaja sobre las columnas categóricas del frame que le llegue y no sobre una lista propia,
+    porque quien lo usa es el `ColumnTransformer`, que ya le entrega exactamente su bucket.
+    """
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> AgrupadorDeRaras:
+        """Anota qué categorías de cada columna no llegan al mínimo. Se llama sobre `solo_train()`.
+
+        Permisivo con la columna que no llegue, igual que la capa 1: a la API puede llegar un
+        frame parcial. `y` se acepta y se ignora, que es lo que pide el contrato del `Pipeline`.
+        """
+        minimo = valor("n_min_categoria")
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.n_features_in_ = X.shape[1]
+        self.raras_ = {}
+        detalle = []
+        for columna in X.select_dtypes(include=["object", "category"]).columns:
+            conteo = _clave(X[columna]).value_counts()
+            raras = conteo[conteo < minimo]
+            if raras.empty:
+                continue
+            residual = residual_de(columna)
+            if residual in conteo.index:
+                raise ValueError(
+                    f"{columna} ya trae una categoría llamada {residual!r}, que es la del "
+                    "residual: reetiquetar encima la mezclaría con las raras"
+                )
+            self.raras_[columna] = tuple(raras.index)
+            detalle += [
+                {"columna": columna, "categoría": c, "n": int(n), "residual": residual}
+                for c, n in raras.items()
+            ]
+        self.detalle_ = pd.DataFrame(detalle, columns=COLUMNAS_DETALLE)
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Reetiqueta las raras. Estricto donde el `fit` es permisivo.
+
+        La categoría que no se vio al ajustar **pasa tal cual** y no va al residual: este
+        transformer solo sabe de las que contó, y quien absorbe lo desconocido es el
+        `handle_unknown="ignore"` del `OneHotEncoder` que va detrás.
+        """
+        check_is_fitted(self)
+        faltan = [c for c in self.raras_ if c not in X.columns]
+        if faltan:
+            raise ValueError(
+                f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
+                "Saltárselas daría una matriz distinta de la del entrenamiento"
+            )
+        X = X.copy()
+        for columna, raras in self.raras_.items():
+            residual = residual_de(columna)
+            serie = X[columna]
+            if NULO in raras:
+                serie = serie.fillna(residual)
+            # el residual no es origen de nadie, así que el reemplazo no encadena
+            X[columna] = serie.replace({c: residual for c in raras if c != NULO})
+        return X
+
+    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
+        """Las mismas de entrada: no añade ni quita ninguna, solo reetiqueta valores."""
+        check_is_fitted(self)
+        if input_features is None:
+            return np.asarray(self.feature_names_in_, dtype=object)
+        return np.asarray(input_features, dtype=object)
+
+
+def informe_agrupamiento(agrupador: AgrupadorDeRaras) -> pd.DataFrame:
+    """Puerta del punto: qué categoría se absorbió en qué residual y con cuántas observaciones.
+
+    El `n` va en el informe porque es lo que el bloque 5 necesita para saber de qué está hecho
+    cada residual sin recalcularlo.
+    """
+    check_is_fitted(agrupador)
+    informe = agrupador.detalle_.copy()
+    informe["categoría"] = informe["categoría"].map(_nombre)
+    return informe
 
 
 def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:

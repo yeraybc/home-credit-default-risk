@@ -17,13 +17,18 @@ from sklearn.pipeline import Pipeline
 
 from src.features.params import valor
 from src.features.transformers import (
+    COLUMNAS_DETALLE,
+    NULO,
+    AgrupadorDeRaras,
     CORTES_WINSOR,
     FACTOR_POR_COLUMNA,
     RATIOS_POSTERIORES,
     RatiosPosteriores,
     Winsorizador,
+    informe_agrupamiento,
     informe_winsorizacion,
     registrar_limites,
+    residual_de,
 )
 
 # las que el EDA deja sin capar a propósito: su cola tiene señal real, en las dos direcciones
@@ -426,3 +431,207 @@ def test_el_informe_declara_la_desviacion_contra_la_referencia(frame):
     assert set(inf.columns) >= {"columna", "n ajuste", "límite", "ref. EDA", "% desviación"}
     # el fixture se aparta de la referencia, así que ninguna desviación puede salir cero
     assert (inf["% desviación"].abs() > 0).all()
+
+
+# --- AgrupadorDeRaras, capa 2a ---------------------------------------------------------------
+# El mecanismo es uno solo, la puerta de rareza, y el fixture lo separa de lo único con lo que
+# podría confundirse: la tasa. Las dos raras tienen tasas opuestas y las dos grandes también, así
+# que cualquier reintroducción de una fusión por tasa sale del residual y se ve.
+
+RARAS = ("rara_alta", "rara_baja")
+GRANDES = ("grande_alta", "grande_baja")
+RESIDUAL = residual_de("cat")
+
+
+@pytest.fixture
+def categorico():
+    """Cuatro categorías, dos por encima del mínimo y dos por debajo, con tasas enfrentadas."""
+    filas = (
+        [("grande_baja", 0)] * 400
+        + [("grande_alta", 1)] * 150
+        + [("rara_alta", 1)] * 9
+        + [("rara_baja", 0)] * 5
+    )
+    valores, objetivo = zip(*filas)
+    return pd.DataFrame({"cat": list(valores)}), pd.Series(objetivo)
+
+
+def test_solo_se_reetiqueta_lo_que_baja_del_minimo(categorico):
+    """La puerta es de rareza y nada más: la categoría con n suficiente no se toca."""
+    X, y = categorico
+    a = AgrupadorDeRaras().fit(X, y)
+
+    assert set(a.raras_["cat"]) == set(RARAS)
+    assert set(a.transform(X)["cat"]) == {*GRANDES, RESIDUAL}
+
+
+def test_las_dos_raras_caen_en_el_mismo_residual_pese_a_tener_tasas_opuestas(categorico):
+    """El fallo que caza: reintroducir una fusión por tasa, que las separaría."""
+    X, y = categorico
+    salida = AgrupadorDeRaras().fit(X, y).transform(X)
+    reetiquetadas = salida.loc[X["cat"].isin(RARAS), "cat"]
+
+    assert set(reetiquetadas) == {RESIDUAL}
+    assert not set(salida["cat"]) & set(RARAS), "quedó alguna rara sin absorber"
+
+
+def test_el_fixture_da_tasas_opuestas_a_las_dos_raras(categorico):
+    """Guardián: con las dos raras del mismo lado, el test de arriba no distinguiría nada."""
+    X, y = categorico
+    tasas = y.groupby(X["cat"]).mean()
+
+    assert tasas["rara_alta"] == 1.0
+    assert tasas["rara_baja"] == 0.0
+
+
+def test_ninguna_rara_se_mezcla_con_una_categoria_real(categorico):
+    """El residual es un nivel nuevo, no una categoría superviviente que absorba a las otras."""
+    X, y = categorico
+    salida = AgrupadorDeRaras().fit(X, y).transform(X)
+    conteo = salida["cat"].value_counts()
+
+    assert conteo[RESIDUAL] == 14
+    for grande in GRANDES:
+        assert conteo[grande] == X["cat"].value_counts()[grande], f"{grande} cambió de tamaño"
+
+
+def test_el_residual_es_propio_de_cada_columna(categorico):
+    """Dos columnas nunca comparten nivel, o el IV del bloque 5 no sabría de cuál viene."""
+    X, y = categorico
+    X = X.assign(otra=X["cat"])
+    salida = AgrupadorDeRaras().fit(X, y).transform(X)
+
+    assert residual_de("cat") != residual_de("otra")
+    assert residual_de("cat") in set(salida["cat"])
+    assert residual_de("otra") in set(salida["otra"])
+
+
+def test_si_todas_son_raras_la_columna_queda_con_un_solo_nivel(categorico):
+    """La misma regla sin caso especial: no hay superviviente y todas van al residual."""
+    X, y = categorico
+    raras = X["cat"].isin(RARAS)
+    a = AgrupadorDeRaras().fit(X[raras], y[raras])
+
+    assert set(a.raras_["cat"]) == set(RARAS)
+    assert set(a.transform(X[raras])["cat"]) == {RESIDUAL}
+
+
+def test_sin_ninguna_categoria_rara_no_se_anota_nada(categorico):
+    """Es el caso de doce de las trece columnas del bucket: el mapa sale vacío."""
+    X, y = categorico
+    grandes = X["cat"].isin(GRANDES)
+    a = AgrupadorDeRaras().fit(X[grandes], y[grandes])
+
+    assert a.raras_ == {}
+    assert list(a.detalle_.columns) == COLUMNAS_DETALLE, "el detalle vacío cambia de forma"
+    pd.testing.assert_frame_equal(a.transform(X[grandes]), X[grandes])
+
+
+def test_el_nulo_es_un_nivel_mas_y_va_al_residual_si_es_raro(categorico):
+    """El nulo no se salta: cuenta como celda y se absorbe como cualquier otra."""
+    X, y = categorico
+    X = pd.concat([X, pd.DataFrame({"cat": [None] * 7})], ignore_index=True)
+    y = pd.concat([y, pd.Series([1] * 7)], ignore_index=True)
+    a = AgrupadorDeRaras().fit(X, y)
+
+    assert NULO in a.raras_["cat"]
+    assert not a.transform(X)["cat"].isna().any()
+    assert a.transform(X)["cat"].value_counts()[RESIDUAL] == 21
+
+
+def test_el_nulo_frecuente_no_se_toca(categorico):
+    """La otra dirección: por encima del mínimo el nulo sigue siendo nulo."""
+    X, y = categorico
+    X = pd.concat([X, pd.DataFrame({"cat": [None] * 200})], ignore_index=True)
+    y = pd.concat([y, pd.Series([1] * 200)], ignore_index=True)
+    a = AgrupadorDeRaras().fit(X, y)
+
+    assert NULO not in a.raras_["cat"]
+    assert a.transform(X)["cat"].isna().sum() == 200
+
+
+def test_la_categoria_no_vista_pasa_tal_cual_y_no_va_al_residual(categorico):
+    """Este transformer solo sabe de las que contó; lo desconocido lo absorbe el OHE de detrás."""
+    X, y = categorico
+    a = AgrupadorDeRaras().fit(X, y)
+    nueva = pd.DataFrame({"cat": ["jamas_vista"]})
+
+    assert a.transform(nueva)["cat"].tolist() == ["jamas_vista"]
+
+
+def test_una_categoria_llamada_como_el_residual_revienta(categorico):
+    """Reetiquetar encima la mezclaría con las raras sin dar un solo error."""
+    X, y = categorico
+    X = pd.concat([X, pd.DataFrame({"cat": [RESIDUAL] * 3})], ignore_index=True)
+    y = pd.concat([y, pd.Series([0] * 3)], ignore_index=True)
+    with pytest.raises(ValueError, match="residual"):
+        AgrupadorDeRaras().fit(X, y)
+
+
+def test_ajustar_no_necesita_el_target(categorico):
+    """Es capa 2a: el criterio es un recuento sobre la covariable, la etiqueta no entra."""
+    X, y = categorico
+
+    assert AgrupadorDeRaras().fit(X).raras_ == AgrupadorDeRaras().fit(X, y).raras_
+
+
+def test_las_columnas_numericas_no_se_agrupan(categorico):
+    """El bucket que le entrega el ColumnTransformer es categórico; lo demás se deja en paz."""
+    X, y = categorico
+
+    assert "numero" not in AgrupadorDeRaras().fit(X.assign(numero=1.0), y).raras_
+
+
+def test_el_fit_es_permisivo_con_columnas_ausentes(categorico):
+    X, y = categorico
+
+    assert AgrupadorDeRaras().fit(X.drop(columns=["cat"]), y).raras_ == {}
+
+
+def test_agrupador_transform_revienta_si_falta_una_columna_ajustada(categorico):
+    """Estricto donde el fit es permisivo, igual que el winsorizador."""
+    X, y = categorico
+    a = AgrupadorDeRaras().fit(X, y)
+    with pytest.raises(ValueError, match="columnas ajustadas"):
+        a.transform(pd.DataFrame({"otra": [1]}))
+
+
+def test_agrupar_es_idempotente(categorico):
+    """Aplicarlo sobre su propia salida no puede mover nada más."""
+    X, y = categorico
+    a = AgrupadorDeRaras().fit(X, y)
+    una = a.transform(X)
+
+    pd.testing.assert_frame_equal(a.transform(una), una)
+
+
+def test_el_agrupador_no_anade_ni_quita_columnas(categorico):
+    X, y = categorico
+    a = AgrupadorDeRaras().fit(X, y)
+
+    assert list(a.get_feature_names_out()) == list(a.transform(X).columns)
+
+
+def test_las_raras_salen_de_la_particion_con_la_que_se_ajusta(categorico):
+    """La fuga que caza: contar sobre el conjunto entero en vez de sobre train.
+
+    Las filas de validación suben `rara_alta` por encima del mínimo, así que deja de ser rara
+    en cuanto se cuenta sobre las dos particiones juntas.
+    """
+    X, y = categorico
+    entero_X = pd.concat([X, pd.DataFrame({"cat": ["rara_alta"] * 200})], ignore_index=True)
+    entero_y = pd.concat([y, pd.Series([1] * 200)], ignore_index=True)
+
+    assert set(AgrupadorDeRaras().fit(X, y).raras_["cat"]) == set(RARAS)
+    assert set(AgrupadorDeRaras().fit(entero_X, entero_y).raras_["cat"]) == {"rara_baja"}
+
+
+def test_el_informe_declara_el_n_de_cada_categoria_absorbida(categorico):
+    """Es lo que el bloque 5 lee para saber de qué está hecho cada residual."""
+    X, y = categorico
+    inf = informe_agrupamiento(AgrupadorDeRaras().fit(X, y))
+
+    assert list(inf.columns) == COLUMNAS_DETALLE
+    assert len(inf) == len(RARAS)
+    assert dict(zip(inf["categoría"], inf["n"])) == {"rara_alta": 9, "rara_baja": 5}
+    assert set(inf["residual"]) == {RESIDUAL}
