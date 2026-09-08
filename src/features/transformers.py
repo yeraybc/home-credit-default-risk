@@ -16,7 +16,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
-from src.features.params import parametro, valor
+from src.features.params import fijar_operativo, parametro, valor
 
 # Qué columna lleva qué corte del registro. Declarado y no derivado del frame que llegue, por lo
 # mismo que el contrato de esquema de la capa 1: una columna que se cuela o que falta cambia la
@@ -203,3 +203,21 @@ def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(filas)
+
+
+def registrar_limites(winsorizador: Winsorizador) -> pd.DataFrame:
+    """Deja en `params.py` lo reestimado, y devuelve el informe de la puerta.
+
+    Va aquí y no dentro del `fit` a propósito. `fijar_operativo()` escribe en un diccionario a
+    nivel de módulo, así que dentro del `fit` cada fold del CV de la Fase 4 lo reescribiría y
+    ganaría el último, que es un estado global a merced de en qué orden corran los ajustes.
+    Fuera, el `fit` es puro y el registro lo escribe una sola vez quien ajusta en serio.
+
+    El `n_train` que se declara es el de los **no nulos de cada columna**, no el de la
+    partición: es el que de verdad sostiene el percentil. En `OWN_CAR_AGE` son los clientes con
+    coche y no todos los de entrenamiento, y la diferencia es de tres veces.
+    """
+    informe = informe_winsorizacion(winsorizador)
+    for columna, limite in winsorizador.limites_.items():
+        fijar_operativo(CORTES_WINSOR[columna], limite, winsorizador.n_ajuste_[columna])
+    return informe

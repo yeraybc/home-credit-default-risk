@@ -13,7 +13,8 @@ Orden de las capas, que no es libre y es lo que este módulo fija:
    la tabla cruda, el fichero de split declararía 19 clientes que después no existen en la
    matriz, y sus conteos de estratificación no serían los de la población real.
 3. **Capas 2a y 2b**, que sí estiman parámetros y por eso se ajustan solo sobre la parte de
-   entrenamiento. No entran todavía en este módulo.
+   entrenamiento. De la 2a está el winsorizador, en `ajustar_capa2a()`; el resto y la 2b
+   entran con el `Pipeline`.
 
 Las 19 filas que la limpieza quita son todas TARGET a 0, así que los 24.825 positivos no se
 mueven; lo que baja es el denominador, y la tasa pasa de 8,0729% a 8,0734%.
@@ -32,7 +33,8 @@ from src.features.cleaning import (
     limpiar_application,
     limpiar_application_entrenamiento,
 )
-from src.features.split import construir_split
+from src.features.split import construir_split, solo_train
+from src.features.transformers import Winsorizador, registrar_limites
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,24 @@ def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFra
     base = preparar_application()
     split = construir_split(app=base, sobrescribir=sobrescribir)
     return base, split
+
+
+def ajustar_capa2a(
+    base: pd.DataFrame, split: pd.DataFrame | None = None
+) -> tuple[Winsorizador, pd.DataFrame]:
+    """Ajusta el winsorizador sobre el 80% de entrenamiento y registra lo reestimado.
+
+    Es el único sitio del proyecto que escribe en `params.py`. La lista de límites vive en el
+    transformer, que es lo que se serializa y lo que entra en el CV; el registro solo guarda el
+    rastro de con qué cifra y con cuántas filas se ajustó.
+
+    Devuelve `(winsorizador, informe)`, y el informe es la puerta del punto: los diez cortes
+    reestimados frente a la referencia del EDA, con su desviación.
+    """
+    entrenamiento = solo_train(base, split)
+    winsorizador = Winsorizador().fit(entrenamiento)
+    logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
+    return winsorizador, registrar_limites(winsorizador)
 
 
 def informe_base(

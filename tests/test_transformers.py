@@ -23,6 +23,7 @@ from src.features.transformers import (
     RatiosPosteriores,
     Winsorizador,
     informe_winsorizacion,
+    registrar_limites,
 )
 
 # las que el EDA deja sin capar a propósito: su cola tiene señal real, en las dos direcciones
@@ -320,6 +321,69 @@ def test_el_fit_no_consume_ningun_corte_reajustable(pedidos_del_fit):
 
     for nombre in set(pedidos_del_fit):
         assert parametro(nombre).procedencia == "dominio", nombre
+
+
+# --- el registro se escribe fuera del fit -----------------------------------------------------
+
+
+@pytest.fixture
+def registro_limpio():
+    """Devuelve `PARAMS` a como estaba: `fijar_operativo` escribe en un dict de módulo.
+
+    Sin esto, el primer test que registre dejaría los cortes fijados para todos los que corran
+    después, y `test_todo_reajustable_empieza_sin_operativo_fijado` de test_params.py pasaría a
+    depender del orden de la suite.
+    """
+    from src.features import params as mod
+
+    copia = dict(mod.PARAMS)
+    yield
+    mod.PARAMS.clear()
+    mod.PARAMS.update(copia)
+
+
+def test_el_fit_no_escribe_en_el_registro(frame, registro_limpio):
+    """Es la razón de que registrar viva fuera: en el CV, cada fold reescribiría el global."""
+    from src.features.params import valor as valor_real
+
+    Winsorizador().fit(frame)
+    with pytest.raises(ValueError, match="sin fijar"):
+        valor_real("app_winsor_amt_income_total")
+
+
+def test_registrar_deja_el_valor_del_fit_y_no_la_referencia_del_eda(frame, registro_limpio):
+    """La dirección contraria, y con la cifra que distingue los dos orígenes."""
+    from src.features.params import valor as valor_real
+
+    w = Winsorizador().fit(frame)
+    registrar_limites(w)
+    assert valor_real("app_winsor_amt_income_total") == w.limites_["AMT_INCOME_TOTAL"]
+    assert valor_real("app_winsor_amt_income_total") != 1_417_500
+
+
+def test_el_n_declarado_es_el_de_los_no_nulos_de_la_columna(frame, registro_limpio):
+    """No el de la partición: en OWN_CAR_AGE son los clientes con coche, tres veces menos."""
+    from src.features.params import parametro
+
+    w = Winsorizador().fit(frame)
+    registrar_limites(w)
+    p = parametro("app_cap_p99_own_car_age")
+    assert p.n_train_operativo == w.n_ajuste_["OWN_CAR_AGE"] < len(frame)
+
+
+def test_registrar_no_deja_pendiente_ningun_corte_del_winsorizador(frame, registro_limpio):
+    from src.features.params import operativos_pendientes
+
+    registrar_limites(Winsorizador().fit(frame))
+    assert not set(CORTES_WINSOR.values()) & set(operativos_pendientes())
+
+
+def test_todos_los_cortes_del_winsorizador_son_reajustables():
+    """Uno de dominio haría reventar a `fijar_operativo`, que los rechaza por diseño."""
+    from src.features.params import REAJUSTABLES, parametro
+
+    for corte in CORTES_WINSOR.values():
+        assert parametro(corte).procedencia in REAJUSTABLES, corte
 
 
 # --- contrato de scikit-learn ----------------------------------------------------------------

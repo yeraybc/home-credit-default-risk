@@ -318,6 +318,28 @@ def test_los_3xp99_reestimados_sobre_train_reproducen_la_referencia_del_eda(wins
     assert (informe_winsorizacion(winsor)["% desviación"] == 0).all()
 
 
+def test_ajustar_capa2a_ajusta_sobre_train_y_registra_lo_reestimado(base):
+    """El camino completo, que es lo que el test de arriba no cubre: fija sobre solo_train().
+
+    Restaura `PARAMS` al salir porque `fijar_operativo` escribe en un dict de módulo, y este
+    fichero corre antes que test_params.py, que comprueba que ningún reajustable arranca fijado.
+    """
+    from src.features import params as mod
+    from src.features.build_features import ajustar_capa2a
+    from src.features.params import parametro, valor
+
+    copia = dict(mod.PARAMS)
+    try:
+        w, inf = ajustar_capa2a(base)
+        assert w.limites_ == {c: float(v) for c, (v, _) in LIMITES_SOBRE_TRAIN.items()}
+        assert (inf["% desviación"] == 0).all()
+        assert valor("app_winsor_amt_income_total") == 1_417_500
+        assert parametro("app_cap_p99_own_car_age").n_train_operativo == 83_745
+    finally:
+        mod.PARAMS.clear()
+        mod.PARAMS.update(copia)
+
+
 def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor):
     """OBS_60 es descarte firme y DEF_60 provisional: solo una de las dos se capa."""
     assert "OBS_60_CNT_SOCIAL_CIRCLE" not in base.columns
