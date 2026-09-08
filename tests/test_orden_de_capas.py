@@ -8,15 +8,24 @@ declararía clientes que después no existen en la matriz.
 integración contrasta el `split.parquet` ya escrito, o sea el artefacto y no el camino de código
 que lo produce, así que invertir las dos líneas lo dejaba verde igual.
 
+Lo mismo vale para la otra mitad del orden, que es **sobre qué frame ajusta la capa 2a**. Ahí el
+único apoyo era una aserción del fichero de integración, así que sustituir `solo_train(base,
+split)` por `base` dejaba los 182 tests del alcance de CI en verde: sobre la tabla real los diez
+percentiles valen lo mismo con la partición y sin ella, o sea que la cifra no distingue los dos
+casos y hace falta un frame donde sí los distinga.
+
 Va sobre un frame sintético y no sobre el csv porque el orden es una propiedad del código: así
 corre también en el clon limpio, que es donde el fichero de integración se salta entero. Y la
-partición se espía en vez de ejecutarse, que construirla de verdad pisaría el split persistido.
+partición se espía o se pasa a mano en vez de ejecutarse, que construirla de verdad pisaría el
+split persistido.
 """
 
 import pandas as pd
 import pytest
 
 from src.features import build_features as mod
+from src.features import params as params_mod
+from src.features.build_features import ajustar_capa2a
 from src.features.cleaning import filas_a_eliminar
 
 FUERA_POR_SEXO, FUERA_POR_CUOTA = 3, 5
@@ -70,3 +79,65 @@ def test_la_tabla_sintetica_trae_de_verdad_filas_que_la_limpieza_quita(cruda):
 
     assert int(fuera.sum()) == 2
     assert set(cruda.loc[fuera, "SK_ID_CURR"]) == {FUERA_POR_SEXO, FUERA_POR_CUOTA}
+
+
+# --- la otra mitad del orden: sobre qué frame ajusta la capa 2a ------------------------------
+# Los cinco de entrenamiento cobran mil y los cinco de validación un millón, así que el límite
+# sale distinto según se ajuste sobre la partición o sobre la tabla entera. Es lo que el dato
+# real no puede dar: allí los diez percentiles coinciden con y sin partición.
+INGRESO_TRAIN, INGRESO_VALID = 1_000.0, 1_000_000.0
+N_TRAIN_SINTETICO = 5
+
+
+@pytest.fixture
+def base_y_split():
+    """Diez clientes, cinco por parte, con el ingreso separado entre las dos."""
+    base = pd.DataFrame(
+        {
+            "SK_ID_CURR": range(1, 11),
+            "AMT_INCOME_TOTAL": [INGRESO_TRAIN] * 5 + [INGRESO_VALID] * 5,
+        }
+    )
+    split = pd.DataFrame(
+        {"SK_ID_CURR": range(1, 11), "split": ["train"] * 5 + ["valid"] * 5}
+    )
+    return base, split
+
+
+@pytest.fixture(autouse=True)
+def registro_limpio():
+    """`ajustar_capa2a` escribe en el dict de módulo de params.py; se deja como estaba."""
+    copia = dict(params_mod.PARAMS)
+    yield
+    params_mod.PARAMS.clear()
+    params_mod.PARAMS.update(copia)
+
+
+def test_la_capa2a_se_ajusta_sobre_la_particion_y_no_sobre_la_tabla_entera(base_y_split):
+    """El fallo que caza: `solo_train(base, split)` sustituido por `base`."""
+    from src.features.transformers import Winsorizador
+
+    base, split = base_y_split
+    winsorizador, _ = ajustar_capa2a(base, split)
+    sobre_todo = Winsorizador().fit(base).limites_["AMT_INCOME_TOTAL"]
+
+    assert winsorizador.limites_["AMT_INCOME_TOTAL"] != sobre_todo, (
+        "el límite es el de la tabla entera: la capa 2a se está ajustando fuera del split y "
+        "el 20% de validación participa en elegir el umbral que después se le aplica"
+    )
+    assert winsorizador.n_ajuste_["AMT_INCOME_TOTAL"] == N_TRAIN_SINTETICO
+
+
+def test_el_frame_sintetico_separa_de_verdad_las_dos_particiones(base_y_split):
+    """Guardián: con el mismo ingreso en las dos partes, el test de arriba no distingue nada."""
+    from src.features.transformers import Winsorizador
+
+    base, _ = base_y_split
+    # las cinco primeras filas son las de train, y se cogen por posición a propósito: el
+    # guardián comprueba el fixture, así que no puede apoyarse en la maquinaria que se audita
+    entrenamiento = base.iloc[:N_TRAIN_SINTETICO]
+
+    assert (
+        Winsorizador().fit(entrenamiento).limites_["AMT_INCOME_TOTAL"]
+        != Winsorizador().fit(base).limites_["AMT_INCOME_TOTAL"]
+    )
