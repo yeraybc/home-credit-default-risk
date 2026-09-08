@@ -24,7 +24,10 @@ from src.features.pipeline import (
     COL_ORGANIZACION,
     DIA_FIN_DE_SEMANA,
     DIA_LABORABLE,
+    CODIGO_EDUCACION_DESCONOCIDA,
     FRANJA_FUERA,
+    FRANJA_MANANA,
+    FRANJA_TARDE,
     JERARQUIA_EDUCACION,
     NIVEL_SIN_OCUPACION,
     NUMERICAS,
@@ -137,8 +140,8 @@ def test_el_informe_de_buckets_cuadra_con_el_frame(entrada):
 
 @pytest.mark.parametrize(
     ("hora", "esperada"),
-    [(0, FRANJA_FUERA), (5, FRANJA_FUERA), (6, "manana"), (11, "manana"), (12, "tarde"),
-     (17, "tarde"), (18, FRANJA_FUERA), (23, FRANJA_FUERA)],
+    [(0, FRANJA_FUERA), (5, FRANJA_FUERA), (6, FRANJA_MANANA), (11, FRANJA_MANANA),
+     (12, FRANJA_TARDE), (17, FRANJA_TARDE), (18, FRANJA_FUERA), (23, FRANJA_FUERA)],
 )
 def test_las_fronteras_de_la_franja_horaria(hora, esperada):
     """Los bordes son donde se equivoca un rango, así que van uno a uno."""
@@ -333,7 +336,7 @@ def test_cada_codificacion_trata_lo_no_visto_como_toca(entrada, objetivo):
     fila = salida.iloc[0]
 
     assert fila[f"{COL_ORGANIZACION}_WOE"] == 0.0, "el WoE neutro es cero"
-    assert fila[COL_EDUCACION] == -1, "el ordinal sale fuera de la escala por abajo"
+    assert fila[COL_EDUCACION] == CODIGO_EDUCACION_DESCONOCIDA, "el ordinal sale de la escala"
     columnas_suite = [c for c in p.get_feature_names_out() if c.startswith("NAME_TYPE_SUITE")]
     assert salida[columnas_suite].to_numpy().sum() == 0, (
         "el OHE con handle_unknown='ignore' tiene que dejar la fila a ceros"
@@ -510,3 +513,30 @@ def test_el_fixture_da_una_ocupacion_con_varios_niveles_y_repartida(entrada, obj
     assert ocupacion.nunique(dropna=False) > 2, "la ocupación no tiene niveles suficientes"
     tasas = objetivo.groupby(ocupacion.fillna("(nulo)")).mean()
     assert ((tasas > 0) & (tasas < 1)).any(), "ningún nivel mezcla positivos y negativos"
+
+
+def test_las_fronteras_de_la_franja_salen_de_params_y_no_del_codigo():
+    """Todo corte pasa por `params.py`, y la forma de comprobarlo es moverlo y ver el efecto.
+
+    Escrito a mano en el módulo, cambiar la declaración no cambiaría nada y el registro estaría
+    diciendo una cosa mientras el código hace otra. `conftest` restaura PARAMS al acabar.
+    """
+    from src.features.params import PARAMS, Parametro
+
+    assert franja_horaria(pd.Series([6]))[0] == FRANJA_MANANA
+    viejo = PARAMS["app_hora_inicio_manana"]
+    PARAMS["app_hora_inicio_manana"] = Parametro(9, "dominio", viejo.descripcion, viejo.fuente)
+
+    assert franja_horaria(pd.Series([6]))[0] == FRANJA_FUERA
+    assert franja_horaria(pd.Series([9]))[0] == FRANJA_MANANA
+
+
+def test_el_umbral_de_varianza_sale_de_params(entrada, objetivo):
+    """Igual con el suelo del filtro final: subirlo tiene que llevarse columnas."""
+    from src.features.params import PARAMS, Parametro
+
+    antes = construir_pipeline().fit_transform(entrada, objetivo).shape[1]
+    viejo = PARAMS["app_umbral_varianza"]
+    PARAMS["app_umbral_varianza"] = Parametro(0.2, "dominio", viejo.descripcion, viejo.fuente)
+
+    assert construir_pipeline().fit_transform(entrada, objetivo).shape[1] < antes

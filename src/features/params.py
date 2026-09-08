@@ -183,6 +183,33 @@ PARAMS: dict[str, Parametro] = {
         "tramos máximos del binning con el que se calculan IV y WoE",
         "convención de binning del proyecto",
     ),
+    # Las tres fronteras de la franja horaria de la solicitud. Son de dominio y no se reestiman:
+    # salen de dónde empieza y acaba una jornada laboral, no de mirar la tasa de default. El EDA
+    # las eligió con ese criterio ("pedir fuera de horario puede señalar un perfil distinto") y su
+    # efecto medido es flojo, 8,490%, 7,720% y 8,026% sobre train, o sea 0,77pp de recorrido
+    # frente a los 2pp del umbral de banderas. Quien decida si la franja se queda es el IV del
+    # bloque 5, con su medida delante, no estos tres números.
+    "app_hora_inicio_manana": Parametro(
+        6, "dominio", "hora a la que empieza la franja de mañana", "eda-application-train 3.x"
+    ),
+    "app_hora_inicio_tarde": Parametro(
+        12, "dominio", "hora a la que la mañana da paso a la tarde", "eda-application-train 3.x"
+    ),
+    "app_hora_fin_tarde": Parametro(
+        18, "dominio", "hora a la que acaba la tarde y empieza el fuera de horario",
+        "eda-application-train 3.x",
+    ),
+    # Suelo de varianza del filtro final. Cero significa que solo caen las constantes, que es lo
+    # que se quiere: la selección de verdad la hace el IV del bloque 5. Se declara en vez de
+    # dejarlo al defecto implícito de la librería para que subirlo sea una decisión visible, y
+    # porque con el suelo a cero la exclusión de FLAG_DOCUMENT_3 y 6 que pide el plan es inocua.
+    "app_umbral_varianza": Parametro(
+        0.0,
+        "dominio",
+        "varianza por debajo de la cual una columna sale de la matriz; a cero solo elimina "
+        "constantes, que es una red contra el fold que deja una bandera sin variación",
+        "convención, la selección por señal es del bloque 5",
+    ),
     # application_train: validez de dominio, constantes fijas
     # el EDA lo declaraba como criterio de dominio ("por encima de 64 años no es un activo
     # financiero real"), pero 64 es exactamente el p99 y el argumento de negocio justifica

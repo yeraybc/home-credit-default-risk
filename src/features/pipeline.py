@@ -27,6 +27,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, TargetEncoder
 
+from src.features.params import valor
 from src.features.transformers import (
     AgrupadorDeRaras,
     RatiosPosteriores,
@@ -176,12 +177,14 @@ JERARQUIA_EDUCACION: tuple[str, ...] = (
 # uno neutro y la discrepancia queda declarada en vez de resuelta callando.
 NIVEL_SIN_OCUPACION = "Sin declarar"
 
-# Franjas de la hora de solicitud, criterio de dominio del EDA: pedir fuera de horario laboral
-# puede señalar un perfil distinto. Reduce 24 valores a 3. El efecto medido es flojo (8,490%,
-# 7,720% y 8,026% sobre train, o sea 0,77pp de recorrido frente a los 2pp del umbral), así que
-# quien la mata es el IV del bloque 5 con su medida delante, no esto.
-FRANJAS_HORA: tuple[tuple[str, int, int], ...] = (("manana", 6, 12), ("tarde", 12, 18))
-FRANJA_FUERA = "fuera de horario"
+# Los nombres de las tres franjas de la hora de solicitud. Las fronteras no están aquí: son
+# cortes y viven en `params.py`, que es donde declaran su procedencia.
+FRANJA_MANANA, FRANJA_TARDE, FRANJA_FUERA = "manana", "tarde", "fuera de horario"
+
+# El código que el `OrdinalEncoder` le pone al nivel de educación que no vio al ajustar. Queda
+# fuera de la escala por abajo, que es la señal correcta, y no mete un nulo en una matriz que ya
+# no vuelve a imputarse.
+CODIGO_EDUCACION_DESCONOCIDA = -1
 
 FIN_DE_SEMANA = ("SATURDAY", "SUNDAY")
 DIAS_LABORABLES = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY")
@@ -199,10 +202,17 @@ MAPA_DIA = {
 
 
 def franja_horaria(horas: pd.Series) -> pd.Series:
-    """La hora de solicitud reducida a mañana, tarde y fuera de horario."""
+    """La hora de solicitud reducida a mañana, tarde y fuera de horario.
+
+    Las tres fronteras se leen de `params.py` en cada llamada y no al importar el módulo: así
+    quien las cambie ve el efecto sin reimportar, y no queda una copia congelada del valor.
+    """
+    inicio_manana = valor("app_hora_inicio_manana")
+    inicio_tarde = valor("app_hora_inicio_tarde")
+    fin_tarde = valor("app_hora_fin_tarde")
     franja = pd.Series(FRANJA_FUERA, index=horas.index, dtype=object)
-    for nombre, desde, hasta in FRANJAS_HORA:
-        franja[(horas >= desde) & (horas < hasta)] = nombre
+    franja[(horas >= inicio_manana) & (horas < inicio_tarde)] = FRANJA_MANANA
+    franja[(horas >= inicio_tarde) & (horas < fin_tarde)] = FRANJA_TARDE
     return franja.where(horas.notna())
 
 
@@ -302,14 +312,12 @@ def construir_pipeline() -> Pipeline:
             # la mediana contra dejar el NaN necesita un modelo, así que es de la Fase 4.
             ("num", SimpleImputer(strategy="median"), list(NUMERICAS)),
             ("ohe", ohe, list(CATEGORICAS_OHE)),
-            # `-1` y no NaN para lo no visto: queda fuera de la escala por abajo, que es la señal
-            # correcta, y no mete un nulo en una matriz que ya no vuelve a imputarse.
             (
                 "ord",
                 OrdinalEncoder(
                     categories=[list(JERARQUIA_EDUCACION)],
                     handle_unknown="use_encoded_value",
-                    unknown_value=-1,
+                    unknown_value=CODIGO_EDUCACION_DESCONOCIDA,
                 ),
                 [COL_EDUCACION],
             ),
@@ -328,12 +336,11 @@ def construir_pipeline() -> Pipeline:
             ("derivadas", RatiosPosteriores()),
             ("dominio", FunctionTransformer(aplicar_dominio, feature_names_out=_nombres_dominio)),
             ("columnas", columnas),
-            # Umbral 0, o sea solo constantes. Hoy no elimina ninguna: medido sobre train, la más
-            # pobre de las 20 `FLAG_DOCUMENT_*` es la 12, con una sola observación a 1. Está por
-            # el fold del CV de la Fase 4 donde esa bandera sí se quede constante y el número de
-            # columnas cambie entre folds. Con umbral 0 la exclusión declarada de la 3 y la 6 es
-            # inocua, y solo pasaría a importar si alguien sube el umbral.
-            ("varianza", VarianceThreshold()),
+            # El suelo va declarado en `params.py`. A cero no elimina ninguna hoy: medido sobre
+            # train, la más pobre de las 20 `FLAG_DOCUMENT_*` es la 12, con una sola observación
+            # a 1. Está por el fold del CV de la Fase 4 donde esa bandera sí se quede constante y
+            # el número de columnas cambie entre folds.
+            ("varianza", VarianceThreshold(threshold=valor("app_umbral_varianza"))),
         ]
     ).set_output(transform="pandas")
 
