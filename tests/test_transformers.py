@@ -187,10 +187,15 @@ def test_transform_sin_fit_revienta(frame):
         Winsorizador().transform(frame)
 
 
-def test_una_columna_sin_corte_declarado_revienta(frame):
-    """Todo corte pasa por params.py, no como cifra suelta en el transformer."""
-    with pytest.raises(ValueError, match="sin corte declarado"):
-        Winsorizador(columnas=("AMT_CREDIT",)).fit(frame)
+def test_solo_capa_columnas_con_corte_declarado(frame):
+    """Todo corte pasa por params.py, no como cifra suelta en el transformer.
+
+    El `fit` recorre `CORTES_WINSOR`, así que la propiedad es estructural y no una guarda: no
+    hay parámetro por el que colar una columna sin corte. Lo que este test fija es que el
+    recorrido siga siendo ese y no las columnas del frame que llegue, que sí caparía de más.
+    """
+    assert set(Winsorizador().fit(frame).limites_) <= set(CORTES_WINSOR)
+    assert "AMT_CREDIT" in frame.columns and "AMT_CREDIT" not in CORTES_WINSOR
 
 
 # --- RatiosPosteriores, que existe por el orden y no por su contenido ------------------------

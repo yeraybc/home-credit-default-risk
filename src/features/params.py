@@ -464,8 +464,8 @@ def sin_fijar() -> dict[str, Parametro]:
 def operativos_pendientes() -> dict[str, Parametro]:
     """Reajustables con referencia del EDA que todavía no se han refijado sobre solo_train().
 
-    Hoy son todos los reajustables, porque la capa 2a/2b que llama a fijar_operativo() no
-    existe todavía. Sirve de lista de tareas cuando se escriba esa capa.
+    Es la lista de tareas de lo que queda de las capas 2a y 2b: al importar el módulo son todos,
+    y `ajustar_capa2a()` descuenta los diez cortes del winsorizador en cuanto corre.
     """
     return {
         k: v

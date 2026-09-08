@@ -58,22 +58,8 @@ class Winsorizador(BaseEstimator, TransformerMixin):
     direcciones, y este transformer no las toca en ninguna.
     """
 
-    def __init__(self, columnas: tuple[str, ...] | None = None):
-        self.columnas = columnas
-
     def _factor(self, columna: str) -> float:
         return FACTOR_POR_COLUMNA.get(columna, valor("app_winsor_factor"))
-
-    def _declaradas(self) -> tuple[str, ...]:
-        if self.columnas is None:
-            return tuple(CORTES_WINSOR)
-        desconocidas = [c for c in self.columnas if c not in CORTES_WINSOR]
-        if desconocidas:
-            raise ValueError(
-                f"columnas sin corte declarado en CORTES_WINSOR: {sorted(desconocidas)}. "
-                "Todo corte pasa por params.py con su procedencia, no como cifra suelta"
-            )
-        return tuple(self.columnas)
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Winsorizador:
         """Reestima el límite de cada columna. Se llama sobre `solo_train()`, nunca sobre todo.
@@ -82,13 +68,16 @@ class Winsorizador(BaseEstimator, TransformerMixin):
         llegar un frame parcial. Quien exige el contrato es la frontera que arma la matriz.
         `quantile` ignora los NaN por su cuenta, y eso es lo que hace que `OWN_CAR_AGE` se
         ajuste sobre los clientes con coche sin escribir ningún filtro.
+
+        Recorre `CORTES_WINSOR` y no una lista que le pasen: así no hay forma de pedir una
+        columna sin corte declarado, en vez de haberla y rechazarla.
         """
         percentil = valor("app_winsor_percentil")
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         self.limites_ = {}
         self.n_ajuste_ = {}
-        for columna in self._declaradas():
+        for columna in CORTES_WINSOR:
             if columna not in X.columns:
                 continue
             serie = X[columna].dropna()
