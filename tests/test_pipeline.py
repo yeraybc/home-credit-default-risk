@@ -80,7 +80,12 @@ def entrada():
     frame[COL_ORGANIZACION] = (["banca"] * (N - N_ORGANIZACION_MINORITARIA)) + (
         ["obra"] * N_ORGANIZACION_MINORITARIA
     )
-    frame[COL_OCUPACION] = (["oficio"] * (N - N_NULOS_OCUPACION)) + ([None] * N_NULOS_OCUPACION)
+    # cinco oficios repartidos y los nulos intercalados, no en bloque: con un solo oficio el
+    # target encoding es binario y sus medias por fold coinciden, así que la codificación cruzada
+    # no deja huella y no se puede distinguir de una media directa
+    oficios = [f"oficio{i % 5}" for i in range(N)]
+    frame[COL_OCUPACION] = [None if i % (N // N_NULOS_OCUPACION) == 0 else o
+                            for i, o in enumerate(oficios)]
     return frame
 
 
@@ -466,3 +471,42 @@ def test_el_fixture_da_ratios_posteriores_que_varian(entrada, objetivo):
     for ratio in ("ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"):
         assert ratio in salida.columns, f"{ratio} no llegó a la matriz"
         assert salida[ratio].nunique() > 1, f"{ratio} es constante y no mide nada"
+
+
+# --- la codificación cruzada del target encoding ---------------------------------------------
+
+
+def test_la_ocupacion_se_codifica_fuera_de_fold_al_ajustar(entrada, objetivo):
+    """El `TargetEncoder` de la librería hace codificación cruzada, y esto lo fija.
+
+    Es la propiedad que separa un target encoding honesto de una media por categoría: al ajustar,
+    cada fila recibe la media de los folds en los que **no** estaba. Sustituirlo por una media
+    directa dejaría las dos salidas idénticas, que es el fallo que caza.
+    """
+    fuera_de_fold = construir_pipeline().fit_transform(entrada, objetivo)[COL_OCUPACION]
+    dentro = construir_pipeline().fit(entrada, objetivo).transform(entrada)[COL_OCUPACION]
+
+    assert fuera_de_fold.nunique() > dentro.nunique()
+    assert not np.allclose(fuera_de_fold, dentro)
+
+
+def test_solo_la_ocupacion_cambia_entre_ajustar_y_transformar(entrada, objetivo):
+    """El resto de la matriz es idéntico: la codificación cruzada solo la hace el paso `tgt`."""
+    ajustando = construir_pipeline().fit_transform(entrada, objetivo)
+    transformando = construir_pipeline().fit(entrada, objetivo).transform(entrada)
+    distintas = [c for c in ajustando.columns if not np.allclose(ajustando[c], transformando[c])]
+
+    assert distintas == [COL_OCUPACION]
+
+
+def test_el_fixture_da_una_ocupacion_con_varios_niveles_y_repartida(entrada, objetivo):
+    """Guardián: con un solo oficio, las medias por fold coinciden y no hay huella que ver.
+
+    Y en bloque tampoco: los niveles tienen que cruzar la frontera del objetivo para que cada
+    fold vea una mezcla distinta.
+    """
+    ocupacion = entrada[COL_OCUPACION]
+
+    assert ocupacion.nunique(dropna=False) > 2, "la ocupación no tiene niveles suficientes"
+    tasas = objetivo.groupby(ocupacion.fillna("(nulo)")).mean()
+    assert ((tasas > 0) & (tasas < 1)).any(), "ningún nivel mezcla positivos y negativos"

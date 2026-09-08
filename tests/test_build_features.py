@@ -440,3 +440,24 @@ def test_los_dos_101_no_son_el_mismo_y_se_distinguen():
     assert not {"TARGET", "SK_ID_CURR"} & set(previo.columns)
     assert {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} <= set(previo.columns)
     assert not {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} & set(base.columns)
+
+
+@sin_csv
+def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real():
+    """La codificación cruzada, contra el dato real: 19 niveles y 95 valores fuera de fold.
+
+    Y la consecuencia operativa, que es la que importa para la Fase 4: la matriz de
+    entrenamiento tiene que salir de `fit_transform`, no de transformar después con el pipeline
+    ya ajustado. Por ese segundo camino cada fila recibe la media de su propia categoría
+    calculada con ella dentro, que es fuga de etiqueta en la matriz con la que se entrena.
+    """
+    from src.features.pipeline import COL_OCUPACION, construir_pipeline
+    from src.features.split import solo_train
+
+    entrenamiento = solo_train(preparar_application(), cargar_split())
+    matriz, objetivo = matriz_de_features(entrenamiento), entrenamiento["TARGET"]
+    fuera_de_fold = construir_pipeline().fit_transform(matriz, objetivo)[COL_OCUPACION]
+    dentro = construir_pipeline().fit(matriz, objetivo).transform(matriz)[COL_OCUPACION]
+
+    assert dentro.nunique() == entrenamiento[COL_OCUPACION].nunique(dropna=False)
+    assert fuera_de_fold.nunique() > dentro.nunique()

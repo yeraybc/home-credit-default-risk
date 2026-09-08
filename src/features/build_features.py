@@ -148,6 +148,15 @@ def ajustar_pipeline(base: pd.DataFrame, split: pd.DataFrame | None = None) -> P
 
     El orden de las dos operaciones es el mismo que en `ajustar_capa2a()`: primero se filtra la
     partición, que necesita el identificador, y después se quita.
+
+    **Cuidado en la Fase 4 con lo que se le da al modelo.** Devuelve el pipeline ajustado y no la
+    matriz, así que la tentación es transformar el entrenamiento con él. Por ahí el
+    `TargetEncoder` de `OCCUPATION_TYPE` le da a cada fila la media de su propia categoría
+    calculada **con ella dentro**, que es fuga de etiqueta en la matriz con la que se entrena.
+    La matriz de entrenamiento tiene que salir de `fit_transform`, que es donde la codificación
+    cruzada reparte por folds. Medido sobre train: 95 valores distintos fuera de fold frente a
+    los 19 niveles de dentro. Sobre validación no hay diferencia, porque ahí `transform` es lo
+    correcto.
     """
     entrenamiento = solo_train(base, split)
     cfg = cargar_config()["dataset"]
