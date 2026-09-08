@@ -285,7 +285,17 @@ def test_las_provisionales_llegan_a_la_matriz(base):
 # la desviación quede medida y no supuesta". Sale cero en las diez, y por eso este test **no**
 # es la guarda contra ajustar fuera del split: con desviación cero no distingue un ajuste sobre
 # train de uno sobre la tabla entera. Esa guarda vive en tests/test_transformers.py, donde el
-# fixture da percentiles distintos de la referencia a propósito.
+# fixture da percentiles distintos de la referencia a propósito, y en test_orden_de_capas.py,
+# que es la que corre en CI.
+#
+# **Por qué la desviación sale cero, que está medido y no supuesto.** La regla del proyecto dice
+# que un reajustable que conserva el valor del EDA o es casualidad o no se reestimó, así que la
+# casualidad hay que enseñarla: con 200 submuestras aleatorias del 80%, nueve de las diez dan
+# siempre el mismo valor, porque son conteos discretos y el p99 cae en una meseta de empates (su
+# p99 vale 2 y el siguiente valor de la rejilla es 3, y así las nueve). Esas nueve no podían
+# salir distintas con ninguna partición. La única que se mueve de verdad es el ingreso, que
+# reproduce 1.417.500 en el 74% de las submuestras y recorre de 1.350.000 a 1.458.000: que la
+# partición real caiga justo en la referencia es un suceso del 74%, no una certeza.
 N_TRAIN = 245_993
 LIMITES_SOBRE_TRAIN = {
     "AMT_INCOME_TOTAL": (1_417_500, N_TRAIN),

@@ -163,9 +163,12 @@ PARAMS: dict[str, Parametro] = {
     # el EDA lo declaraba como criterio de dominio ("por encima de 64 años no es un activo
     # financiero real"), pero 64 es exactamente el p99 y el argumento de negocio justifica
     # capar, no capar en 64: un número de dominio sería redondo y no se movería con la
-    # muestra. Recomputado sobre los 104.582 clientes con coche, el p99 es 64,00 y por encima
-    # de 65 solo quedan 3 registros, así que el criterio no sostiene el valor por sí solo y
-    # pasa a estimado, igual que el grupo app_winsor_*.
+    # muestra. Recomputado sobre los 104.582 clientes con coche de la tabla cruda, el p99 es
+    # 64,00 y por encima de 65 solo quedan 3 registros, así que el criterio no sostiene el
+    # valor por sí solo y pasa a estimado, igual que el grupo app_winsor_*.
+    # Las tres poblaciones del recuento, que no son la misma y conviene no confundir: 104.582
+    # con coche en la tabla cruda, 104.576 en la limpia y 83.745 en el 80% de entrenamiento,
+    # que es el que acaba declarando el ajuste y el que vale como n_train.
     "app_cap_p99_own_car_age": Parametro(
         64,
         "estimado",
