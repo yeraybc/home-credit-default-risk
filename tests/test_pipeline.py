@@ -319,3 +319,63 @@ def test_el_fixture_usa_categorias_que_de_verdad_no_estaban(entrada):
     """Guardián: con una categoría ya vista, los dos tests de arriba no prueban nada."""
     for columna, valor_nuevo in NUEVAS.items():
         assert valor_nuevo not in set(entrada[columna]), f"{columna} ya traía ese valor"
+
+
+# --- el orden de los dos primeros pasos, que es fuga estructural -----------------------------
+
+
+REPETICIONES = 10
+
+
+@pytest.fixture
+def entrada_con_extremo(entrada):
+    """Un cliente con el error de captura de 117M en el ingreso, que es donde el orden se nota.
+
+    Sin un valor por encima del cap, el winsorizador no recorta nada y los dos órdenes dan lo
+    mismo: el fixture normal no distingue los dos casos.
+
+    Va con las filas repetidas y no con las 60 de siempre por la interpolación del percentil: con
+    un solo extremo en 60 filas, el p99 cae al 41% del camino hacia él y el triple se queda por
+    encima, así que no recorta nada. Con 600 el p99 se apoya en la masa, que es la situación de
+    las 245.993 de verdad.
+    """
+    frame = pd.concat([entrada] * REPETICIONES, ignore_index=True)
+    frame["AMT_INCOME_TOTAL"] = 1_000.0
+    frame.loc[frame.index[-1], "AMT_INCOME_TOTAL"] = 117_000_000.0
+    frame["AMT_ANNUITY"] = 10_000.0
+    return frame
+
+
+@pytest.fixture
+def objetivo_con_extremo(objetivo):
+    return pd.concat([objetivo] * REPETICIONES, ignore_index=True)
+
+
+def test_la_carga_de_cuota_se_calcula_sobre_el_ingreso_ya_recortado(
+    entrada_con_extremo, objetivo_con_extremo
+):
+    """La fuga estructural que caza: `derivadas` colocado delante de `winsor`.
+
+    Con ese orden el error de captura de 117M se queda dentro del denominador de la carga, que es
+    justo lo que el cap corrige. Sobre el dato real son 71 clientes de entrenamiento los que
+    cambian su ratio, y 9 los que cambian el de hijos sobre miembros: la matriz sale distinta y
+    ni el conteo de columnas ni ninguna otra cifra lo delatan.
+    """
+    p = construir_pipeline().fit(entrada_con_extremo, objetivo_con_extremo)
+    salida = p.transform(entrada_con_extremo)
+    limite = p.named_steps["winsor"].limites_["AMT_INCOME_TOTAL"]
+    cuota = entrada_con_extremo["AMT_ANNUITY"].iloc[-1]
+    ingreso_crudo = entrada_con_extremo["AMT_INCOME_TOTAL"].iloc[-1]
+
+    assert salida["ANNUITY_TO_INCOME_RATIO"].iloc[-1] == pytest.approx(cuota / limite)
+    assert salida["ANNUITY_TO_INCOME_RATIO"].iloc[-1] != pytest.approx(cuota / ingreso_crudo)
+
+
+def test_el_fixture_del_extremo_dispara_de_verdad_el_cap(entrada_con_extremo, objetivo_con_extremo):
+    """Guardián: sin un ingreso por encima del límite, el test de arriba no distingue nada."""
+    p = construir_pipeline().fit(entrada_con_extremo, objetivo_con_extremo)
+    limite = p.named_steps["winsor"].limites_["AMT_INCOME_TOTAL"]
+    ingreso_crudo = entrada_con_extremo["AMT_INCOME_TOTAL"].iloc[-1]
+
+    assert ingreso_crudo > limite, "el ingreso extremo no llega a recortarse"
+    assert ingreso_crudo / limite > 100, "la diferencia tiene que ser de órdenes de magnitud"
