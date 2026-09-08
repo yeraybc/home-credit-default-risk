@@ -152,6 +152,7 @@ COMPLETO, PARCIAL, TODO_NULO = 6.96, 7.03, 9.23
 N_COMPLETO, N_PARCIAL, N_TODO_NULO = 81_548, 77_787, 148_157
 N_CRUDOS_DEL_EDA = (81_552, 77_794, 148_165)
 COLUMNAS_CON_FEATURES = 101  # las 92 limpias más las 9 features de capa 1
+COLUMNAS_DE_MATRIZ = 99  # las mismas sin la etiqueta ni el identificador, que no son features
 FEATURES_DE_CAPA1 = 9
 
 GRUPOS = ("completo", "parcial", "todo nulo")
@@ -302,10 +303,11 @@ LIMITES_SOBRE_TRAIN = {
 
 @pytest.fixture(scope="module")
 def winsor(base):
+    from src.features.build_features import matriz_de_features
     from src.features.split import solo_train
     from src.features.transformers import Winsorizador
 
-    entrenamiento = solo_train(base)
+    entrenamiento = matriz_de_features(solo_train(base))
     assert len(entrenamiento) == N_TRAIN
     return Winsorizador().fit(entrenamiento)
 
@@ -338,6 +340,24 @@ def test_ajustar_capa2a_ajusta_sobre_train_y_registra_lo_reestimado(base):
     finally:
         mod.PARAMS.clear()
         mod.PARAMS.update(copia)
+
+
+def test_el_contrato_de_nombres_es_el_de_la_matriz_y_no_el_de_la_base(base):
+    """Las 101 de la base menos la etiqueta y el identificador, que no son features.
+
+    Con la base entera el contrato prometía 101 columnas y `transform` sobre la X devolvía
+    100, y el test de contrato no lo veía porque ajustaba y transformaba el mismo frame.
+    """
+    from src.features.build_features import matriz_de_features
+    from src.features.transformers import Winsorizador
+
+    X = matriz_de_features(base)
+    assert base.shape[1] == COLUMNAS_CON_FEATURES
+    assert X.shape[1] == COLUMNAS_DE_MATRIZ
+    assert not {"TARGET", "SK_ID_CURR"} & set(X.columns)
+
+    prometidas = list(Winsorizador().fit(X).get_feature_names_out())
+    assert prometidas == list(X.columns)
 
 
 def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor):

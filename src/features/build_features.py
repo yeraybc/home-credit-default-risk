@@ -26,6 +26,7 @@ import logging
 
 import pandas as pd
 
+from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
@@ -96,6 +97,20 @@ def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFra
     return base, split
 
 
+def matriz_de_features(base: pd.DataFrame) -> pd.DataFrame:
+    """La base sin la etiqueta ni el identificador, que es lo que consumen las capas 2.
+
+    Aquí cuelga el contrato de nombres del pipeline. Ajustar sobre `base` entera dejaba
+    `TARGET` y `SK_ID_CURR` dentro de `feature_names_in_`, y con eso `get_feature_names_out()`
+    prometía 101 columnas mientras `transform` sobre la X de verdad devolvía 100: una promesa
+    que no se cumple y que en la capa 1.4 lee el `ColumnTransformer`.
+
+    Es permisiva porque `application_test` no trae objetivo.
+    """
+    cfg = cargar_config()["dataset"]
+    return base.drop(columns=[cfg["id_col"], cfg["target_col"]], errors="ignore")
+
+
 def ajustar_capa2a(
     base: pd.DataFrame, split: pd.DataFrame | None = None
 ) -> tuple[Winsorizador, pd.DataFrame]:
@@ -105,10 +120,13 @@ def ajustar_capa2a(
     transformer, que es lo que se serializa y lo que entra en el CV; el registro solo guarda el
     rastro de con qué cifra y con cuántas filas se ajustó.
 
+    El orden de las dos operaciones no es libre: primero se filtra la partición, que necesita el
+    identificador, y después se quita. Al revés no hay por dónde filtrar.
+
     Devuelve `(winsorizador, informe)`, y el informe es la puerta del punto: los diez cortes
     reestimados frente a la referencia del EDA, con su desviación.
     """
-    entrenamiento = solo_train(base, split)
+    entrenamiento = matriz_de_features(solo_train(base, split))
     winsorizador = Winsorizador().fit(entrenamiento)
     logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
     return winsorizador, registrar_limites(winsorizador)

@@ -25,7 +25,7 @@ import pytest
 
 from src.features import build_features as mod
 from src.features import params as params_mod
-from src.features.build_features import ajustar_capa2a
+from src.features.build_features import ajustar_capa2a, matriz_de_features
 from src.features.cleaning import filas_a_eliminar
 
 FUERA_POR_SEXO, FUERA_POR_CUOTA = 3, 5
@@ -95,6 +95,7 @@ def base_y_split():
     base = pd.DataFrame(
         {
             "SK_ID_CURR": range(1, 11),
+            "TARGET": [0, 1, 0, 0, 1, 0, 1, 0, 0, 1],
             "AMT_INCOME_TOTAL": [INGRESO_TRAIN] * 5 + [INGRESO_VALID] * 5,
         }
     )
@@ -126,6 +127,21 @@ def test_la_capa2a_se_ajusta_sobre_la_particion_y_no_sobre_la_tabla_entera(base_
         "el 20% de validación participa en elegir el umbral que después se le aplica"
     )
     assert winsorizador.n_ajuste_["AMT_INCOME_TOTAL"] == N_TRAIN_SINTETICO
+
+
+def test_la_capa2a_no_mete_la_etiqueta_ni_el_id_en_el_contrato_de_nombres(base_y_split):
+    """Lo que promete `get_feature_names_out()` tiene que ser lo que `transform` entrega.
+
+    Ajustando sobre la base entera, el contrato salía con `TARGET` y `SK_ID_CURR` dentro y
+    prometía una columna más de las que la salida trae. Lo lee el `ColumnTransformer` del 1.4.
+    """
+    base, split = base_y_split
+    winsorizador, _ = ajustar_capa2a(base, split)
+    prometidas = list(winsorizador.get_feature_names_out())
+
+    assert "TARGET" not in prometidas, "la etiqueta no puede viajar en el contrato de features"
+    assert "SK_ID_CURR" not in prometidas
+    assert prometidas == list(winsorizador.transform(matriz_de_features(base)).columns)
 
 
 def test_el_frame_sintetico_separa_de_verdad_las_dos_particiones(base_y_split):
