@@ -173,6 +173,18 @@ PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
 # o sea el 0,09%, el 0,09% y el 0,22% del entrenamiento.
 IMPUTACION_SIN_RASTRO: tuple[str, ...] = ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2")
 
+# Las dos banderas de documento que el EDA decidió conservar pase lo que pase, por su correlación
+# con el objetivo (+0,0440 la 3 y -0,0290 la 6). El plan de la fase pide dejarlas **fuera** del
+# filtro de varianza, y aquí no se implementa esa exclusión: con el suelo a cero solo caen las
+# constantes, y ninguna de las dos puede serlo (70,99% y 8,79% de unos sobre train), así que
+# montar un desvío para las dos columnas sería maquinaria para un caso que no ocurre.
+#
+# Lo que sí hay es la alarma: un test comprueba que las dos llegan a la matriz. Si alguien sube
+# `app_umbral_varianza`, ese test se pone rojo y obliga a decidir de verdad, en vez de que las dos
+# desaparezcan en silencio. La protección de verdad, frente a una selección por señal, es del
+# bloque 5 y su `control: true`, que es el mecanismo que las recetas ya tienen para esto.
+COLUMNAS_PROTEGIDAS_DE_VARIANZA: tuple[str, ...] = ("FLAG_DOCUMENT_3", "FLAG_DOCUMENT_6")
+
 COL_HORA = "HOUR_APPR_PROCESS_START"
 COL_FRANJA = "HORA_FRANJA"
 COL_DIA = "WEEKDAY_APPR_PROCESS_START"

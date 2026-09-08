@@ -15,6 +15,7 @@ import pytest
 
 from src.features.pipeline import (
     BINARIAS,
+    COLUMNAS_PROTEGIDAS_DE_VARIANZA,
     IMPUTACION_SIN_RASTRO,
     CATEGORICAS_OHE,
     COL_DIA,
@@ -574,3 +575,41 @@ def test_el_bloque_edificio_se_recupera_por_su_conteo_y_su_bandera():
     assert "HAS_BUILDING_INFO" in BINARIAS
     assert "BUILDING_INFO_COUNT" in NUMERICAS
     assert "BUILDING_INFO_COUNT" not in PRESENCIA_POR_BLOQUE, "el conteo no es del bloque"
+
+
+# --- las dos banderas que el EDA conserva pase lo que pase ------------------------------------
+
+
+def test_las_dos_banderas_protegidas_llegan_a_la_matriz(entrada, objetivo):
+    """La alarma que sustituye a la exclusión que el plan pide y que no se implementa.
+
+    Con el suelo de varianza a cero no hay de qué excluirlas, porque ninguna de las dos puede
+    quedarse constante. Si alguien sube el suelo, esto se pone rojo y obliga a decidir en vez de
+    que las dos desaparezcan sin que nadie lo note.
+    """
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    for bandera in COLUMNAS_PROTEGIDAS_DE_VARIANZA:
+        assert bandera in salida.columns, f"{bandera} se cayó de la matriz"
+
+
+def test_el_suelo_a_cero_no_distingue_las_protegidas_de_las_demas(entrada, objetivo):
+    """La limitación declarada, fijada: hoy no están protegidas, solo vigiladas.
+
+    Se prueba subiendo el suelo, que es lo único que las pone en peligro. Si algún día se
+    implementa el desvío del plan, este test tiene que cambiar y el de arriba seguir en verde.
+    """
+    from src.features.params import PARAMS, Parametro
+
+    viejo = PARAMS["app_umbral_varianza"]
+    PARAMS["app_umbral_varianza"] = Parametro(0.5, "dominio", viejo.descripcion, viejo.fuente)
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    assert not set(COLUMNAS_PROTEGIDAS_DE_VARIANZA) & set(salida.columns)
+
+
+def test_las_protegidas_son_binarias_de_la_matriz(entrada):
+    """Guardián: una protegida que no esté en el bucket binario no la filtra la varianza."""
+    for bandera in COLUMNAS_PROTEGIDAS_DE_VARIANZA:
+        assert bandera in BINARIAS
+        assert bandera in entrada.columns

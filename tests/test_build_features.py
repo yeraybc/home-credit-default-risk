@@ -518,3 +518,20 @@ def test_la_antiguedad_del_coche_pierde_cuatro_clientes_al_imputar():
 
     assert int((con_coche & entrenamiento["OWN_CAR_AGE"].isna()).sum()) == N_COCHE_SIN_EDAD
     assert int((~con_coche & entrenamiento["OWN_CAR_AGE"].notna()).sum()) == 0
+
+
+@sin_csv
+def test_las_dos_banderas_protegidas_no_pueden_quedarse_constantes():
+    """Por qué la exclusión del plan es inocua con el suelo de varianza a cero.
+
+    No es que se confíe en que no pase: es que sobre train la 3 está al 70,99% de unos y la 6 al
+    8,79%, así que ni un fold del CV de la Fase 4 las va a dejar sin variación.
+    """
+    from src.features.pipeline import COLUMNAS_PROTEGIDAS_DE_VARIANZA
+    from src.features.split import solo_train
+
+    entrenamiento = solo_train(preparar_application(), cargar_split())
+    cuotas = {b: entrenamiento[b].mean() for b in COLUMNAS_PROTEGIDAS_DE_VARIANZA}
+
+    assert cuotas == pytest.approx({"FLAG_DOCUMENT_3": 0.7099, "FLAG_DOCUMENT_6": 0.0879}, abs=1e-4)
+    assert all(0.01 < c < 0.99 for c in cuotas.values())
