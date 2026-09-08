@@ -124,6 +124,34 @@ def test_el_cap_de_dominio_recorta_por_arriba_y_no_toca_lo_demas(app):
     assert limpio["AMT_REQ_CREDIT_BUREAU_DAY"].min() == 0
 
 
+# las dos que se quedan sin cap, y no es lo mismo en las dos: YEAR porque su cola tiene señal
+# real, HOUR porque su máximo es 4 y no llega al cap de 5 que lleva su gemela DAY
+SIN_CAP_DECLARADO = {"AMT_REQ_CREDIT_BUREAU_HOUR", "AMT_REQ_CREDIT_BUREAU_YEAR"}
+
+
+def test_cada_ventana_del_buro_tiene_una_disposicion_y_solo_una():
+    """Son seis columnas gemelas y HOUR no tenía decisión escrita en ninguna de las listas.
+
+    El riesgo no es el cap que falta, que hoy no recortaría nada: es que una de las seis se
+    caiga de su lista sin que nadie lo note, porque se parecen entre sí.
+    """
+    from src.features.application import COLUMNAS_BURO
+    from src.features.cleaning import CAPS_DE_DOMINIO
+    from src.features.transformers import CORTES_WINSOR
+
+    winsorizadas = set(CORTES_WINSOR) & set(COLUMNAS_BURO)
+    capadas = set(CAPS_DE_DOMINIO) & set(COLUMNAS_BURO)
+
+    assert winsorizadas == {
+        "AMT_REQ_CREDIT_BUREAU_WEEK",
+        "AMT_REQ_CREDIT_BUREAU_MON",
+        "AMT_REQ_CREDIT_BUREAU_QRT",
+    }
+    assert capadas == {"AMT_REQ_CREDIT_BUREAU_DAY"}
+    assert not winsorizadas & capadas, "una misma columna con dos tratamientos"
+    assert set(COLUMNAS_BURO) - winsorizadas - capadas == SIN_CAP_DECLARADO
+
+
 def test_el_recuento_de_columnas_cuadra(app):
     limpio = limpiar_application(app)
     esperado = app.shape[1] - len(columnas_a_eliminar(app)) + 1  # la bandera del centinela

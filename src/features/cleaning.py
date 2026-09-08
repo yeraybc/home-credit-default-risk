@@ -182,12 +182,25 @@ def aplicar_centinela(app: pd.DataFrame) -> pd.DataFrame:
     return app
 
 
+# Qué columna lleva qué cap fijo, declarado y no escrito dentro de la función, por lo mismo que
+# `CORTES_WINSOR` en la capa 2a: una columna que entra o que sale cambia la matriz sin cambiar
+# ningún nombre.
+#
+# Las otras cinco ventanas del buró no llevan cap aquí, y cada una por su motivo, que conviene
+# tener escrito porque son seis columnas gemelas y es fácil que una se caiga sin que se note:
+# WEEK, MON y QRT se winsorizan al 3xp99 en la capa 2a; YEAR el EDA la deja sin capar a
+# propósito, porque su cola tiene señal real y su máximo de 25 es plausible; y HOUR no lo
+# necesita, que su p99 es 0 igual que el de DAY pero su máximo es 4 y no alcanza el cap de 5.
+# O sea que HOUR está sin cap por medición, no por olvido.
+CAPS_DE_DOMINIO: dict[str, str] = {"AMT_REQ_CREDIT_BUREAU_DAY": "app_amt_req_bureau_day_max"}
+
+
 def aplicar_caps_de_dominio(app: pd.DataFrame) -> pd.DataFrame:
     """Caps con constante fija. Los que salen de un percentil van en la capa 2a, no aquí."""
     app = app.copy()
-    col = "AMT_REQ_CREDIT_BUREAU_DAY"
-    if col in app.columns:
-        app[col] = app[col].clip(upper=valor("app_amt_req_bureau_day_max"))
+    for col, corte in CAPS_DE_DOMINIO.items():
+        if col in app.columns:
+            app[col] = app[col].clip(upper=valor(corte))
     return app
 
 
