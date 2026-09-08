@@ -226,3 +226,96 @@ def test_el_dia_recodificado_sobrevive_a_una_segunda_pasada(entrada):
 
     assert (una[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == 20
     assert (dos[COL_DIA] == DIA_FIN_DE_SEMANA).sum() == 20
+
+
+# --- el contrato de la maquinaria de scikit-learn ---------------------------------------------
+# Las cinco propiedades que exige `sklearn.md`. Dos ya están arriba (que la salida sea un frame
+# con nombres y que `get_feature_names_out` case con ella); estas son las tres que faltan, y las
+# tres son de la Fase 4 y de la 6: `clone` es lo que reajusta el pipeline por fold en el CV,
+# `joblib` es como llega a la API, y la categoría no vista es lo que la API va a recibir.
+
+NUEVAS = {
+    COL_ORGANIZACION: "cooperativa jamas vista",
+    COL_OCUPACION: "oficio jamas visto",
+    COL_EDUCACION: "titulo jamas visto",
+    "NAME_TYPE_SUITE": "acompanante jamas visto",
+}
+
+
+def test_clonar_y_reajustar_reproduce_los_mismos_parametros(entrada, objetivo):
+    """`clone` es lo que usa el CV de la Fase 4 para reajustar por fold: tiene que dar lo mismo."""
+    from sklearn.base import clone
+
+    original = construir_pipeline().fit(entrada, objetivo)
+    clonado = clone(original).fit(entrada, objetivo)
+
+    assert clonado.named_steps["winsor"].limites_ == original.named_steps["winsor"].limites_
+    ct_o = original.named_steps["columnas"].named_transformers_
+    ct_c = clonado.named_steps["columnas"].named_transformers_
+    pd.testing.assert_series_equal(
+        ct_c["woe"].tablas_[COL_ORGANIZACION], ct_o["woe"].tablas_[COL_ORGANIZACION]
+    )
+    pd.testing.assert_frame_equal(clonado.transform(entrada), original.transform(entrada))
+
+
+def test_el_clon_sale_sin_ajustar(entrada, objetivo):
+    """Guardián: si `clone` arrastrase el ajuste, el test de arriba no probaría el reajuste."""
+    from sklearn.base import clone
+    from sklearn.exceptions import NotFittedError
+
+    clonado = clone(construir_pipeline().fit(entrada, objetivo))
+    with pytest.raises(NotFittedError):
+        clonado.transform(entrada)
+
+
+def test_ida_y_vuelta_por_joblib_da_la_misma_salida(entrada, objetivo, tmp_path):
+    """Así es como el pipeline ajustado llega a la API en la Fase 6."""
+    import joblib
+
+    p = construir_pipeline().fit(entrada, objetivo)
+    destino = tmp_path / "pipeline.joblib"
+    joblib.dump(p, destino)
+    recargado = joblib.load(destino)
+
+    pd.testing.assert_frame_equal(recargado.transform(entrada), p.transform(entrada))
+    assert list(recargado.get_feature_names_out()) == list(p.get_feature_names_out())
+
+
+def test_sobrevive_a_categorias_no_vistas_en_transform(entrada, objetivo):
+    """La API va a recibir categorías nuevas en las cuatro codificaciones y no puede reventar."""
+    p = construir_pipeline().fit(entrada, objetivo)
+    desconocido = entrada.copy()
+    for columna, valor_nuevo in NUEVAS.items():
+        desconocido[columna] = valor_nuevo
+    # el aviso del OneHotEncoder se afirma en vez de silenciarse: es la señal correcta y viene de
+    # la librería, así que lo que interesa es dejar escrito que se espera. En serving lo emite en
+    # cada petición con una categoría nueva, que es ruido a tener en cuenta en la Fase 6
+    with pytest.warns(UserWarning, match="unknown categories"):
+        salida = p.transform(desconocido)
+
+    assert list(salida.columns) == list(p.transform(entrada).columns), "cambió el juego de columnas"
+    assert not salida.isna().any().any(), "una categoría nueva no puede meter nulos en la matriz"
+
+
+def test_cada_codificacion_trata_lo_no_visto_como_toca(entrada, objetivo):
+    """El detalle de la anterior: cada bucket tiene su propia respuesta declarada."""
+    p = construir_pipeline().fit(entrada, objetivo)
+    desconocido = entrada.copy()
+    for columna, valor_nuevo in NUEVAS.items():
+        desconocido[columna] = valor_nuevo
+    with pytest.warns(UserWarning, match="unknown categories"):
+        salida = p.transform(desconocido)
+    fila = salida.iloc[0]
+
+    assert fila[f"{COL_ORGANIZACION}_WOE"] == 0.0, "el WoE neutro es cero"
+    assert fila[COL_EDUCACION] == -1, "el ordinal sale fuera de la escala por abajo"
+    columnas_suite = [c for c in p.get_feature_names_out() if c.startswith("NAME_TYPE_SUITE")]
+    assert salida[columnas_suite].to_numpy().sum() == 0, (
+        "el OHE con handle_unknown='ignore' tiene que dejar la fila a ceros"
+    )
+
+
+def test_el_fixture_usa_categorias_que_de_verdad_no_estaban(entrada):
+    """Guardián: con una categoría ya vista, los dos tests de arriba no prueban nada."""
+    for columna, valor_nuevo in NUEVAS.items():
+        assert valor_nuevo not in set(entrada[columna]), f"{columna} ya traía ese valor"
