@@ -224,6 +224,18 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     IV del bloque 5 puede juzgar cada uno por separado. Aquí no se decide nada más, igual que
     con las cuatro categóricas del bloque edificio.
 
+    **Por qué va a medida, que no es lo que decía el plan de la fase.** Aquel lo justificaba con
+    que `OneHotEncoder(min_frequency=...)` agrupa por frecuencia y la regla del proyecto era
+    agrupar por tasa observada; esa regla se cayó al medir, así que la justificación se cayó con
+    ella. Comparados los dos en los cinco casos borde (celdas raras sueltas, columna entera rara,
+    binaria con un nivel raro, nulo raro y categoría no vista), **son equivalentes**. Lo que
+    sostiene tenerlo propio es lo otro: el residual se llama `Other_<columna>` y no
+    `<columna>_infrequent_sklearn`, que es el nombre que van a leer el scorecard y SHAP de la
+    Fase 5; `informe_agrupamiento()` da el `n` de cada categoría absorbida, que
+    `infrequent_categories_` no da y que el bloque 5 necesita para juzgar el residual; y el `fit`
+    revienta si una categoría real se llama como el residual. Si algún día el scorecard renombra
+    columnas por su cuenta, el primer argumento desaparece y esto sobra.
+
     **Es capa 2a y no 2b:** el `fit` no mira el TARGET. El parámetro que estima es un recuento
     sobre la covariable, así que se ajusta sobre train por la misma razón que el winsorizador.
 
