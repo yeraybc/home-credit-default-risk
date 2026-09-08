@@ -27,6 +27,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, TargetEncoder
 
+from src.features.application import COLUMNAS_EDIFICIO
 from src.features.params import valor
 from src.features.transformers import (
     AgrupadorDeRaras,
@@ -129,6 +130,48 @@ BINARIAS: tuple[str, ...] = (
     "FLAG_EXT_SOURCE_1_NULL",
     "FLAG_EXT_SOURCE_3_NULL",
 )
+
+# De dónde se recupera la ausencia de cada numérica que la imputación rellena. El plan de la
+# fase solo sancionaba cuatro columnas (los dos scores externos, el precio del bien y la
+# antigüedad laboral) y aquí se imputan las 48, con 32 que traen algún nulo y 14 de ellas por
+# encima del 50%. Ampliarlo es inevitable, porque la matriz no puede salir con nulos, pero deja
+# de ser gratis: rellenar sin rastro borra la diferencia entre "vale la mediana" y "no se sabe".
+# Por eso se declara de dónde se recupera cada una, y un test lo comprueba contra la tabla real.
+#
+# Las trece cuya bandera reproduce el patrón de nulos exacto, o sea sin pérdida ninguna.
+PRESENCIA_POR_BANDERA: dict[str, str] = {
+    "DAYS_EMPLOYED": "FLAG_DAYS_EMPLOYED_ANOMALY",
+    "EMPLOYED_TO_AGE_RATIO": "FLAG_DAYS_EMPLOYED_ANOMALY",
+    "EXT_SOURCE_1": "FLAG_EXT_SOURCE_1_NULL",
+    "EXT_SOURCE_3": "FLAG_EXT_SOURCE_3_NULL",
+    "OBS_30_CNT_SOCIAL_CIRCLE": "HAS_SOCIAL_INFO",
+    "DEF_30_CNT_SOCIAL_CIRCLE": "HAS_SOCIAL_INFO",
+    "DEF_60_CNT_SOCIAL_CIRCLE": "HAS_SOCIAL_INFO",
+    "AMT_REQ_CREDIT_BUREAU_HOUR": "HAS_BUREAU_INFO",
+    "AMT_REQ_CREDIT_BUREAU_DAY": "HAS_BUREAU_INFO",
+    "AMT_REQ_CREDIT_BUREAU_WEEK": "HAS_BUREAU_INFO",
+    "AMT_REQ_CREDIT_BUREAU_MON": "HAS_BUREAU_INFO",
+    "AMT_REQ_CREDIT_BUREAU_QRT": "HAS_BUREAU_INFO",
+    "AMT_REQ_CREDIT_BUREAU_YEAR": "HAS_BUREAU_INFO",
+}
+
+# La antigüedad del coche va aparte porque su bandera **no** es exacta: 4 clientes de los 245.993
+# de entrenamiento declaran coche y no declaran su antigüedad, que es el mismo residuo diminuto
+# que el EDA ya había visto al clasificarla. A esos cuatro la mediana les borra el dato y nada lo
+# señala; al resto los recupera `FLAG_OWN_CAR`, que va por el bucket de OHE y no por el binario.
+PRESENCIA_CASI_EXACTA: dict[str, str] = {"OWN_CAR_AGE": "FLAG_OWN_CAR"}
+N_COCHE_SIN_EDAD = 4
+
+# Las quince del bloque edificio se recuperan **solo en agregado**: `HAS_BUILDING_INFO` reproduce
+# exacto el grupo sin ni un dato y `BUILDING_INFO_COUNT` cuenta cuántos hay, pero ninguna de las
+# dos dice cuáles. Es la pérdida consciente de este bucket, y son las que más nulos traen (de
+# 48,17% en `TOTALAREA_MODE` a 69,80% en `COMMONAREA_AVG`). La alternativa, una bandera por
+# columna, son quince columnas más que el IV del bloque 5 tendría que juzgar.
+PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
+
+# Y las tres que se imputan sin ningún rastro, aceptado por volumen: 232, 232 y 529 clientes,
+# o sea el 0,09%, el 0,09% y el 0,22% del entrenamiento.
+IMPUTACION_SIN_RASTRO: tuple[str, ...] = ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2")
 
 COL_HORA = "HOUR_APPR_PROCESS_START"
 COL_FRANJA = "HORA_FRANJA"
@@ -305,11 +348,11 @@ def construir_pipeline() -> Pipeline:
     )
     columnas = ColumnTransformer(
         [
-            # La mediana con la bandera al lado, que ya está en la matriz desde la capa 1: el
-            # modelo puede recuperar el grupo imputado. Los dos casos que el EDA dejó con proviso
-            # son `DAYS_EMPLOYED`, con sus 55.374 del centinela y `FLAG_DAYS_EMPLOYED_ANOMALY`
-            # detrás, y `OWN_CAR_AGE`, con sus nulos estructurales y `FLAG_OWN_CAR`. Contrastar
-            # la mediana contra dejar el NaN necesita un modelo, así que es de la Fase 4.
+            # La mediana sobre las 48, de las que 32 traen algún nulo. De dónde se recupera
+            # la ausencia de cada una está declarado arriba, en los cuatro grupos, y un test lo
+            # comprueba contra la tabla real. Contrastar la mediana contra dejar el NaN, que es
+            # el proviso que el EDA dejó abierto para `DAYS_EMPLOYED`, necesita un modelo y por
+            # eso es de la Fase 4.
             ("num", SimpleImputer(strategy="median"), list(NUMERICAS)),
             ("ohe", ohe, list(CATEGORICAS_OHE)),
             (

@@ -461,3 +461,60 @@ def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real():
 
     assert dentro.nunique() == entrenamiento[COL_OCUPACION].nunique(dropna=False)
     assert fuera_de_fold.nunique() > dentro.nunique()
+
+
+@sin_csv
+def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia():
+    """La imputación rellena las 48 y el plan solo sancionaba cuatro, así que se declara.
+
+    Rellenar sin rastro borra la diferencia entre "vale la mediana" y "no se sabe". Este test
+    comprueba contra la tabla real que ninguna numérica con nulos se queda fuera de los cuatro
+    grupos declarados, y que las banderas exactas lo son de verdad.
+    """
+    from src.features.pipeline import (
+        IMPUTACION_SIN_RASTRO,
+        NUMERICAS,
+        PRESENCIA_CASI_EXACTA,
+        PRESENCIA_POR_BANDERA,
+        PRESENCIA_POR_BLOQUE,
+        aplicar_dominio,
+    )
+    from src.features.split import solo_train
+    from src.features.transformers import RatiosPosteriores, Winsorizador
+
+    matriz = matriz_de_features(solo_train(preparar_application(), cargar_split()))
+    previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
+    previo = aplicar_dominio(previo)
+    con_nulos = {c for c in NUMERICAS if previo[c].isna().any()}
+    declaradas = (
+        set(PRESENCIA_POR_BANDERA)
+        | set(PRESENCIA_CASI_EXACTA)
+        | set(PRESENCIA_POR_BLOQUE)
+        | set(IMPUTACION_SIN_RASTRO)
+    )
+
+    assert con_nulos == declaradas, (
+        f"sin declarar: {sorted(con_nulos - declaradas)}; declaradas y sin nulos: "
+        f"{sorted(declaradas - con_nulos)}"
+    )
+    for numerica, bandera in PRESENCIA_POR_BANDERA.items():
+        nulo = previo[numerica].isna()
+        casa = (previo[bandera] == 0).equals(nulo) or (previo[bandera] == 1).equals(nulo)
+        assert casa, f"{bandera} no reproduce el patrón de nulos de {numerica}"
+
+
+@sin_csv
+def test_la_antiguedad_del_coche_pierde_cuatro_clientes_al_imputar():
+    """El residuo declarado: los que dicen tener coche y no dicen desde cuándo.
+
+    A esos cuatro la mediana les borra el dato y `FLAG_OWN_CAR` no lo señala. Se fija el número
+    para que crecer deje de ser silencioso.
+    """
+    from src.features.pipeline import N_COCHE_SIN_EDAD
+    from src.features.split import solo_train
+
+    entrenamiento = solo_train(preparar_application(), cargar_split())
+    con_coche = entrenamiento["FLAG_OWN_CAR"].eq("Y")
+
+    assert int((con_coche & entrenamiento["OWN_CAR_AGE"].isna()).sum()) == N_COCHE_SIN_EDAD
+    assert int((~con_coche & entrenamiento["OWN_CAR_AGE"].notna()).sum()) == 0

@@ -15,6 +15,7 @@ import pytest
 
 from src.features.pipeline import (
     BINARIAS,
+    IMPUTACION_SIN_RASTRO,
     CATEGORICAS_OHE,
     COL_DIA,
     COL_EDUCACION,
@@ -31,6 +32,9 @@ from src.features.pipeline import (
     JERARQUIA_EDUCACION,
     NIVEL_SIN_OCUPACION,
     NUMERICAS,
+    PRESENCIA_CASI_EXACTA,
+    PRESENCIA_POR_BANDERA,
+    PRESENCIA_POR_BLOQUE,
     aplicar_dominio,
     columnas_declaradas,
     construir_pipeline,
@@ -540,3 +544,33 @@ def test_el_umbral_de_varianza_sale_de_params(entrada, objetivo):
     PARAMS["app_umbral_varianza"] = Parametro(0.2, "dominio", viejo.descripcion, viejo.fuente)
 
     assert construir_pipeline().fit_transform(entrada, objetivo).shape[1] < antes
+
+
+# --- de dónde se recupera lo que la mediana rellena -------------------------------------------
+
+
+def test_los_cuatro_grupos_de_presencia_no_se_solapan():
+    """Una numérica en dos grupos diría dos cosas distintas sobre la misma imputación."""
+    grupos = [
+        set(PRESENCIA_POR_BANDERA),
+        set(PRESENCIA_CASI_EXACTA),
+        set(PRESENCIA_POR_BLOQUE),
+        set(IMPUTACION_SIN_RASTRO),
+    ]
+    union = set().union(*grupos)
+
+    assert sum(len(g) for g in grupos) == len(union)
+    assert union <= set(NUMERICAS), f"declaradas fuera del bucket numérico: {union - set(NUMERICAS)}"
+
+
+def test_las_banderas_de_presencia_estan_de_verdad_en_la_matriz():
+    """De poco sirve declarar que una bandera recupera la ausencia si no llega a la matriz."""
+    for numerica, bandera in {**PRESENCIA_POR_BANDERA, **PRESENCIA_CASI_EXACTA}.items():
+        assert bandera in BINARIAS or bandera in CATEGORICAS_OHE, f"{numerica} apunta a {bandera}"
+
+
+def test_el_bloque_edificio_se_recupera_por_su_conteo_y_su_bandera():
+    """No hay bandera por columna, así que lo que la recupera en agregado sí tiene que estar."""
+    assert "HAS_BUILDING_INFO" in BINARIAS
+    assert "BUILDING_INFO_COUNT" in NUMERICAS
+    assert "BUILDING_INFO_COUNT" not in PRESENCIA_POR_BLOQUE, "el conteo no es del bloque"
