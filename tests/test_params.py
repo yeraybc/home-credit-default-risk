@@ -132,9 +132,9 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     10.944, 8.929, 8.569, 5.379, 1.504,   # tasa por nivel de NAME_EDUCATION_TYPE
     8.490, 7.720, 8.026,                  # tasa por franja horaria
     12.500, 4.110,                        # tasa de Industry: type 13 y type 12
-    1.0097, 0.8920, 0.4840,               # WoE de Industry: type 8, suavizado y crudo
+    2.0415, 0.8920, 0.4840,               # WoE de Industry: type 8, crudo y los dos suavizados
     0.3755, 0.6548, 0.7550, 0.7924,       # WoE de los tipos 13 y 12 y los dos extremos
-    0.0440, 0.0290,                       # correlación de FLAG_DOCUMENT_3 y 6 con el objetivo
+    0.0443, 0.0286,                       # correlación de FLAG_DOCUMENT_3 y 6 con el objetivo
     0.0207, 0.186,                        # Fisher de las raras y P(0 positivos en 20 obs)
 }  # fmt: skip
 

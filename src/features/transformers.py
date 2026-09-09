@@ -358,10 +358,12 @@ class WoEEncoder(BaseEstimator, TransformerMixin):
         **El reparto no es a partes iguales y esa es la pieza que importa.** Sumar la misma
         constante a los dos recuentos arrima cada nivel a un prior implícito de 50/50, que no
         tiene nada que ver con una cartera del 8% de default: al nivel que ya está por encima de
-        la media lo empuja más arriba todavía. Medido sobre train, `Industry: type 8` (n = 17)
-        pasaba de +0,8920 a +1,0097, o sea que el suavizado lo alejaba de cero justo en el nivel
-        más pequeño de los 58. Repartiendo el prior según la tasa global, un nivel sin evidencia
-        propia converge al comportamiento medio, que es WoE cero, venga de la dirección que venga.
+        la media lo empuja más arriba todavía. Medido sobre train en `Industry: type 8`, que con
+        n = 17 es el más pequeño de los 58: sin suavizar vale +0,8920 y sumarle `alfa` a cada uno
+        de los dos recuentos lo lleva a +2,0415, o sea que el suavizado lo alejaba de cero justo
+        donde menos evidencia propia hay. Repartiendo el prior según la tasa global sale +0,4840:
+        un nivel sin evidencia propia converge al comportamiento medio, que es WoE cero, venga de
+        la dirección que venga.
 
         Los denominadores son los totales pelados y no llevan el prior sumado. Con el reparto a
         partes iguales sí hacía falta corregirlos, porque el prior infla las dos partes en

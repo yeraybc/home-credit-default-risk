@@ -111,8 +111,10 @@ PARAMS: dict[str, Parametro] = {
     # Suavizado del WoE, convención y no corte medido. Son observaciones de prior, repartidas
     # entre buenos y malos **según la tasa global de train** y no a partes iguales: a partes
     # iguales el prior implícito es 50/50, que no describe una cartera del 8% de default, y al
-    # nivel que ya está por encima de la media lo aleja de cero en vez de acercarlo (medido:
-    # `Industry: type 8`, n = 17, pasaba de +0,8920 a +1,0097).
+    # nivel que ya está por encima de la media lo aleja de cero en vez de acercarlo. Medido sobre
+    # train en `Industry: type 8`, que con n = 17 es el más pequeño de los 58: sin suavizar vale
+    # +0,8920, sumarle los 20 del prior a cada uno de los dos recuentos lo empuja hasta +2,0415, y
+    # repartirlos por la tasa global lo deja en +0,4840, que es la dirección que se busca.
     #
     # Con 20, un nivel necesita 20 observaciones propias para que su tasa pese tanto como el
     # prior, o sea que conserva n/(n+20) de su propia señal: el de 17 clientes se queda con la
