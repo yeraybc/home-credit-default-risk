@@ -137,7 +137,9 @@ def ajustar_capa2a(
     return winsorizador, registrar_limites(winsorizador, sobrescribir)
 
 
-def ajustar_pipeline(base: pd.DataFrame, split: pd.DataFrame | None = None) -> Pipeline:
+def ajustar_pipeline(
+    base: pd.DataFrame, split: pd.DataFrame | None = None
+) -> tuple[Pipeline, pd.DataFrame]:
     """Ajusta el pipeline entero de las capas 2 sobre el 80% de entrenamiento.
 
     Es **la única forma sancionada de ajustarlo**, y existe por eso. `construir_pipeline()`
@@ -149,22 +151,23 @@ def ajustar_pipeline(base: pd.DataFrame, split: pd.DataFrame | None = None) -> P
     El orden de las dos operaciones es el mismo que en `ajustar_capa2a()`: primero se filtra la
     partición, que necesita el identificador, y después se quita.
 
-    **Cuidado en la Fase 4 con lo que se le da al modelo.** Devuelve el pipeline ajustado y no la
-    matriz, así que la tentación es transformar el entrenamiento con él. Por ahí el
-    `TargetEncoder` de `OCCUPATION_TYPE` le da a cada fila la media de su propia categoría
-    calculada **con ella dentro**, que es fuga de etiqueta en la matriz con la que se entrena.
-    La matriz de entrenamiento tiene que salir de `fit_transform`, que es donde la codificación
-    cruzada reparte por folds. Medido sobre train: 95 valores distintos fuera de fold frente a
-    los 19 niveles de dentro. Sobre validación no hay diferencia, porque ahí `transform` es lo
-    correcto.
+    Devuelve `(pipeline, matriz)`, igual que `ajustar_capa2a()` devuelve `(winsorizador,
+    informe)`, y **la matriz sale de `fit_transform` a propósito**. Es la que hay que darle al
+    modelo en la Fase 4: transformar el entrenamiento con el pipeline ya ajustado le da a cada
+    fila la media de su propia categoría calculada **con ella dentro**, que es fuga de etiqueta
+    en la matriz con la que se entrena. Con la codificación cruzada son 95 valores distintos
+    fuera de fold frente a los 19 niveles de dentro, medido sobre train. Devolver las dos cosas
+    es lo que hace que nadie tenga que acordarse: sobre validación sí se usa `transform`, que
+    ahí es lo correcto.
     """
     entrenamiento = solo_train(base, split)
     cfg = cargar_config()["dataset"]
-    pipeline = construir_pipeline().fit(
+    pipeline = construir_pipeline()
+    matriz = pipeline.fit_transform(
         matriz_de_features(entrenamiento), entrenamiento[cfg["target_col"]]
     )
     logger.info("capas 2 ajustadas sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
-    return pipeline
+    return pipeline, matriz
 
 
 def informe_base(

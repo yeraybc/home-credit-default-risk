@@ -398,7 +398,7 @@ def test_la_matriz_final_sale_de_101_columnas_y_da_139():
     entrenamiento = solo_train(base, split)
     matriz = matriz_de_features(entrenamiento)
     previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
-    salida = ajustar_pipeline(base, split).transform(matriz)
+    _, salida = ajustar_pipeline(base, split)
 
     assert previo.shape[1] == COLUMNAS_DEL_COLUMNTRANSFORMER
     assert dict(zip(informe_buckets(previo)["bucket"], informe_buckets(previo)["entran"])) == BUCKETS
@@ -413,7 +413,8 @@ def test_el_ohe_expande_sus_14_columnas_en_52():
     from src.features.build_features import ajustar_pipeline
 
     base, split = preparar_application(), cargar_split()
-    ohe = ajustar_pipeline(base, split).named_steps["columnas"].named_transformers_["ohe"]
+    pipeline, _ = ajustar_pipeline(base, split)
+    ohe = pipeline.named_steps["columnas"].named_transformers_["ohe"]
 
     assert len(ohe.named_steps["codifica"].get_feature_names_out()) == COLUMNAS_DE_OHE
     assert (

@@ -66,7 +66,9 @@ def _bloque(n, semilla, *, ingreso, hora, dia, organizacion, ocupacion, rara):
     frame.loc[frame.index[:2], "NAME_INCOME_TYPE"] = rara
     frame[COL_EDUCACION] = [JERARQUIA_EDUCACION[i % 5] for i in range(n)]
     frame[COL_ORGANIZACION] = organizacion
-    frame[COL_OCUPACION] = ocupacion
+    # cuatro oficios intercalados y no uno solo: con un nivel unico el target encoding sale
+    # constante, la varianza se lleva la columna y no hay codificacion cruzada que observar
+    frame[COL_OCUPACION] = [f"{ocupacion}{i % 4}" for i in range(n)]
     return frame
 
 
@@ -270,7 +272,7 @@ def test_el_pipeline_se_ajusta_sobre_la_particion_y_no_sobre_la_tabla_entera(bas
     propiedad solo se podía comprobar transformer a transformer.
     """
     base, split = base_y_split
-    sobre_train = _ajustado(ajustar_pipeline(base, split))
+    sobre_train = _ajustado(ajustar_pipeline(base, split)[0])
     sobre_todo = _ajustado(_fit(base, split))
 
     iguales = [paso for paso in ESTADO_AJUSTADO if sobre_train[paso] == sobre_todo[paso]]
@@ -281,6 +283,42 @@ def test_el_pipeline_ajustado_declara_el_tamano_de_la_particion(base_y_split):
     """La otra dirección: que de verdad haya visto solo el 80% y no las 180 filas."""
     base, split = base_y_split
 
-    assert ajustar_pipeline(base, split).named_steps["winsor"].n_ajuste_["AMT_INCOME_TOTAL"] == (
-        N_TRAIN
-    )
+    pipeline, _ = ajustar_pipeline(base, split)
+
+    assert pipeline.named_steps["winsor"].n_ajuste_["AMT_INCOME_TOTAL"] == N_TRAIN
+
+
+def test_la_matriz_que_se_entrega_es_la_de_fuera_de_fold(base_y_split):
+    """La fuga que caza: devolver `transform` del entrenamiento en vez de `fit_transform`.
+
+    Por ese camino el `TargetEncoder` le da a cada fila la media de su propia categoría calculada
+    con ella dentro, o sea la etiqueta de la propia fila metida en su feature. Devolver la matriz
+    junto al pipeline es lo que hace que en la Fase 4 nadie tenga que acordarse de esto.
+    """
+    base, split = base_y_split
+    pipeline, matriz = ajustar_pipeline(base, split)
+    entrenamiento = matriz_de_features(solo_train(base, split))
+    dentro_de_fold = pipeline.transform(entrenamiento)
+
+    assert matriz[COL_OCUPACION].nunique() > dentro_de_fold[COL_OCUPACION].nunique()
+    assert not np.allclose(matriz[COL_OCUPACION], dentro_de_fold[COL_OCUPACION])
+    assert list(matriz.columns) == list(dentro_de_fold.columns)
+
+
+def test_la_matriz_entregada_cubre_solo_el_entrenamiento(base_y_split):
+    """Guardián: si viniera de la tabla entera, el test de arriba no vería la diferencia."""
+    base, split = base_y_split
+    _, matriz = ajustar_pipeline(base, split)
+
+    assert len(matriz) == N_TRAIN
+    assert len(matriz) < len(base)
+
+
+def test_el_fixture_da_una_ocupacion_repartida_en_las_dos_particiones(base_y_split):
+    """Guardián: con un solo oficio la columna sale constante y la varianza se la lleva."""
+    base, split = base_y_split
+    for parte in (solo_train, solo_valid):
+        ocupaciones = parte(base, split)[COL_OCUPACION]
+        assert ocupaciones.nunique() > 2, f"solo {ocupaciones.nunique()} oficios"
+        tasas = parte(base, split).groupby(COL_OCUPACION, observed=True)["TARGET"].mean()
+        assert ((tasas > 0) & (tasas < 1)).any(), "ningún oficio mezcla positivos y negativos"
