@@ -14,6 +14,8 @@ para cualquier reajustable sin fijar. Quien los reestima es el `fit` de aquí.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -77,12 +79,29 @@ COLUMNAS_DETALLE = ["columna", "categoría", "n", "residual"]
 RESIDUAL = "Other"
 
 
-SUFIJO_WOE = "_WOE"
-
-
 def nombre_woe(columna: str) -> str:
     """El nombre que lleva la columna una vez deja de ser categoría y pasa a ser un número."""
-    return f"{columna}{SUFIJO_WOE}"
+    return f"{columna}_WOE"
+
+
+def _factor_de(columna: str) -> float:
+    """El múltiplo del percentil al que se capa cada columna."""
+    return FACTOR_POR_COLUMNA.get(columna, valor("app_winsor_factor"))
+
+
+def _exigir_ajustadas(X: pd.DataFrame, columnas: Iterable[str]) -> None:
+    """Estricto donde el `fit` es permisivo: lo que estaba al ajustar tiene que volver a llegar.
+
+    Lo comparten los tres transformers que guardan una lista de columnas ajustadas. El mensaje
+    va en un solo sitio porque es el que lee quien se lo encuentre en la API, y tenerlo escrito
+    tres veces era arreglarlo en uno y dejarlo viejo en dos.
+    """
+    faltan = [c for c in columnas if c not in X.columns]
+    if faltan:
+        raise ValueError(
+            f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
+            "Saltárselas daría una matriz distinta de la del entrenamiento"
+        )
 
 
 def _clave(serie: pd.Series) -> pd.Series:
@@ -94,7 +113,7 @@ def _clave(serie: pd.Series) -> pd.Series:
 
 def _nombre(categoria: object) -> object:
     """El nombre legible de un nivel, con la clave del nulo deshecha."""
-    return "(nulo)" if categoria is NULO or categoria == NULO else categoria
+    return "(nulo)" if categoria == NULO else categoria
 
 
 class Winsorizador(BaseEstimator, TransformerMixin):
@@ -103,9 +122,6 @@ class Winsorizador(BaseEstimator, TransformerMixin):
     Solo por arriba: las colas que el EDA dejó sin capar tienen señal real en las dos
     direcciones, y este transformer no las toca en ninguna.
     """
-
-    def _factor(self, columna: str) -> float:
-        return FACTOR_POR_COLUMNA.get(columna, valor("app_winsor_factor"))
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Winsorizador:
         """Reestima el límite de cada columna. Se llama sobre `solo_train()`, nunca sobre todo.
@@ -129,7 +145,7 @@ class Winsorizador(BaseEstimator, TransformerMixin):
             serie = X[columna].dropna()
             if serie.empty:
                 continue
-            self.limites_[columna] = float(self._factor(columna) * serie.quantile(percentil))
+            self.limites_[columna] = float(_factor_de(columna) * serie.quantile(percentil))
             self.n_ajuste_[columna] = int(serie.size)
         return self
 
@@ -140,12 +156,7 @@ class Winsorizador(BaseEstimator, TransformerMixin):
         modelo se habría entrenado con esa columna capada y en serving recibiría otra cosa.
         """
         check_is_fitted(self)
-        faltan = [c for c in self.limites_ if c not in X.columns]
-        if faltan:
-            raise ValueError(
-                f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
-                "Saltárselas daría una matriz distinta de la del entrenamiento"
-            )
+        _exigir_ajustadas(X, self.limites_)
         X = X.copy()
         for columna, limite in self.limites_.items():
             X[columna] = X[columna].clip(upper=limite)
@@ -298,12 +309,7 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
         `handle_unknown="ignore"` del `OneHotEncoder` que va detrás.
         """
         check_is_fitted(self)
-        faltan = [c for c in self.raras_ if c not in X.columns]
-        if faltan:
-            raise ValueError(
-                f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
-                "Saltárselas daría una matriz distinta de la del entrenamiento"
-            )
+        _exigir_ajustadas(X, self.raras_)
         X = X.copy()
         for columna, raras in self.raras_.items():
             serie = X[columna]
@@ -414,12 +420,7 @@ class WoEEncoder(BaseEstimator, TransformerMixin):
         organizaciones nuevas y no puede reventar ni inventarles un riesgo.
         """
         check_is_fitted(self)
-        faltan = [c for c in self.tablas_ if c not in X.columns]
-        if faltan:
-            raise ValueError(
-                f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
-                "Saltárselas daría una matriz distinta de la del entrenamiento"
-            )
+        _exigir_ajustadas(X, self.tablas_)
         X = X.copy()
         for columna, tabla in self.tablas_.items():
             X[columna] = _clave(X[columna]).map(tabla).astype(float).fillna(0.0)
@@ -460,7 +461,7 @@ def informe_winsorizacion(winsorizador: Winsorizador) -> pd.DataFrame:
     filas = []
     for columna, limite in winsorizador.limites_.items():
         referencia = parametro(CORTES_WINSOR[columna]).valor_referencia
-        factor = winsorizador._factor(columna)
+        factor = _factor_de(columna)
         filas.append(
             {
                 "columna": columna,
