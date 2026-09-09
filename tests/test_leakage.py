@@ -177,7 +177,8 @@ def test_el_fixture_cubre_todos_los_pasos_que_guardan_estado(base_y_split):
         nombre
         for nombre, paso in pasos.items()
         if any(a.endswith("_") and not a.startswith("_") for a in vars(paso))
-        and nombre not in ("columnas", "ohe", "derivadas", "dominio", "ord", "bin", "remainder")
+        and nombre
+        not in ("columnas", "ohe", "derivadas", "dominio", "contrato", "ord", "bin", "remainder")
     }
 
     sin_comparar = con_estado - set(ESTADO_AJUSTADO)

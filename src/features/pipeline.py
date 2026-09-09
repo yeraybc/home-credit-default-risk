@@ -15,8 +15,11 @@ El orden de los pasos no es libre y lo fija `sklearn.md`:
 2. `derivadas`, los dos ratios que llevan una columna winsorizada en el denominador. Antes del
    winsorizador dejarían el error de captura de 117M de ingreso dentro del divisor de la carga.
 3. `dominio`, las recodificaciones deterministas de dominio.
-4. `columnas`, el `ColumnTransformer` que reparte cada bucket a su codificación.
-5. `varianza`, la red contra la columna que se quede constante.
+4. `contrato`, la guarda de que los buckets cubren el frame exactamente. Va aquí porque es el
+   único punto donde existe lo que el `ColumnTransformer` va a ver, con los dos ratios ya
+   construidos y la hora ya convertida en franja.
+5. `columnas`, el `ColumnTransformer` que reparte cada bucket a su codificación.
+6. `varianza`, la red contra la columna que se quede constante.
 
 El `SelectorIV` que el boceto de `sklearn.md` dibuja al final **no está**: `iv.py` es del bloque 5
 y este pipeline se cierra en el `VarianceThreshold`.
@@ -347,6 +350,11 @@ def verificar_contrato_columnas(datos: pd.DataFrame) -> None:
     Sin esto, `remainder="drop"` se lleva en silencio cualquier columna que no esté declarada:
     la matriz saldría más pobre sin un solo error y sin que cambie ningún nombre. Se llama sobre
     el frame **ya pasado por el paso de dominio**, que es el que ve el `ColumnTransformer`.
+
+    Las dos direcciones no se rompen igual y por eso hay que mirar las dos: la columna que falta
+    revienta sola, porque el `ColumnTransformer` la pide por nombre, y la que sobra desaparece
+    callando. La que sobra es la que van a traer los bloques 2 a 4, que dejan sus agregaciones
+    en el mismo frame de capa 1.
     """
     declaradas = set(columnas_declaradas())
     presentes = set(datos.columns)
@@ -357,6 +365,18 @@ def verificar_contrato_columnas(datos: pd.DataFrame) -> None:
             f"el reparto de buckets no cubre el frame: sobran {sobran}, faltan {faltan}. "
             "Con remainder='drop' las que sobran se caerían de la matriz sin avisar"
         )
+
+
+def _exigir_contrato(datos: pd.DataFrame) -> pd.DataFrame:
+    """Paso de guarda: exige el contrato de buckets y devuelve el frame intacto.
+
+    Va como paso del `Pipeline` y no como llamada dentro de `ajustar_pipeline()`, que era lo
+    natural, porque ahí los dos ratios posteriores todavía no existen: los fabrica `derivadas`,
+    así que el contrato los daría por ausentes. Este es el único sitio donde el frame que ve el
+    `ColumnTransformer` existe de verdad, y de paso cubre también el `transform`.
+    """
+    verificar_contrato_columnas(datos)
+    return datos
 
 
 def construir_pipeline() -> Pipeline:
@@ -412,6 +432,7 @@ def construir_pipeline() -> Pipeline:
             ("winsor", Winsorizador()),
             ("derivadas", RatiosPosteriores()),
             ("dominio", FunctionTransformer(aplicar_dominio, feature_names_out=_nombres_dominio)),
+            ("contrato", FunctionTransformer(_exigir_contrato, feature_names_out="one-to-one")),
             ("columnas", columnas),
             # El suelo va declarado en `params.py`. A cero no elimina ninguna hoy: medido sobre
             # train, la más pobre de las 20 `FLAG_DOCUMENT_*` es la 12, con una sola observación

@@ -148,6 +148,41 @@ def test_una_columna_de_menos_tambien_revienta(entrada):
         verificar_contrato_columnas(sin_una)
 
 
+# Los dos de arriba prueban la guarda; estos dos prueban que el pipeline la llama, que es otra
+# cosa y es la que faltaba: la guarda existía desde el 1.4 y no la invocaba nadie en el camino de
+# producción, así que una feature nueva en la base salía de la matriz sin un solo error.
+
+
+def test_el_pipeline_exige_el_contrato_con_una_columna_de_mas(entrada, objetivo):
+    """El fallo que caza: una agregación del bloque 2 en la base, caída sin avisar.
+
+    Sin la guarda dentro del pipeline la matriz sale idéntica a la de sin esa columna, o sea que
+    ni el conteo de columnas la delata.
+    """
+    with pytest.raises(ValueError, match="sobran"):
+        construir_pipeline().fit(entrada.assign(BUREAU_LOAN_COUNT=1.0), objetivo)
+
+
+def test_el_pipeline_exige_el_contrato_con_una_columna_de_menos(entrada, objetivo):
+    """La otra dirección, que sí rompía sola pero con el error del `ColumnTransformer`."""
+    with pytest.raises(ValueError, match="faltan"):
+        construir_pipeline().fit(entrada.drop(columns=[BINARIAS[0]]), objetivo)
+
+
+def test_en_transform_la_columna_de_mas_ya_reventaba_antes_de_la_guarda(entrada, objetivo):
+    """Por qué el agujero era solo del `fit`, escrito para que nadie lo busque dos veces.
+
+    En `transform` la columna de más no llega nunca a la guarda: la para antes el renombrado del
+    paso de dominio, que espera tantos nombres como columnas vio al ajustar. O sea que ese camino
+    ya era ruidoso, aunque con un mensaje que no dice qué ha pasado. El silencioso era el `fit`,
+    donde no hay nada ajustado con lo que comparar.
+    """
+    pipeline = construir_pipeline().fit(entrada, objetivo)
+
+    with pytest.raises(ValueError, match="Length mismatch"):
+        pipeline.transform(entrada.assign(BUREAU_LOAN_COUNT=1.0))
+
+
 def test_el_informe_de_buckets_cuadra_con_el_frame(entrada):
     inf = informe_buckets(entrada)
 
