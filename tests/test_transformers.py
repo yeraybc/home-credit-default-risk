@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
 from src.features.params import valor
 from src.features.transformers import (
@@ -32,7 +33,7 @@ from src.features.transformers import (
     informe_woe,
     nombre_woe,
     registrar_limites,
-    residual_de,
+    RESIDUAL,
 )
 
 # las que el EDA deja sin capar a propósito: su cola tiene señal real, en las dos direcciones
@@ -444,7 +445,6 @@ def test_el_informe_declara_la_desviacion_contra_la_referencia(frame):
 
 RARAS = ("rara_alta", "rara_baja")
 GRANDES = ("grande_alta", "grande_baja")
-RESIDUAL = residual_de("cat")
 
 
 @pytest.fixture
@@ -499,15 +499,21 @@ def test_ninguna_rara_se_mezcla_con_una_categoria_real(categorico):
         assert conteo[grande] == X["cat"].value_counts()[grande], f"{grande} cambió de tamaño"
 
 
-def test_el_residual_es_propio_de_cada_columna(categorico):
-    """Dos columnas nunca comparten nivel, o el IV del bloque 5 no sabría de cuál viene."""
+def test_el_residual_lo_separa_el_codificador_y_no_el_nombre_del_nivel(categorico):
+    """El nivel se llama igual en las dos y las columnas de la matriz salen distintas.
+
+    Quien las separa es el `OneHotEncoder`, que prefija con el nombre de la columna. Meterlo
+    también dentro del nivel daba `cat_Other_cat`, que es más largo que el nombre de sklearn y
+    no más claro, o sea lo contrario del argumento que sostiene tener el transformer a medida.
+    """
     X, y = categorico
     X = X.assign(otra=X["cat"])
-    salida = AgrupadorDeRaras().fit(X, y).transform(X)
+    agrupa = AgrupadorDeRaras().fit(X, y)
+    salida = agrupa.transform(X)
+    codificador = OneHotEncoder(sparse_output=False).fit(salida)
 
-    assert residual_de("cat") != residual_de("otra")
-    assert residual_de("cat") in set(salida["cat"])
-    assert residual_de("otra") in set(salida["otra"])
+    assert set(salida["cat"]) & set(salida["otra"]) >= {RESIDUAL}, "el nivel es el mismo"
+    assert {"cat_Other", "otra_Other"} <= set(codificador.get_feature_names_out())
 
 
 def test_si_todas_son_raras_la_columna_queda_con_un_solo_nivel(categorico):
@@ -930,7 +936,7 @@ def test_lo_raro_de_una_columna_no_se_reetiqueta_en_otra(dos_columnas):
 
     assert a.raras_ == {"cat": ("compartido",), "otra": ("rarita",)}
     assert salida["otra"].value_counts()["compartido"] == N_COMPARTIDO_EN_OTRA
-    assert residual_de("cat") not in set(salida["otra"])
+    assert salida["otra"].value_counts().get(RESIDUAL, 0) == 20, "solo su propia rara"
 
 
 def test_el_fixture_comparte_un_nivel_con_rareza_distinta(dos_columnas):

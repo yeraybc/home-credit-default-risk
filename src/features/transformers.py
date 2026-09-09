@@ -63,15 +63,18 @@ NULO = "__NULO__"
 # tiene que traer las mismas columnas que uno lleno, o el informe cambia de forma según el dato.
 COLUMNAS_DETALLE = ["columna", "categoría", "n", "residual"]
 
-# El residual lleva el nombre de su columna a propósito: si todas compartieran un "Other" pelado,
-# el ColumnTransformer sacaría un nivel con el mismo nombre desde varias columnas y el IV del
-# bloque 5 no podría decir de cuál viene cada uno.
-PREFIJO_RESIDUAL = "Other_"
-
-
-def residual_de(columna: str) -> str:
-    """El nivel al que van a parar las categorías raras de esa columna."""
-    return f"{PREFIJO_RESIDUAL}{columna}"
+# El nivel al que van a parar las categorías raras de cada columna. Va pelado y no
+# `Other_<columna>`, que es lo que llevaba antes para que dos columnas no compartieran nombre de
+# nivel: quien las separa ya es el `OneHotEncoder`, que prefija cada columna de salida con el
+# nombre de la suya. Metiéndolo dentro, la columna de la matriz salía como
+# `NAME_INCOME_TYPE_Other_NAME_INCOME_TYPE`, que es más larga que la de sklearn y no más clara,
+# justo lo contrario del argumento que sostiene tener este transformer a medida.
+#
+# Con el nombre pelado, la guarda de colisión del `fit` se vuelve más probable y eso está bien:
+# hoy ninguna del bucket de OHE tiene un nivel exactamente `Other` (`NAME_TYPE_SUITE` tiene
+# `Other_A` y `Other_B` y `WALLSMATERIAL_MODE` tiene `Others`), pero `ORGANIZATION_TYPE` sí, y si
+# algún día pasa del WoE a este bucket la guarda lo para en vez de mezclar sus raras con él.
+RESIDUAL = "Other"
 
 
 SUFIJO_WOE = "_WOE"
@@ -230,9 +233,10 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     que la puerta de aquí es de rareza y ninguno de sus seis niveles baja del mínimo. Quien
     decida si le conviene agruparse es el IV del bloque 5, con la medida delante.
 
-    El residual lleva el nombre de su columna, así que dos columnas nunca comparten nivel y el
-    IV del bloque 5 puede juzgar cada uno por separado. Aquí no se decide nada más, igual que
-    con las cuatro categóricas del bloque edificio.
+    El residual se llama `Other` en todas, y quien las separa es el `OneHotEncoder`, que prefija
+    cada columna de salida con la suya: `NAME_INCOME_TYPE_Other`. Así el IV del bloque 5 puede
+    juzgar cada residual por separado sin que el nombre del nivel repita el de la columna. Aquí
+    no se decide nada más, igual que con las cuatro categóricas del bloque edificio.
 
     **Por qué va a medida, que no es lo que decía el plan de la fase.** Aquel lo justificaba con
     que `OneHotEncoder(min_frequency=...)` agrupa por frecuencia y la regla del proyecto era
@@ -243,9 +247,9 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     `drop="if_binary"` detrás, a medida sale el indicador del nivel común y con `min_frequency`
     sale el del residual, o sea la columna complementaria. Misma información y nivel de
     referencia opuesto, que a un modelo lineal le cambia el signo del coeficiente y nada más. Lo
-    que sostiene tenerlo propio es lo otro: el residual se llama `Other_<columna>` y no
-    `<columna>_infrequent_sklearn`, que es el nombre que van a leer el scorecard y SHAP de la
-    Fase 5; `informe_agrupamiento()` da el `n` de cada categoría absorbida, que
+    que sostiene tenerlo propio es lo otro: la columna sale como `NAME_INCOME_TYPE_Other` y no
+    como `NAME_INCOME_TYPE_infrequent_sklearn`, que es el nombre que van a leer el scorecard y
+    SHAP de la Fase 5; `informe_agrupamiento()` da el `n` de cada categoría absorbida, que
     `infrequent_categories_` no da y que el bloque 5 necesita para juzgar el residual; y el `fit`
     revienta si una categoría real se llama como el residual. Si algún día el scorecard renombra
     columnas por su cuenta, el primer argumento desaparece y esto sobra.
@@ -273,15 +277,14 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
             raras = conteo[conteo < minimo]
             if raras.empty:
                 continue
-            residual = residual_de(columna)
-            if residual in conteo.index:
+            if RESIDUAL in conteo.index:
                 raise ValueError(
-                    f"{columna} ya trae una categoría llamada {residual!r}, que es la del "
+                    f"{columna} ya trae una categoría llamada {RESIDUAL!r}, que es la del "
                     "residual: reetiquetar encima la mezclaría con las raras"
                 )
             self.raras_[columna] = tuple(raras.index)
             detalle += [
-                {"columna": columna, "categoría": c, "n": int(n), "residual": residual}
+                {"columna": columna, "categoría": c, "n": int(n), "residual": RESIDUAL}
                 for c, n in raras.items()
             ]
         self.detalle_ = pd.DataFrame(detalle, columns=COLUMNAS_DETALLE)
@@ -303,12 +306,11 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
             )
         X = X.copy()
         for columna, raras in self.raras_.items():
-            residual = residual_de(columna)
             serie = X[columna]
             if NULO in raras:
-                serie = serie.fillna(residual)
+                serie = serie.fillna(RESIDUAL)
             # el residual no es origen de nadie, así que el reemplazo no encadena
-            X[columna] = serie.replace({c: residual for c in raras if c != NULO})
+            X[columna] = serie.replace({c: RESIDUAL for c in raras if c != NULO})
         return X
 
     def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
