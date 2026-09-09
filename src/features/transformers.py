@@ -332,6 +332,17 @@ class WoEEncoder(BaseEstimator, TransformerMixin):
 
     **Es capa 2b:** el TARGET entra en el cálculo, así que ajustar fuera de train sería fuga de
     etiqueta y no solo de segundo orden.
+
+    **No hace codificación cruzada, y eso hay que saberlo al leer la matriz de entrenamiento.**
+    El `TargetEncoder` de la librería sí la hace, así que en la matriz que devuelve
+    `ajustar_pipeline()` la ocupación viene de fuera de fold y la organización no: cada fila
+    recibe un WoE calculado **con su propia etiqueta dentro**. Medido sobre train con cinco folds
+    estratificados, fuera de fold la columna tomaría 289 valores distintos en vez de 58, con
+    desviación media de 0,0164 y máxima de 0,7551, concentrada en los niveles pequeños (0,2193 de
+    media en las 558 filas de niveles con menos de 200 clientes). Sobre validación no hay
+    diferencia, porque ahí se transforma con la tabla ya ajustada, que es lo correcto. Lo que
+    queda abierto es si al modelo de la Fase 4 hay que darle esta columna cruzada por fold, y es
+    decisión de esa fase y no de esta.
     """
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> WoEEncoder:

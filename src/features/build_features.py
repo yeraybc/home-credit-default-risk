@@ -159,6 +159,10 @@ def ajustar_pipeline(
     fuera de fold frente a los 19 niveles de dentro, medido sobre train. Devolver las dos cosas
     es lo que hace que nadie tenga que acordarse: sobre validación sí se usa `transform`, que
     ahí es lo correcto.
+
+    **Eso vale para la ocupación y no para la organización.** El `WoEEncoder` no cruza folds, así
+    que su columna de esta misma matriz sigue siendo de dentro de fold. Está declarado en su
+    docstring con la magnitud medida, y decidirlo es de la Fase 4.
     """
     entrenamiento = solo_train(base, split)
     cfg = cargar_config()["dataset"]
