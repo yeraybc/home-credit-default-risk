@@ -36,6 +36,7 @@ from src.features.pipeline import (
     PRESENCIA_CASI_EXACTA,
     PRESENCIA_POR_BANDERA,
     PRESENCIA_POR_BLOQUE,
+    REPARTO,
     aplicar_dominio,
     columnas_declaradas,
     construir_pipeline,
@@ -117,6 +118,20 @@ def test_los_buckets_no_se_solapan_ni_repiten(entrada):
 
     assert len(declaradas) == len(set(declaradas))
     assert len(declaradas) == COLUMNAS_ENTRADA
+
+
+def test_el_column_transformer_reparte_lo_declarado():
+    """El tercer sitio donde vive el reparto, y el único que no sale de `REPARTO`.
+
+    `columnas_declaradas()` y `informe_buckets()` ya leen la constante; el `ColumnTransformer` se
+    deja literal para que el montaje se lea de arriba abajo, así que lo que impide que los dos
+    diverjan es este test. Una columna que cambiase de bucket en uno solo de los dos daría otra
+    matriz sin romper nada.
+    """
+    ct = construir_pipeline().named_steps["columnas"]
+
+    montado = [(nombre, tuple(columnas)) for nombre, _, columnas in ct.transformers]
+    assert montado == [(nombre, tuple(columnas)) for nombre, columnas in REPARTO]
 
 
 def test_una_columna_de_mas_revienta_en_vez_de_caerse_en_silencio(entrada):

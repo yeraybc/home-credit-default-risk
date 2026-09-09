@@ -257,6 +257,19 @@ FRANJA_MANANA, FRANJA_TARDE, FRANJA_FUERA = "manana", "tarde", "fuera de horario
 # no vuelve a imputarse.
 CODIGO_EDUCACION_DESCONOCIDA = -1
 
+# Qué columnas lleva cada bucket. El `ColumnTransformer` las reparte, `columnas_declaradas()`
+# las exige y `informe_buckets()` las cuenta, y los tres tienen que decir lo mismo: un bucket
+# nuevo declarado en dos de los tres sitios cambia la matriz sin que falle nada. Los nombres son
+# los del `ColumnTransformer` y por ahí los cruza `test_el_column_transformer_reparte_lo_declarado`.
+REPARTO: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("num", NUMERICAS),
+    ("ohe", CATEGORICAS_OHE),
+    ("ord", (COL_EDUCACION,)),
+    ("woe", (COL_ORGANIZACION,)),
+    ("tgt", (COL_OCUPACION,)),
+    ("bin", BINARIAS),
+)
+
 FIN_DE_SEMANA = ("SATURDAY", "SUNDAY")
 DIAS_LABORABLES = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY")
 DIA_LABORABLE, DIA_FIN_DE_SEMANA = "entresemana", "fin de semana"
@@ -325,14 +338,7 @@ def _nombres_dominio(_: object, input_features: list[str]) -> np.ndarray:
 
 def columnas_declaradas() -> tuple[str, ...]:
     """Todas las que el `ColumnTransformer` reparte, o sea el contrato de entrada de la matriz."""
-    return (
-        *NUMERICAS,
-        *CATEGORICAS_OHE,
-        COL_EDUCACION,
-        COL_ORGANIZACION,
-        COL_OCUPACION,
-        *BINARIAS,
-    )
+    return tuple(columna for _, columnas in REPARTO for columna in columnas)
 
 
 def verificar_contrato_columnas(datos: pd.DataFrame) -> None:
@@ -429,14 +435,6 @@ def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd
     filtro de varianza va después y podría quitar alguna, aunque con el suelo a cero no quita
     ninguna.
     """
-    reparto = {
-        "num": NUMERICAS,
-        "ohe": CATEGORICAS_OHE,
-        "ord": (COL_EDUCACION,),
-        "woe": (COL_ORGANIZACION,),
-        "tgt": (COL_OCUPACION,),
-        "bin": BINARIAS,
-    }
     tras_dominio = aplicar_dominio(datos)
     emitidas = {} if pipeline is None else pipeline.named_steps["columnas"].output_indices_
     return pd.DataFrame(
@@ -451,6 +449,6 @@ def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd
                     else pd.NA
                 ),
             }
-            for nombre, columnas in reparto.items()
+            for nombre, columnas in REPARTO
         ]
     )
