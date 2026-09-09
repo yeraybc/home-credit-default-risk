@@ -641,7 +641,12 @@ def test_las_columnas_numericas_no_se_agrupan(categorico):
     assert "numero" not in AgrupadorDeRaras().fit(X.assign(numero=1.0), y).raras_
 
 
-def test_el_fit_es_permisivo_con_columnas_ausentes(categorico):
+def test_el_fit_del_agrupador_es_permisivo_con_columnas_ausentes(categorico):
+    """Lleva el prefijo del transformer como sus vecinos: sin él tapaba al del winsorizador.
+
+    Los dos se llamaban igual dentro del mismo módulo, así que Python se quedaba con el último
+    y pytest colectaba uno solo. El de arriba no se ejecutaba desde que este se escribió.
+    """
     X, y = categorico
 
     assert AgrupadorDeRaras().fit(X.drop(columns=["cat"]), y).raras_ == {}
