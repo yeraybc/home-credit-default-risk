@@ -24,10 +24,11 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
     Aplico un diccionario estático para conclusiones específicas y heurística básica para el resto.
 
     **Esto recoge lo que concluyó el EDA, y quien codifica de verdad es `pipeline.py`.** Las dos
-    cosas coinciden salvo en cinco entradas, donde el punto 1.4 midió sobre el split y llegó a
+    cosas coinciden salvo en seis entradas, donde el punto 1.4 midió sobre el split y llegó a
     otra conclusión: los agrupamientos por tasa de `NAME_TYPE_SUITE`, `NAME_INCOME_TYPE` y
-    `NAME_HOUSING_TYPE`, y las bandas de riesgo previas al WoE de `ORGANIZATION_TYPE` y al target
-    encoding de `OCCUPATION_TYPE`. Las cinco lo dicen en su detalle. No se borran porque la
+    `NAME_HOUSING_TYPE`, las bandas de riesgo previas al WoE de `ORGANIZATION_TYPE` y al target
+    encoding de `OCCUPATION_TYPE`, y la exclusión del filtro de varianza que el bloque de
+    `FLAG_DOCUMENT_*` daba por hecha. Las seis lo dicen en su detalle. No se borran porque la
     conclusión del EDA es la que era y el rastro vale, pero la fuente ejecutable es la otra.
     """
     especificas = {
@@ -223,13 +224,18 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
         cats = sorted(df[col].dropna().unique())
         card = len(cats)
 
-        if col.startswith("FLAG_DOCUMENT_") and col not in ["FLAG_DOCUMENT_3", "FLAG_DOCUMENT_6"]:
+        # las dos que tienen entrada propia se salen de esta rama por `especificas` y no por una
+        # lista con sus nombres, que era el mismo par escrito otra vez al lado del de
+        # `pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`
+        if col.startswith("FLAG_DOCUMENT_") and col not in especificas:
             strategy, detail = (
                 "Filtrar con VarianceThreshold",
                 "Baja varianza (medias de 0,000007 a 0,015) y correlación insignificante con "
                 "TARGET. El conjunto exacto lo fija el VarianceThreshold en Fase 3 sobre el "
-                "split de entrenamiento; FLAG_DOCUMENT_3 y FLAG_DOCUMENT_6 quedan fuera del "
-                "filtro para evaluarlas con IV.",
+                "split de entrenamiento. El pipeline no exceptúa a FLAG_DOCUMENT_3 ni a "
+                "FLAG_DOCUMENT_6 del filtro: con el suelo a cero solo caen las constantes y "
+                "ninguna de las dos puede serlo, así que no hay nada de lo que salvarlas. Quien "
+                "las protege de verdad es el control por IV del bloque 5.",
             )
         elif col in binary_num_cols and col not in especificas:
             strategy, detail = "Conservar como binaria", "Ya es una variable numérica binaria 0/1."
