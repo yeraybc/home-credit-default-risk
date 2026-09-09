@@ -18,7 +18,7 @@ from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
 from src.features.params import fijar_operativo, parametro, valor
@@ -116,11 +116,14 @@ def _nombre(categoria: object) -> object:
     return "(nulo)" if categoria == NULO else categoria
 
 
-class Winsorizador(BaseEstimator, TransformerMixin):
+class Winsorizador(OneToOneFeatureMixin, BaseEstimator, TransformerMixin):
     """Capa por arriba al múltiplo del percentil, reestimado en el `fit`.
 
     Solo por arriba: las colas que el EDA dejó sin capar tienen señal real en las dos
     direcciones, y este transformer no las toca en ninguna.
+
+    El mixin es quien pone `get_feature_names_out`: no añade ni quita columnas, solo recorta
+    valores, y esa es la única propiedad que hace falta declarar.
     """
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Winsorizador:
@@ -161,13 +164,6 @@ class Winsorizador(BaseEstimator, TransformerMixin):
         for columna, limite in self.limites_.items():
             X[columna] = X[columna].clip(upper=limite)
         return X
-
-    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
-        """Las mismas de entrada: no añade ni quita ninguna, solo recorta valores."""
-        check_is_fitted(self)
-        if input_features is None:
-            return np.asarray(self.feature_names_in_, dtype=object)
-        return np.asarray(input_features, dtype=object)
 
 
 class RatiosPosteriores(BaseEstimator, TransformerMixin):
@@ -224,7 +220,7 @@ class RatiosPosteriores(BaseEstimator, TransformerMixin):
         )
 
 
-class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
+class AgrupadorDeRaras(OneToOneFeatureMixin, BaseEstimator, TransformerMixin):
     """Manda a un residual propio de cada columna las categorías que no llegan al mínimo.
 
     Un solo criterio, el de rareza, que sale de `n_min_categoria`. **No compara tasas ni elige
@@ -275,6 +271,9 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
 
     Trabaja sobre las columnas categóricas del frame que le llegue y no sobre una lista propia,
     porque quien lo usa es el `ColumnTransformer`, que ya le entrega exactamente su bucket.
+
+    El mixin es quien pone `get_feature_names_out`: no añade ni quita columnas, solo reetiqueta
+    valores. Quien multiplica columnas es el `OneHotEncoder` que va detrás.
     """
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> AgrupadorDeRaras:
@@ -323,13 +322,6 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
             # el residual no es origen de nadie, así que el reemplazo no encadena
             X[columna] = serie.replace({c: RESIDUAL for c in raras if c != NULO})
         return X
-
-    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
-        """Las mismas de entrada: no añade ni quita ninguna, solo reetiqueta valores."""
-        check_is_fitted(self)
-        if input_features is None:
-            return np.asarray(self.feature_names_in_, dtype=object)
-        return np.asarray(input_features, dtype=object)
 
 
 def informe_agrupamiento(agrupador: AgrupadorDeRaras) -> pd.DataFrame:

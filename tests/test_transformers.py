@@ -418,6 +418,22 @@ def test_get_feature_names_out_casa_con_las_columnas_de_la_salida(frame):
     assert list(w.get_feature_names_out()) == list(w.transform(frame).columns)
 
 
+@pytest.mark.parametrize("constructor", [Winsorizador, AgrupadorDeRaras])
+def test_pedir_los_nombres_con_otra_entrada_revienta(frame, constructor):
+    """Los dos uno a uno lo heredan de `OneToOneFeatureMixin`, y el mixin es el estricto.
+
+    A mano el método devolvía `input_features` tal cual, así que quien preguntara por una lista
+    que no fuera la del ajuste se llevaba de vuelta su propia lista como si el transformer la
+    fuera a producir. El mixin la contrasta contra `feature_names_in_` y revienta, que es la
+    misma frontera que `_exigir_ajustadas` guarda en el `transform`.
+    """
+    t = constructor().fit(frame)
+
+    assert list(t.get_feature_names_out()) == list(t.feature_names_in_)
+    with pytest.raises(ValueError):
+        t.get_feature_names_out(["otra_cosa"])
+
+
 def test_ida_y_vuelta_por_joblib_da_la_misma_salida(frame, tmp_path):
     import joblib
 
