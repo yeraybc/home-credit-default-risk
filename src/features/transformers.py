@@ -220,6 +220,16 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     0,0207, pero probabilidad 0,186 de ver cero positivos en 20 obs a la tasa base) y su
     conclusión era colapsar en un residual único si la separación no se sostenía. No se sostiene.
 
+    **Los tres agrupamientos por tasa que el plan daba por decididos tampoco se reproducen, y el
+    motivo no es el mismo en los tres.** Remedidas las tasas sobre train y encadenando por huecos
+    de 2pp: los siete niveles con dato de `NAME_TYPE_SUITE` caben dentro de 2,2pp y se funden en
+    uno solo, y los cinco de `NAME_FAMILY_STATUS` igual, así que ahí un criterio de tasas
+    equivalentes se lleva la variable entera. `NAME_HOUSING_TYPE` **no**: sale limpia en dos
+    grupos por un hueco de 3,00pp entre `Municipal apartment` (8,631%) y `With parents`
+    (11,634%). O sea que en esa el argumento genérico no vale, y lo que la deja sin agrupar es
+    que la puerta de aquí es de rareza y ninguno de sus seis niveles baja del mínimo. Quien
+    decida si le conviene agruparse es el IV del bloque 5, con la medida delante.
+
     El residual lleva el nombre de su columna, así que dos columnas nunca comparten nivel y el
     IV del bloque 5 puede juzgar cada uno por separado. Aquí no se decide nada más, igual que
     con las cuatro categóricas del bloque edificio.
@@ -228,8 +238,12 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     que `OneHotEncoder(min_frequency=...)` agrupa por frecuencia y la regla del proyecto era
     agrupar por tasa observada; esa regla se cayó al medir, así que la justificación se cayó con
     ella. Comparados los dos en los cinco casos borde (celdas raras sueltas, columna entera rara,
-    binaria con un nivel raro, nulo raro y categoría no vista), **son equivalentes**. Lo que
-    sostiene tenerlo propio es lo otro: el residual se llama `Other_<columna>` y no
+    binaria con un nivel raro, nulo raro y categoría no vista), **cuatro dan la misma partición
+    de filas en columnas y el quinto no del todo**: en la binaria con un nivel raro, con
+    `drop="if_binary"` detrás, a medida sale el indicador del nivel común y con `min_frequency`
+    sale el del residual, o sea la columna complementaria. Misma información y nivel de
+    referencia opuesto, que a un modelo lineal le cambia el signo del coeficiente y nada más. Lo
+    que sostiene tenerlo propio es lo otro: el residual se llama `Other_<columna>` y no
     `<columna>_infrequent_sklearn`, que es el nombre que van a leer el scorecard y SHAP de la
     Fase 5; `informe_agrupamiento()` da el `n` de cada categoría absorbida, que
     `infrequent_categories_` no da y que el bloque 5 necesita para juzgar el residual; y el `fit`
