@@ -137,6 +137,13 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     0.0443, 0.0286, 0.0446, 0.0284,       # correlación de FLAG_DOCUMENT_3 y 6, tabla y train
     0.0207, 0.186,                        # Fisher de las raras y P(0 positivos en 20 obs)
     8.631, 11.634,                        # el hueco por el que NAME_HOUSING_TYPE no se agrupa
+    # bureau, que el bloque 2 empieza a citar y agg_bureau.py va a tener delante
+    10.12, 7.73, 10.1249, 7.7301, 2.3951, # default sin y con historial de buro, y su delta
+    7.50,                                 # el nivel "sin cuota reportada" de la tripartita
+    12.719, 8.5752, 8.273, 2.6011,        # los cuatro efectos mas altos de la receta de bureau
+    0.1828, 0.1569,                       # rank-biserial del ratio de deuda y del ritmo anual
+    6.12, 16.15,                          # los extremos del gradiente de BUREAU_CREDITS_PER_YEAR
+    16.99, 13.16, 7.82,                   # default de deuda mayor que credito, grosero y base
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por

@@ -19,15 +19,20 @@ from src.features.cleaning import (
     IMPORTES_BUREAU,
     IMPORTES_CON_PRESENCIA,
     SUFIJO_REPORTADO,
+    acotar_ventanas_bureau,
+    aplicar_caps_bureau,
     aplicar_centinela,
+    capar_deuda_al_credito,
     columnas_a_eliminar,
     columnas_edificio_redundantes,
     columnas_pendientes_de_decidir,
     filas_a_eliminar,
+    fotografiar_presencia,
     informe_limpieza,
     limpiar_application,
     limpiar_application_entrenamiento,
     limpiar_bureau,
+    marcar_moneda_extranjera,
 )
 from src.features.params import valor
 
@@ -269,9 +274,13 @@ def test_el_informe_no_revienta_si_faltan_columnas_de_fila(app):
 # frame lo recorren entrenamiento y la API, y todo va a nivel fila **antes** de agregar, porque
 # capar la deuda después de sumarla no arregla la suma.
 
-ANIOS = 365.25
-TOPE_ENDDATE = 20 * ANIOS
-SUELO_CIERRE = -30 * ANIOS
+# Los tres salen de params, no de un literal, por lo mismo que los caps de importe: escritos a
+# mano serían el mismo corte en dos sitios, que es lo que dejó 52.500 frente a 52.497 en bureau.
+# Se evalúan al importar y `test_los_cortes_de_ventana_del_fixture_salen_de_params` comprueba que
+# siguen cuadrando, que es lo que un módulo de constantes no puede hacer por sí solo.
+ANIOS = valor("dias_por_anio")
+TOPE_ENDDATE = valor("bureau_enddate_max_anios") * ANIOS
+SUELO_CIERRE = -valor("bureau_cierre_max_anios") * ANIOS
 
 
 @pytest.fixture
@@ -360,6 +369,19 @@ def bureau():
     return df
 
 
+def credito_de(df, cliente):
+    """Las filas de un cliente, exigiendo que haya alguna.
+
+    Existe porque `df[df.SK_ID_CURR == n].X.isna().all()` es **verdadero sobre selección vacía**:
+    el día que el fixture pierda a ese cliente, media docena de tests de abajo pasarían sin medir
+    nada. Hoy lo cazaría el guardián, pero eso los deja apoyados en otro test en vez de en sí
+    mismos, y es una línea evitarlo.
+    """
+    filas = df[df.SK_ID_CURR == cliente]
+    assert not filas.empty, f"el cliente {cliente} no está en el frame: el test no mide nada"
+    return filas
+
+
 def test_el_fixture_de_bureau_ejercita_cada_rama(bureau):
     """Guardián: si el fixture pierde un caso, los tests de abajo dejan de probar lo que dicen."""
     extranjera = bureau.CREDIT_CURRENCY.ne("currency 1")
@@ -409,6 +431,17 @@ def test_el_fixture_de_bureau_ejercita_cada_rama(bureau):
     assert (bureau.AMT_CREDIT_SUM_DEBT < 0).sum() == 1, "falta el sobrepago, que tampoco se toca"
 
 
+def test_los_cortes_de_ventana_del_fixture_salen_de_params():
+    """Las constantes del módulo se evalúan al importar, así que su valor se fija aquí.
+
+    Sin esto, cambiar el corte en PARAMS movería a la vez el fixture y lo que se le exige, y el
+    test seguiría verde midiendo otra cosa: el fixture se adaptaría al corte nuevo en silencio.
+    """
+    assert ANIOS == 365.25
+    assert TOPE_ENDDATE == 20 * 365.25
+    assert SUELO_CIERRE == -30 * 365.25
+
+
 def test_la_limpieza_de_bureau_no_borra_ni_una_fila(bureau):
     limpio = limpiar_bureau(bureau)
     assert len(limpio) == len(bureau)
@@ -435,17 +468,32 @@ def test_la_bandera_de_moneda_no_marca_a_quien_va_en_nacional(bureau):
     assert limpio.loc[nacional, "AMT_CREDIT_SUM"].notna().sum() > 0
 
 
+def test_una_moneda_no_informada_cae_del_lado_extranjero(bureau):
+    """Sin saber la unidad no se puede sumar, así que el nulo pierde sus importes igual.
+
+    En `bureau.csv` no hay ni un nulo de moneda, o sea que esto no lo ejercita el dato real: la
+    ruta que lo alcanza es la API. Va con test para que la disposición sea una decisión y no un
+    efecto de que `ne()` diga verdad sobre un NaN.
+    """
+    con_nulo = bureau.copy()
+    con_nulo.loc[con_nulo.SK_ID_CURR == 3, "CREDIT_CURRENCY"] = np.nan
+    limpio = limpiar_bureau(con_nulo)
+    cliente3 = credito_de(limpio, 3)
+    assert cliente3[COL_MONEDA_EXTRANJERA].eq(1).all()
+    assert cliente3[[c for c in IMPORTES_BUREAU if c in limpio.columns]].isna().all().all()
+
+
 def test_el_cap_de_importe_anula_lo_que_cruza_y_respeta_el_borde(bureau):
     limpio = limpiar_bureau(bureau)
-    cliente3 = limpio[limpio.SK_ID_CURR == 3].sort_values("AMT_CREDIT_SUM", na_position="first")
+    cliente3 = credito_de(limpio, 3).sort_values("AMT_CREDIT_SUM", na_position="first")
     assert cliente3.AMT_CREDIT_SUM.isna().sum() == 1, "el de 60M tiene que irse a NaN"
     assert cliente3.AMT_CREDIT_SUM.max() == valor(
         "bureau_importe_max"
     ), "el de 50M exactos se queda"
-    cliente4 = limpio[limpio.SK_ID_CURR == 4]
+    cliente4 = credito_de(limpio, 4)
     assert cliente4.AMT_ANNUITY.isna().sum() == 1
     assert cliente4.AMT_ANNUITY.max() == valor("bureau_cuota_max")
-    assert limpio[limpio.SK_ID_CURR == 8].AMT_CREDIT_MAX_OVERDUE.isna().all()
+    assert credito_de(limpio, 8).AMT_CREDIT_MAX_OVERDUE.isna().all()
 
 
 def test_el_cap_de_importe_lee_el_corte_de_params_y_no_un_literal(bureau):
@@ -460,7 +508,7 @@ def test_el_cap_de_importe_lee_el_corte_de_params_y_no_un_literal(bureau):
 
 def test_el_exceso_grosero_de_deuda_se_capa_y_el_leve_se_conserva(bureau):
     limpio = limpiar_bureau(bureau)
-    cliente5 = limpio[limpio.SK_ID_CURR == 5].sort_values("SK_ID_BUREAU")
+    cliente5 = credito_de(limpio, 5).sort_values("SK_ID_BUREAU")
     deuda = cliente5.AMT_CREDIT_SUM_DEBT.tolist()
     assert deuda[0] == 1_000.0, "el ratio 10 se capa al propio crédito, no se anula"
     assert deuda[1] == 2_000.0, "el exceso leve es deuda real y se conserva"
@@ -477,29 +525,29 @@ def test_la_deuda_rota_se_anula_y_no_se_capa_al_credito(bureau):
     1.000, que la dejaría leyéndose como una deuda plausible que iguala al principal.
     """
     limpio = limpiar_bureau(bureau)
-    cliente9 = limpio[limpio.SK_ID_CURR == 9]
+    cliente9 = credito_de(limpio, 9)
     assert cliente9.AMT_CREDIT_SUM_DEBT.isna().all(), "capada al crédito en vez de anulada"
 
 
 def test_el_sobrepago_sobrevive_a_la_limpieza(bureau):
     """Deuda negativa son 8.418 filas reales sobre 5.886 clientes, y ninguna regla las toca."""
     limpio = limpiar_bureau(bureau)
-    assert limpio[limpio.SK_ID_CURR == 10].AMT_CREDIT_SUM_DEBT.iloc[0] == -5_000.0
+    assert credito_de(limpio, 10).AMT_CREDIT_SUM_DEBT.iloc[0] == -5_000.0
 
 
 def test_el_denominador_cero_no_capa_nada(bureau):
     limpio = limpiar_bureau(bureau)
-    cliente6 = limpio[limpio.SK_ID_CURR == 6]
+    cliente6 = credito_de(limpio, 6)
     assert cliente6.AMT_CREDIT_SUM_DEBT.iloc[0] == 5_000.0
     assert cliente6.AMT_CREDIT_SUM.iloc[0] == 0.0
 
 
 def test_las_ventanas_anulan_lo_que_cae_fuera_y_respetan_el_borde(bureau):
     limpio = limpiar_bureau(bureau)
-    assert limpio[limpio.SK_ID_CURR == 7].DAYS_CREDIT_ENDDATE.isna().all()
-    assert limpio[limpio.SK_ID_CURR == 8].DAYS_CREDIT_ENDDATE.iloc[0] == TOPE_ENDDATE
-    assert limpio[limpio.SK_ID_CURR == 8].DAYS_ENDDATE_FACT.isna().all()
-    assert limpio[limpio.SK_ID_CURR == 6].DAYS_ENDDATE_FACT.iloc[0] == SUELO_CIERRE
+    assert credito_de(limpio, 7).DAYS_CREDIT_ENDDATE.isna().all()
+    assert credito_de(limpio, 8).DAYS_CREDIT_ENDDATE.iloc[0] == TOPE_ENDDATE
+    assert credito_de(limpio, 8).DAYS_ENDDATE_FACT.isna().all()
+    assert credito_de(limpio, 6).DAYS_ENDDATE_FACT.iloc[0] == SUELO_CIERRE
 
 
 def test_las_ventanas_acotan_tambien_por_abajo_el_vencimiento_y_la_actualizacion(bureau):
@@ -509,10 +557,10 @@ def test_las_ventanas_acotan_tambien_por_abajo_el_vencimiento_y_la_actualizacion
     volumen no es el argumento: 95 de las 146 encienden `BUREAU_CLOSED_AFTER_ENDDATE` en falso.
     """
     limpio = limpiar_bureau(bureau)
-    assert limpio[limpio.SK_ID_CURR == 11].DAYS_CREDIT_ENDDATE.isna().all()
-    assert limpio[limpio.SK_ID_CURR == 11].DAYS_CREDIT_UPDATE.isna().all()
-    assert limpio[limpio.SK_ID_CURR == 12].DAYS_CREDIT_ENDDATE.iloc[0] == SUELO_CIERRE
-    assert limpio[limpio.SK_ID_CURR == 12].DAYS_CREDIT_UPDATE.iloc[0] == SUELO_CIERRE
+    assert credito_de(limpio, 11).DAYS_CREDIT_ENDDATE.isna().all()
+    assert credito_de(limpio, 11).DAYS_CREDIT_UPDATE.isna().all()
+    assert credito_de(limpio, 12).DAYS_CREDIT_ENDDATE.iloc[0] == SUELO_CIERRE
+    assert credito_de(limpio, 12).DAYS_CREDIT_UPDATE.iloc[0] == SUELO_CIERRE
 
 
 def test_el_vencimiento_roto_deja_de_encender_la_bandera_de_cierre_tardio(bureau):
@@ -564,6 +612,45 @@ def test_la_limpieza_de_bureau_no_muta_el_frame_de_entrada(bureau):
     copia = bureau.copy()
     limpiar_bureau(bureau)
     pd.testing.assert_frame_equal(bureau, copia)
+
+
+@pytest.mark.parametrize(
+    "regla",
+    [
+        fotografiar_presencia,
+        marcar_moneda_extranjera,
+        aplicar_caps_bureau,
+        capar_deuda_al_credito,
+        acotar_ventanas_bureau,
+    ],
+)
+def test_ninguna_regla_por_separado_muta_el_frame_de_entrada(bureau, regla):
+    """El test de arriba solo protege el `.copy()` de la primera regla, y son cinco.
+
+    Encadenadas, la primera copia y escuda a las demás, así que quitarle el `.copy()` a
+    cualquiera de las otras cuatro dejaba la suite entera en verde. Y no es teórico: dos de las
+    cinco **retornan sin copiar** cuando les falta su columna (la moneda sin `CREDIT_CURRENCY`,
+    la deuda sin los dos importes), que son las rutas parciales que la API sí recorre. Ahí el
+    escudo es la siguiente que copie, y eso no puede depender del orden.
+    """
+    copia = bureau.copy()
+    regla(bureau)
+    pd.testing.assert_frame_equal(bureau, copia)
+
+
+def test_la_limpieza_de_bureau_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_entera(bureau):
+    """La premisa que permite que la capa 1 corra fuera del split: no cruza filas.
+
+    Hoy se cumple sola, porque las cinco reglas son comparaciones contra constantes. Justo por
+    eso el test se escribe ahora: es el que se pondrá rojo el día que alguien meta una mediana,
+    un percentil o un `groupby` aquí dentro, que es la fuga estructural de la que este módulo
+    tiene que estar libre para poder correr sobre la tabla entera.
+    """
+    entera = limpiar_bureau(bureau)
+    fila_a_fila = pd.concat([limpiar_bureau(bureau.iloc[[i]]) for i in range(len(bureau))]).reindex(
+        columns=entera.columns
+    )
+    pd.testing.assert_frame_equal(entera, fila_a_fila, check_dtype=False)
 
 
 def test_la_limpieza_de_bureau_no_revienta_si_faltan_columnas(bureau):
@@ -620,10 +707,10 @@ def test_la_presencia_tambien_se_pierde_cuando_el_importe_esta_roto(bureau):
     Son las 24 filas del cap frente a las 412 de moneda, y las dos se recuperan igual.
     """
     limpio = limpiar_bureau(bureau)
-    cliente4 = limpio.SK_ID_CURR == 4  # la cuota de 20M, por encima del cap, en moneda nacional
-    rota = cliente4 & limpio.AMT_ANNUITY.isna()
+    cliente4 = credito_de(limpio, 4).index  # la cuota de 20M, por encima del cap, nacional
+    rota = limpio.loc[cliente4, "AMT_ANNUITY"].isna()
     assert rota.sum() == 1, "el fixture no monta la cuota rota en moneda nacional"
-    assert limpio.loc[rota, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all()
+    assert limpio.loc[cliente4[rota], "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all()
 
 
 def test_la_foto_de_presencia_es_idempotente(bureau):

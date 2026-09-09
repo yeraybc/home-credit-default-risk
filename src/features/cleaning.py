@@ -1,5 +1,10 @@
 """Limpieza determinista de nivel fila, capa 1 del pipeline de features.
 
+Sirve a dos tablas y en cada una hace una cosa distinta, así que las dos mitades van separadas:
+`limpiar_application()` en la primera, con sus centinelas y sus columnas eliminadas, y
+`limpiar_bureau()` en la segunda, con la validez de dominio de los importes y las fechas. Lo que
+comparten es el criterio de capa, no el contenido.
+
 Solo entra aquí lo que no estima ningún parámetro a partir de datos: centinelas, columnas que
 se eliminan por motivo estructural, y caps con una constante fija de dominio. Todo lo que
 salga de un percentil o de una mediana vive en la capa 2a, aunque parezca la misma clase de
@@ -104,8 +109,7 @@ COLUMNAS_PROVISIONALES = {
         "adopta convierte el descarte en firme sin necesidad de mirar al objetivo",
     ),
 }
-# La limpieza de bureau (importes por encima de 50M, cuota por encima de 10M, deuda capada al
-# crédito, moneda) entra en el bloque 2, con sus propias constantes.
+# La limpieza de bureau vive más abajo en este mismo fichero, bajo su propia cabecera.
 
 # Del bloque edificio se conserva solo la versión AVG de cada concepto numérico: MODE y MEDI
 # son estadísticamente intercambiables. La lista se deriva del propio frame en vez de
@@ -205,6 +209,17 @@ def aplicar_caps_de_dominio(app: pd.DataFrame) -> pd.DataFrame:
 
 
 # - bureau -
+# **Toda cifra de esta sección es de `bureau` completo, 1.716.428 filas y 305.811 clientes**, que
+# es sobre lo que corre la limpieza: es capa 1 y el mismo frame lo recorren entrenamiento,
+# validación, `application_test` y la API, así que acotarla a train dejaría a los demás con los
+# 60M dentro. El EDA publicó las suyas sobre `bureau_t`, que es el cruce con `application_train`
+# y son 1.465.325 filas, así que **no coinciden y las dos están bien**: 1.408 filas en moneda
+# extranjera aquí y 1.231 allí, 1.110 clientes y 968, 27.644 con deuda mayor que crédito y
+# 23.282, 62.604 vencimientos lejanos y 52.497. La proporción no se mueve (el exceso grosero es
+# 4,38% aquí, 4,02% en bureau_t y 4,03% sobre el 80% de entrenamiento), porque los cortes son
+# fijos y no se estiman de la muestra. Quien contraste las dos fuentes verá la diferencia, y es
+# esperada.
+#
 # Los seis importes de la tabla. Son los que no se pueden sumar entre monedas distintas, y por
 # eso la lista existe: el resto de columnas de una fila en moneda extranjera (estado, tipo y las
 # cuatro fechas) sigue siendo válido y se conserva.
@@ -219,7 +234,16 @@ IMPORTES_BUREAU: tuple[str, ...] = (
 
 MONEDA_NACIONAL = "currency 1"
 COL_MONEDA = "CREDIT_CURRENCY"
+# Nivel fila, y por eso no lleva el `HAS_`. El plan y `agregacion-multitabla` nombran
+# `BUREAU_HAS_FOREIGN_CURRENCY`, que es la de nivel cliente y sale del `max` de esta al agregar:
+# son dos columnas distintas, no dos nombres de la misma.
 COL_MONEDA_EXTRANJERA = "BUREAU_FOREIGN_CURRENCY"
+
+# `CREDIT_CURRENCY` **sobrevive a la limpieza** y no es olvido. El plan pide eliminarla como
+# variable, y eso es decisión de la agregación: aquí sigue haciendo falta para poder recalcular la
+# bandera en una segunda pasada, y tirarla ahora perdería de qué moneda se trata (2, 3 o 4) sin que
+# nadie lo haya pedido. Lo que el plan prohíbe es que llegue a la matriz como predictor, y de eso
+# responde `agg_bureau`, que decide qué columnas de nivel fila sobreviven al `groupby`.
 
 # Qué importe pasa a NaN por encima de qué corte. Son las cuatro columnas que el EDA declaró, y
 # las otras dos de `IMPORTES_BUREAU` quedan fuera por medición y no por olvido: el máximo de
@@ -242,6 +266,11 @@ def marcar_moneda_extranjera(bureau: pd.DataFrame) -> pd.DataFrame:
     clientes afectados tienen mezcla de monedas, y de los 38 que no, 29 tienen un único crédito
     y borrarlos los dejaría leyéndose como clientes sin historial, que es el grupo del 10,12%
     de default frente al 7,73%.
+
+    Una moneda **no informada** cae del lado extranjero y pierde sus importes, que es la lectura
+    prudente: sin saber la unidad no se puede sumar. Hoy no se dispara, porque `bureau.csv` no
+    trae ni un nulo en la columna, pero la API sí puede mandarlos y conviene que la disposición
+    esté escrita y no sea un efecto de que `ne()` diga verdad sobre un NaN.
 
     La bandera se recalcula en cada pasada y no se acumula con un o lógico, al revés que la del
     centinela: aquí el dato que la define es la moneda, que no se toca, así que la segunda
