@@ -398,13 +398,17 @@ def test_la_matriz_final_sale_de_101_columnas_y_da_139():
     entrenamiento = solo_train(base, split)
     matriz = matriz_de_features(entrenamiento)
     previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
-    _, salida = ajustar_pipeline(base, split)
+    pipeline, salida = ajustar_pipeline(base, split)
+    informe = informe_buckets(previo, pipeline)
 
     assert previo.shape[1] == COLUMNAS_DEL_COLUMNTRANSFORMER
-    assert dict(zip(informe_buckets(previo)["bucket"], informe_buckets(previo)["entran"])) == BUCKETS
+    assert dict(zip(informe["bucket"], informe["entran"])) == BUCKETS
     assert sum(BUCKETS.values()) == COLUMNAS_DEL_COLUMNTRANSFORMER
     assert salida.shape[1] == COLUMNAS_DE_LA_MATRIZ_FINAL
     assert len(salida) == len(entrenamiento)
+    # las dos cifras de la puerta salen del informe y no de contarlas a mano
+    assert informe.set_index("bucket").loc["ohe", "salen"] == COLUMNAS_DE_OHE
+    assert informe["salen"].sum() == COLUMNAS_DE_LA_MATRIZ_FINAL
 
 
 @sin_csv

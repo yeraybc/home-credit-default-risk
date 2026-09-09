@@ -138,6 +138,30 @@ def test_el_informe_de_buckets_cuadra_con_el_frame(entrada):
 
     assert inf["entran"].sum() == COLUMNAS_ENTRADA
     assert (inf["entran"] == inf["presentes"]).all()
+    assert inf["salen"].isna().all(), "sin pipeline no hay expansión que contar"
+
+
+def test_el_informe_de_buckets_no_cambia_de_forma_sin_pipeline(entrada, objetivo):
+    """El nulo va en su columna en vez de quitarla: el informe vacío tiene que traer lo mismo."""
+    p = construir_pipeline().fit(entrada, objetivo)
+
+    assert list(informe_buckets(entrada)) == list(informe_buckets(entrada, p))
+
+
+def test_lo_que_sale_de_los_buckets_suma_la_matriz(entrada, objetivo):
+    """La cifra de la puerta, que hasta ahora no la imprimía ningún informe.
+
+    Solo el bucket de OHE expande, así que es la única diferencia entre lo que entra al reparto y
+    lo que sale de él. Se contrasta contra la matriz de verdad y no contra una suma escrita a
+    mano, que es lo que la haría envejecer sola.
+    """
+    p = construir_pipeline().fit(entrada, objetivo)
+    inf = informe_buckets(entrada, p)
+    salida = p.transform(entrada)
+
+    assert inf["salen"].sum() == salida.shape[1]
+    distintos = inf[inf["entran"] != inf["salen"]]["bucket"].tolist()
+    assert distintos == ["ohe"], f"expande algún bucket más: {distintos}"
 
 
 # --- el paso de dominio ----------------------------------------------------------------------

@@ -400,8 +400,19 @@ def construir_pipeline() -> Pipeline:
     ).set_output(transform="pandas")
 
 
-def informe_buckets(datos: pd.DataFrame) -> pd.DataFrame:
-    """Puerta del punto: cuántas columnas entrega cada bucket y cuántas salen de la matriz."""
+def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd.DataFrame:
+    """Puerta del punto: qué columnas entrega cada bucket y cuántas saca cada uno.
+
+    Con `pipeline` ya ajustado añade el `salen`, que es donde está la única cifra que no se puede
+    contar a mano: el OHE entrega 14 columnas y saca 52, y esa expansión es la diferencia entre
+    las 101 de entrada y las 139 de la matriz. Sin él, `salen` va a nulo en vez de desaparecer,
+    para que el informe no cambie de forma según con qué se le llame.
+
+    `salen` sale de `output_indices_` del `ColumnTransformer` y no de recontar niveles, que sería
+    reimplementar lo que el codificador ya sabe. Cuenta lo que emite el reparto de buckets: el
+    filtro de varianza va después y podría quitar alguna, aunque con el suelo a cero no quita
+    ninguna.
+    """
     reparto = {
         "num": NUMERICAS,
         "ohe": CATEGORICAS_OHE,
@@ -411,12 +422,18 @@ def informe_buckets(datos: pd.DataFrame) -> pd.DataFrame:
         "bin": BINARIAS,
     }
     tras_dominio = aplicar_dominio(datos)
+    emitidas = {} if pipeline is None else pipeline.named_steps["columnas"].output_indices_
     return pd.DataFrame(
         [
             {
                 "bucket": nombre,
                 "entran": len(columnas),
                 "presentes": len(set(columnas) & set(tras_dominio.columns)),
+                "salen": (
+                    emitidas[nombre].stop - emitidas[nombre].start
+                    if nombre in emitidas
+                    else pd.NA
+                ),
             }
             for nombre, columnas in reparto.items()
         ]
