@@ -118,9 +118,11 @@ def ajustar_capa2a(
 ) -> tuple[Winsorizador, pd.DataFrame]:
     """Ajusta el winsorizador sobre el 80% de entrenamiento y registra lo reestimado.
 
-    Hoy es el único consumidor del registro de `params.py`, y el 1.4 trae el segundo. La lista
-    de límites vive en el transformer, que es lo que se serializa y lo que entra en el CV; el
-    registro solo guarda el rastro de con qué cifra y con cuántas filas se ajustó.
+    Sigue siendo el único consumidor del registro de `params.py`: los tres cortes que estrenó el
+    1.4 (`suavizado_woe`, `n_min_categoria` y `app_umbral_varianza`) son de dominio y no pasan
+    por ahí. La lista de límites vive en el transformer, que es lo que se serializa y lo que
+    entra en el CV; el registro solo guarda el rastro de con qué cifra y con cuántas filas se
+    ajustó.
 
     El orden de las dos operaciones no es libre: primero se filtra la partición, que necesita el
     identificador, y después se quita. Al revés no hay por dónde filtrar.
