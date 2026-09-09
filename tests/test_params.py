@@ -18,6 +18,8 @@ from src.features.params import (
     con_contraste_pendiente,
     cortes_de,
     features_con_corte,
+    fijar_operativo,
+    operativos_pendientes,
     parametro,
     por_procedencia,
     reajustables,
@@ -91,7 +93,7 @@ def test_el_centinela_del_dataset_esta_declarado_una_sola_vez():
     Declararlo por tabla es el patrón que en bureau dio 52.500 en un sitio y 52.497 en otro
     para el mismo control.
     """
-    con_ese_valor = [n for n, p in PARAMS.items() if p.valor == 365243]
+    con_ese_valor = [n for n, p in PARAMS.items() if p.valor_referencia == 365243]
     assert con_ese_valor == ["centinela_365243"], con_ese_valor
 
 
@@ -102,6 +104,87 @@ def test_no_hay_dos_parametros_con_la_misma_descripcion():
         d = p.descripcion.strip()
         assert d not in vistas, f"{nombre} repite la descripción de {vistas.get(d)}"
         vistas[d] = nombre
+
+
+# --- frontera entre las cifras del EDA y el código del pipeline ------------------------------
+# `valor()` impide que un corte declarado se consuma sin refijarlo sobre el split. Lo que
+# ninguna puerta cubría es la **cifra suelta**: un 8,0729 escrito a mano dentro de una función
+# no pasa por `valor()` ni aparece en PARAMS, y es exactamente el mismo problema, una medición
+# hecha sobre la población completa usada como si fuera una constante.
+#
+# Estas son las que el EDA midió **contra el objetivo**. Como constante de un test valen, que
+# ahí solo comprueban que el cómputo no se ha movido y no transforman ni una fila. Dentro de
+# `src/` serían un parámetro del EDA consumido sin refijar.
+#
+# Los recuentos de forma no están aquí a propósito y no son fuga: 122 columnas, 307.511 filas,
+# las 19 que se eliminan o las 15 del bloque edificio son estructura del dataset, valen igual
+# en train, en validación, en application_test y en la API, y no salen de estimar nada.
+CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
+    8.0729, 8.0734, 8.07,      # tasa de default global, cruda y limpia
+    24_825,                    # positivos
+    6.96, 7.03, 9.23, 6.99,    # tripartita del bloque edificio
+    7.05, 9.22,                # la misma sin TOTALAREA_MODE en el denominador
+    7.72, 10.34, 2.62,         # bandera del buró y su delta
+    8.09, 3.53,                # bandera del círculo social
+    8.52, 7.50, 9.31, 7.77,    # los dos scores externos
+    1.02, 1.55,                # sus deltas en puntos porcentuales
+    # las que publica el punto 1.4, todas remedidas sobre los 245.993 de entrenamiento
+    10.944, 8.929, 8.569, 5.379, 1.504,   # tasa por nivel de NAME_EDUCATION_TYPE
+    8.490, 7.720, 8.026,                  # tasa por franja horaria
+    12.500, 4.110,                        # tasa de Industry: type 13 y type 12
+    2.0415, 0.8920, 0.4840,               # WoE de Industry: type 8, crudo y los dos suavizados
+    0.3755, 0.6548, 0.7550, 0.7924,       # WoE de los tipos 13 y 12 y los dos extremos
+    0.0443, 0.0286, 0.0446, 0.0284,       # correlación de FLAG_DOCUMENT_3 y 6, tabla y train
+    0.0207, 0.186,                        # Fisher de las raras y P(0 positivos en 20 obs)
+    8.631, 11.634,                        # el hueco por el que NAME_HOUSING_TYPE no se agrupa
+}  # fmt: skip
+# Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
+# los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
+# lo mismo que los enteros pequeños de las `estimado`: son indistinguibles de una constante
+# estructural, y el 3,00 chocaría de frente con el factor de winsorización y con el ratio de
+# deuda sobre crédito, que valen 3 los dos. Lo que las cubre son las dos tasas de arriba, que
+# son de donde salen.
+
+# params.py es la excepción, y por diseño: ahí una cifra medida está obligada a declarar su
+# procedencia, y `valor()` la bloquea hasta que alguien la refija sobre solo_train(). El
+# problema que persigue este test es la cifra suelta fuera del registro.
+MODULO_DEL_REGISTRO = "params.py"
+
+
+def test_ninguna_cifra_medida_contra_el_target_vive_en_src():
+    """Una tasa de default escrita a mano en `src/` es un corte del EDA sin refijar.
+
+    No pasa por `valor()`, no aparece en PARAMS y nadie la va a remedir sobre el split, así que
+    esquiva entera la disciplina que el resto del registro impone. El escaneo es del árbol
+    sintáctico y no del texto: una cifra citada en un comentario o en un docstring no cuenta,
+    que documentar el hallazgo del EDA es justo lo que hay que hacer.
+
+    Es una lista cerrada, no una regla general: cubre las cifras que el EDA publicó, y una
+    medición nueva hay que añadirla aquí. Lo que garantiza es que las publicadas no se cuelen.
+    """
+    import ast
+
+    from src.config import RAIZ
+
+    encontradas, constantes = [], 0
+    for fichero in sorted((RAIZ / "src").rglob("*.py")):
+        if fichero.name == MODULO_DEL_REGISTRO:
+            continue
+        for nodo in ast.walk(ast.parse(fichero.read_text())):
+            if not isinstance(nodo, ast.Constant) or isinstance(nodo.value, bool):
+                continue
+            if not isinstance(nodo.value, (int, float)):
+                continue
+            constantes += 1
+            if nodo.value in CIFRAS_MEDIDAS_CONTRA_EL_TARGET:
+                ruta = fichero.relative_to(RAIZ)
+                encontradas.append(f"{ruta}:{nodo.lineno} -> {nodo.value}")
+
+    assert constantes > 50, f"el escaneo solo vio {constantes} constantes, revisar el recorrido"
+    assert not encontradas, (
+        "cifras medidas contra el TARGET dentro de src/, que nadie va a refijar sobre el "
+        f"split: {encontradas}"
+    )
 
 
 # --- frontera entre config.yaml y params.py -------------------------------------------------
@@ -270,3 +353,85 @@ def test_cortes_de_una_tabla_desconocida_revienta():
 
 def test_una_feature_sin_corte_devuelve_tupla_vacia():
     assert cortes_de("bureau", "BUREAU_ACTIVE_COUNT") == ()
+
+
+# --- valor operativo: la referencia del EDA no basta por sí sola para usar un reajustable ---
+# De la capa que fija estos valores sobre solo_train() está la 2a del winsorizador, en
+# `ajustar_capa2a()`; el resto de la 2a y la 2b todavía no, así que para esos cortes estos tests
+# describen el contrato que tendrán que cumplir y no un flujo ya integrado.
+
+
+def test_todo_reajustable_empieza_sin_operativo_fijado():
+    """Al importar el módulo nadie ha fijado nada, y así tiene que llegar a cada test.
+
+    Lo sostiene la fixture `restaurar_params` de conftest.py: `ajustar_capa2a()` ya fija los diez
+    cortes del winsorizador, así que sin ella este test dependería de qué haya corrido antes.
+    """
+    assert set(operativos_pendientes()) == set(reajustables())
+
+
+@pytest.mark.parametrize("nombre", sorted(reajustables()))
+def test_valor_revienta_para_cualquier_reajustable_sin_operativo(nombre):
+    """No solo los tres sin referencia: los que ya tienen cifra del EDA tampoco valen tal cual."""
+    with pytest.raises(ValueError, match="sin fijar"):
+        valor(nombre)
+
+
+def test_fijar_operativo_permite_usar_el_valor():
+    fijar_operativo("app_winsor_amt_income_total", 1_500_000, n_train=245_993)
+    assert valor("app_winsor_amt_income_total") == 1_500_000
+    assert "app_winsor_amt_income_total" not in operativos_pendientes()
+    # la referencia del EDA queda intacta al lado, como rastro de auditoría
+    assert parametro("app_winsor_amt_income_total").valor_referencia == 1_417_500
+
+
+def test_refijar_uno_ya_fijado_revienta_en_vez_de_pisarlo():
+    """Sin esta guarda, dos ajustes sobre poblaciones distintas los resuelve un upsert.
+
+    Gana el último y nadie se entera: es el mecanismo del orden del registro que en el EDA dejó
+    una feature con el efecto de una población y la justificación de otra. Aquí la consecuencia
+    sería un límite ajustado sobre una partición con el n de otra.
+    """
+    fijar_operativo("app_winsor_cnt_children", 9, n_train=245_993)
+    with pytest.raises(ValueError, match="ya está fijado"):
+        fijar_operativo("app_winsor_cnt_children", 99, n_train=12)
+    # y el primero sigue en pie, que el intento fallido no puede dejarlo a medias
+    assert valor("app_winsor_cnt_children") == 9
+    assert parametro("app_winsor_cnt_children").n_train_operativo == 245_993
+
+
+def test_refijar_con_sobrescribir_explicito_si_pisa():
+    """La dirección contraria: pedirlo a las claras sí vale, como en `construir_split()`."""
+    fijar_operativo("app_winsor_cnt_children", 9, n_train=245_993)
+    fijar_operativo("app_winsor_cnt_children", 99, n_train=12, sobrescribir=True)
+    assert valor("app_winsor_cnt_children") == 99
+    assert parametro("app_winsor_cnt_children").n_train_operativo == 12
+
+
+def test_fijar_operativo_exige_n_train_positivo():
+    with pytest.raises(ValueError, match="positivo"):
+        fijar_operativo("app_winsor_cnt_children", 8, n_train=0)
+
+
+def test_fijar_operativo_sobre_un_dominio_revienta():
+    with pytest.raises(ValueError, match="no es reajustable"):
+        fijar_operativo("redundancia_pearson", 0.8, n_train=1000)
+
+
+def test_un_dominio_no_admite_valor_operativo_directo():
+    with pytest.raises(ValueError, match="no tiene valor operativo"):
+        Parametro(1, "dominio", "d", "f", valor_operativo=2, n_train_operativo=10)
+
+
+def test_valor_operativo_sin_n_train_asociado_revienta():
+    with pytest.raises(ValueError, match="n_train_operativo"):
+        Parametro(None, "medido", "d", "f", valor_operativo=2)
+
+
+def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train():
+    """El número que ya vivía en PARAMS no basta solo, aunque sea el mismo que se acabe fijando."""
+    referencia = parametro("prev_plazo_largo_cuotas").valor_referencia
+    with pytest.raises(ValueError, match="sin fijar"):
+        valor("prev_plazo_largo_cuotas")
+    fijar_operativo("prev_plazo_largo_cuotas", referencia, n_train=245_993)
+    assert valor("prev_plazo_largo_cuotas") == referencia

@@ -1,9 +1,11 @@
 """Partición de entrenamiento y validación, la capa 0 del pipeline de features.
 
-Se hace lo primero de todo y sobre SK_ID_CURR, antes de cualquier limpieza, agregación o
-transformación: todo lo que estime un parámetro a partir de datos se ajusta después y solo
-sobre la parte de entrenamiento. Se persiste para que el notebook, los scripts y los tests
-usen exactamente la misma partición.
+Va sobre SK_ID_CURR y antes de todo lo que estime un parámetro a partir de datos, que se
+ajusta después y solo sobre la parte de entrenamiento. Lo único que la precede es la capa 1,
+que es determinista y no cruza filas: se parte la tabla ya limpia para que la partición cubra
+exactamente la población de modelado, o declararía clientes que después no están en la matriz.
+El orden lo fija `build_features.construir_base()`. Se persiste para que el notebook, los
+scripts y los tests usen exactamente la misma partición.
 """
 
 from __future__ import annotations

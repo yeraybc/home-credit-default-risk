@@ -25,7 +25,7 @@ Tres claves se migraron desde config.yaml al aplicar esa frontera, y una se elim
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # `dominio`   constante fija de plausibilidad de negocio o convención metodológica del
 #             proyecto. No se reestima: no sale de los datos.
@@ -44,24 +44,42 @@ REAJUSTABLES = ("estimado", "medido")
 class Parametro:
     """Un corte del pipeline, con su valor de referencia y su procedencia.
 
+    `valor_referencia` es la cifra que salió del EDA sobre el conjunto completo: queda como
+    documentación y nunca la usa el pipeline para transformar datos. Lo que de verdad se
+    consume es `valor_operativo`, que para un reajustable (`estimado`/`medido`) empieza vacío
+    y solo lo rellena `fijar_operativo()` con el resultado de recalcular sobre `solo_train()`.
+    Esto evita que la capa 2a/2b use por accidente la cifra medida sobre el conjunto entero.
+
     `contraste_pendiente` es para el caso raro de un corte de dominio que aun así hay que
     contrastar sobre el split: no se refija, pero el contraste queda declarado en vez de
     perderse al reclasificarlo.
     """
 
-    valor: float | None
+    valor_referencia: float | None
     procedencia: str
     descripcion: str
     fuente: str
     contraste_pendiente: str | None = None
+    valor_operativo: float | None = None
+    n_train_operativo: int | None = None
 
     def __post_init__(self) -> None:
         if self.procedencia not in PROCEDENCIAS:
             raise ValueError(f"procedencia fuera del vocabulario cerrado: {self.procedencia!r}")
-        if self.procedencia == "dominio" and self.valor is None:
+        if self.procedencia == "dominio" and self.valor_referencia is None:
             raise ValueError("un parámetro de dominio no puede estar sin valor")
         if self.contraste_pendiente is not None and not self.contraste_pendiente.strip():
             raise ValueError("contraste_pendiente declarado y vacío")
+        if self.procedencia == "dominio" and self.valor_operativo is not None:
+            raise ValueError(
+                "un parámetro de dominio no tiene valor operativo: usa valor_referencia"
+            )
+        if self.valor_operativo is not None and self.n_train_operativo is None:
+            raise ValueError(
+                "valor_operativo fijado sin n_train_operativo: no queda rastro de origen"
+            )
+        if self.n_train_operativo is not None and self.n_train_operativo <= 0:
+            raise ValueError("n_train_operativo tiene que ser positivo")
 
 
 PARAMS: dict[str, Parametro] = {
@@ -89,6 +107,32 @@ PARAMS: dict[str, Parametro] = {
         "observaciones por debajo de las cuales una categoría no va sola y se agrupa; con "
         "quién se agrupa es decisión por tasa y se refija aparte",
         "eda-bureau 5.3, agrupamiento de CREDIT_TYPE",
+    ),
+    # Suavizado del WoE, convención y no corte medido. Son observaciones de prior, repartidas
+    # entre buenos y malos **según la tasa global de train** y no a partes iguales: a partes
+    # iguales el prior implícito es 50/50, que no describe una cartera del 8% de default, y al
+    # nivel que ya está por encima de la media lo aleja de cero en vez de acercarlo. Medido sobre
+    # train en `Industry: type 8`, que con n = 17 es el más pequeño de los 58: sin suavizar vale
+    # +0,8920, sumarle los 20 del prior a cada uno de los dos recuentos lo empuja hasta +2,0415, y
+    # repartirlos por la tasa global lo deja en +0,4840, que es la dirección que se busca.
+    #
+    # Con 20, un nivel necesita 20 observaciones propias para que su tasa pese tanto como el
+    # prior, o sea que conserva n/(n+20) de su propia señal: el de 17 clientes se queda con la
+    # mitad y el de 54.554 no se mueve. Barrido sobre train en 5, 10, 20, 50 y 100: por debajo
+    # sigue fiándose demasiado de 17 observaciones, y por encima empieza a erosionar niveles con
+    # señal real, como `Industry: type 13`, que baja del 77% al 58% de la suya con 56 clientes y
+    # 7 impagos.
+    #
+    # Aparte de eso, impide el log de cero. Sobre train hoy ningún nivel de ORGANIZATION_TYPE se
+    # queda sin positivos ni sin negativos, pero sí puede pasar en un fold del CV de la Fase 4 o
+    # en lo que llegue a la API.
+    "suavizado_woe": Parametro(
+        20,
+        "dominio",
+        "observaciones de prior con las que se suaviza el WoE de cada nivel, repartidas entre "
+        "buenos y malos según la tasa global de entrenamiento, para que un nivel con poca "
+        "evidencia propia converja al comportamiento medio en vez de a su propio azar",
+        "convención de suavizado bayesiano de WoE",
     ),
     "min_denominador_proporcion": Parametro(
         None,
@@ -141,13 +185,45 @@ PARAMS: dict[str, Parametro] = {
         "tramos máximos del binning con el que se calculan IV y WoE",
         "convención de binning del proyecto",
     ),
+    # Las tres fronteras de la franja horaria de la solicitud. Son de dominio y no se reestiman:
+    # salen de dónde empieza y acaba una jornada laboral, no de mirar la tasa de default. El EDA
+    # las eligió con ese criterio ("pedir fuera de horario puede señalar un perfil distinto") y su
+    # efecto medido es flojo, 8,490%, 7,720% y 8,026% sobre train, o sea 0,77pp de recorrido
+    # frente a los 2pp del umbral de banderas. Quien decida si la franja se queda es el IV del
+    # bloque 5, con su medida delante, no estos tres números.
+    "app_hora_inicio_manana": Parametro(
+        6, "dominio", "hora a la que empieza la franja de mañana", "eda-application-train 3.x"
+    ),
+    "app_hora_inicio_tarde": Parametro(
+        12, "dominio", "hora a la que la mañana da paso a la tarde", "eda-application-train 3.x"
+    ),
+    "app_hora_fin_tarde": Parametro(
+        18,
+        "dominio",
+        "hora a la que acaba la tarde y empieza el fuera de horario",
+        "eda-application-train 3.x",
+    ),
+    # Suelo de varianza del filtro final. Cero significa que solo caen las constantes, que es lo
+    # que se quiere: la selección de verdad la hace el IV del bloque 5. Se declara en vez de
+    # dejarlo al defecto implícito de la librería para que subirlo sea una decisión visible, y
+    # porque con el suelo a cero la exclusión de FLAG_DOCUMENT_3 y 6 que pide el plan es inocua.
+    "app_umbral_varianza": Parametro(
+        0.0,
+        "dominio",
+        "varianza por debajo de la cual una columna sale de la matriz; a cero solo elimina "
+        "constantes, que es una red contra el fold que deja una bandera sin variación",
+        "convención, la selección por señal es del bloque 5",
+    ),
     # application_train: validez de dominio, constantes fijas
     # el EDA lo declaraba como criterio de dominio ("por encima de 64 años no es un activo
     # financiero real"), pero 64 es exactamente el p99 y el argumento de negocio justifica
     # capar, no capar en 64: un número de dominio sería redondo y no se movería con la
-    # muestra. Recomputado sobre los 104.582 clientes con coche, el p99 es 64,00 y por encima
-    # de 65 solo quedan 3 registros, así que el criterio no sostiene el valor por sí solo y
-    # pasa a estimado, igual que el grupo app_winsor_*.
+    # muestra. Recomputado sobre los 104.582 clientes con coche de la tabla cruda, el p99 es
+    # 64,00 y por encima de 65 solo quedan 3 registros, así que el criterio no sostiene el
+    # valor por sí solo y pasa a estimado, igual que el grupo app_winsor_*.
+    # Las tres poblaciones del recuento, que no son la misma y conviene no confundir: 104.582
+    # con coche en la tabla cruda, 104.576 en la limpia y 83.745 en el 80% de entrenamiento,
+    # que es el que acaba declarando el ajuste y el que vale como n_train.
     "app_cap_p99_own_car_age": Parametro(
         64,
         "estimado",
@@ -165,6 +241,13 @@ PARAMS: dict[str, Parametro] = {
     "app_winsor_factor": Parametro(
         3.0, "dominio", "múltiplo del p99 al que se winsoriza", "eda-application-train 4.6"
     ),
+    "app_winsor_percentil": Parametro(
+        0.99,
+        "dominio",
+        "percentil sobre el que se aplica el múltiplo; va aquí y no como literal en el "
+        "transformer por lo mismo que el factor, que los dos definen el mismo corte",
+        "eda-application-train 4.6",
+    ),
     "app_winsor_amt_income_total": Parametro(
         1_417_500,
         "estimado",
@@ -173,6 +256,17 @@ PARAMS: dict[str, Parametro] = {
     ),
     "app_winsor_def_30_cnt_social_circle": Parametro(
         6, "estimado", "3xp99 de impagos en el círculo social", "eda-application-train 4.6"
+    ),
+    # el EDA lo declara junto al de 30 días ("DEF_30/60 (6)") y le da el mismo valor. Está aquí
+    # y no fuera porque la columna sobrevive a la limpieza: su descarte se decidió contra la
+    # tasa de default, así que es provisional y la juzga la capa 2b. Sin este corte, la 2b la
+    # juzgaría con la cola sin capar mientras su gemela DEF_30 sí la lleva capada, que es el
+    # mismo control con dos tratamientos.
+    "app_winsor_def_60_cnt_social_circle": Parametro(
+        6,
+        "estimado",
+        "3xp99 de impagos a 60 días en el círculo social, la cola de mayor señal de la tabla",
+        "eda-application-train 4.6",
     ),
     "app_winsor_obs_30_cnt_social_circle": Parametro(
         30, "estimado", "3xp99 de observados en el círculo social", "eda-application-train 4.6"
@@ -357,13 +451,52 @@ def parametro(nombre: str) -> Parametro:
 
 
 def valor(nombre: str):  # noqa: ANN201 - devuelve el tipo que declare el parámetro
-    """Valor del parámetro. Falla si aún no se ha fijado, en vez de devolver None."""
+    """Valor que consume el pipeline. Falla si aún no se ha fijado, en vez de devolver None.
+
+    Para un reajustable (`estimado`/`medido`) es el `valor_operativo`, que solo existe tras
+    pasar por `fijar_operativo()`: la referencia del EDA sobre el conjunto completo nunca se
+    devuelve aquí, para que no se cuele en una transformación sin haber pasado por el split.
+    """
     p = parametro(nombre)
-    if p.valor is None:
+    if p.procedencia in REAJUSTABLES:
+        if p.valor_operativo is None:
+            raise ValueError(
+                f"{nombre!r} está sin fijar (procedencia {p.procedencia!r}): {p.descripcion}. "
+                "Hay que recalcularlo sobre solo_train() y fijarlo con fijar_operativo()."
+            )
+        return p.valor_operativo
+    return p.valor_referencia
+
+
+def fijar_operativo(
+    nombre: str, valor_nuevo: float, n_train: int, sobrescribir: bool = False
+) -> None:
+    """Único punto de escritura del valor operativo de un reajustable.
+
+    Exige `n_train`, el tamaño de la partición de entrenamiento usada para calcularlo: no
+    basta con poner un número, tiene que declarar cuántas filas lo sostienen. No relee el
+    split por su cuenta, quien llama ya lo filtró con `solo_train()` y aquí solo se registra
+    el resultado.
+
+    Refijar uno ya fijado exige `sobrescribir=True`, la misma guarda que `construir_split()`.
+    Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
+    del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
+    dejan la segunda cifra con el n de la segunda y nadie se entera. Hoy solo hay un
+    consumidor, `ajustar_capa2a()`; el riesgo aparece en cuanto haya el segundo.
+    """
+    p = parametro(nombre)
+    if p.procedencia not in REAJUSTABLES:
         raise ValueError(
-            f"{nombre!r} está sin fijar (procedencia {p.procedencia!r}): {p.descripcion}"
+            f"{nombre!r} no es reajustable (procedencia {p.procedencia!r}); "
+            "no lleva valor operativo"
         )
-    return p.valor
+    if p.valor_operativo is not None and not sobrescribir:
+        raise ValueError(
+            f"{nombre!r} ya está fijado en {p.valor_operativo} sobre {p.n_train_operativo} "
+            f"filas y se intenta poner {valor_nuevo} sobre {n_train}. Refijarlo invalida todo "
+            "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
+        )
+    PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
 
 
 def por_procedencia(procedencia: str) -> dict[str, Parametro]:
@@ -379,8 +512,21 @@ def reajustables() -> dict[str, Parametro]:
 
 
 def sin_fijar() -> dict[str, Parametro]:
-    """Los que todavía no tienen valor y bloquean a quien los use."""
-    return {k: v for k, v in PARAMS.items() if v.valor is None}
+    """Los que el EDA nunca llegó a medir: sin referencia y, por tanto, sin operativo posible."""
+    return {k: v for k, v in PARAMS.items() if v.valor_referencia is None}
+
+
+def operativos_pendientes() -> dict[str, Parametro]:
+    """Reajustables con referencia del EDA que todavía no se han refijado sobre solo_train().
+
+    Es la lista de tareas de lo que queda de las capas 2a y 2b: al importar el módulo son todos,
+    y `ajustar_capa2a()` descuenta los diez cortes del winsorizador en cuanto corre.
+    """
+    return {
+        k: v
+        for k, v in PARAMS.items()
+        if v.procedencia in REAJUSTABLES and v.valor_operativo is None
+    }
 
 
 def con_contraste_pendiente() -> dict[str, Parametro]:

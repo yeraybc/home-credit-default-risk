@@ -22,6 +22,14 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
     y cae a un enfoque basado en cardinalidad (Binary, OHE, Target/WoE) para el resto.
 
     Aplico un diccionario estático para conclusiones específicas y heurística básica para el resto.
+
+    **Esto recoge lo que concluyó el EDA, y quien codifica de verdad es `pipeline.py`.** Las dos
+    cosas coinciden salvo en seis entradas, donde el punto 1.4 midió sobre el split y llegó a
+    otra conclusión: los agrupamientos por tasa de `NAME_TYPE_SUITE`, `NAME_INCOME_TYPE` y
+    `NAME_HOUSING_TYPE`, las bandas de riesgo previas al WoE de `ORGANIZATION_TYPE` y al target
+    encoding de `OCCUPATION_TYPE`, y la exclusión del filtro de varianza que el bloque de
+    `FLAG_DOCUMENT_*` daba por hecha. Las seis lo dicen en su detalle. No se borran porque la
+    conclusión del EDA es la que era y el rastro vale, pero la fuente ejecutable es la otra.
     """
     especificas = {
         "NAME_CONTRACT_TYPE": (
@@ -39,13 +47,18 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
             "missings reclasifica la variable a MCAR. Agrupar 'Other_A' (8,78%), 'Other_B' "
             "(9,83%) y 'Group of people' (8,49%) en 'Other_High' (2.907 obs, 9,39%), y fusionar "
             "'Children' (7,38%) con 'Family' (7,49%). 'Unaccompanied' y 'Spouse, partner' se "
-            "mantienen solas, luego aplicar OHE.",
+            "mantienen solas, luego aplicar OHE. El pipeline no agrupa: remedidos sobre el 80% de "
+            "entrenamiento, sus siete niveles con dato caben dentro de 2,2pp, así que cualquier "
+            "criterio de tasas equivalentes los funde en uno solo. Van a OHE tal cual.",
         ),
         "NAME_INCOME_TYPE": (
             "One-Hot / Target Encoding",
             "Agrupar las cuatro categorías de 5 a 22 registros: 'Maternity leave' (40,00%) y "
             "'Unemployed' (36,36%) en 'High Risk Other' (27 obs, 37,04%), 'Businessman' y "
-            "'Student' en 'Low Risk Other' (28 obs, 0,00%), luego codificar.",
+            "'Student' en 'Low Risk Other' (28 obs, 0,00%), luego codificar. El pipeline no parte "
+            "en dos: 'Low Risk Other' existía solo por no tener ni un positivo, y sobre el split "
+            "son 20 observaciones, donde ver cero positivos a la tasa base tiene probabilidad "
+            "0,186. Las cuatro van al mismo residual por rareza, sin dirección propia.",
         ),
         "NAME_EDUCATION_TYPE": (
             "Ordinal Encoding",
@@ -60,7 +73,10 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
             "One-Hot Encoding (Consolidado)",
             "Fusionar 'Co-op apartment' (1.122 obs, 7,93%) con 'House / apartment' (7,80%) por "
             "tasa equivalente. 'With parents', 'Rented apartment', 'Municipal apartment' y "
-            "'Office apartment' se mantienen separadas, luego aplicar OHE.",
+            "'Office apartment' se mantienen separadas, luego aplicar OHE. El pipeline no fusiona: "
+            "aquí un criterio de tasas sí separaría en dos grupos (hay 3,00pp entre 'Municipal "
+            "apartment' y 'With parents' sobre train), pero la puerta del pipeline es de rareza y "
+            "ninguno de los seis baja del mínimo. Lo decide el IV del bloque 5.",
         ),
         "WEEKDAY_APPR_PROCESS_START": (
             "Binary (0/1)",
@@ -69,12 +85,18 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
         "ORGANIZATION_TYPE": (
             "Weight of Evidence (WoE)",
             "Alta cardinalidad (58 categorías). Agrupar por sectores o tasa de default similar "
-            "(no por frecuencia) en entrenamiento, luego aplicar WoE en Fase 3.",
+            "(no por frecuencia) en entrenamiento, luego aplicar WoE en Fase 3. El pipeline "
+            "aplica el WoE nivel a nivel, sin agrupar: quien absorbe el nivel con poca evidencia "
+            "propia es el suavizado del prior, que lo acerca al comportamiento medio.",
         ),
         "OCCUPATION_TYPE": (
             "Target / WoE Encoding",
             "Agrupar por tasa de default en entrenamiento. Tratar nulos (31%) como "
-            "'Retired/Inactive' tras cruzar con NAME_INCOME_TYPE, luego aplicar WoE/Target.",
+            "'Retired/Inactive' tras cruzar con NAME_INCOME_TYPE, luego aplicar WoE/Target. El "
+            "pipeline no agrupa en bandas: el TargetEncoder de la librería ya le da a cada nivel "
+            "su propia media, con codificación cruzada interna. Y al nulo lo llama 'Sin declarar', "
+            "porque el cruce solo es determinista en Unemployed y Pensioner: en Working el nulo "
+            "es del 15,70% y se comporta como ruido de captura.",
         ),
         "FONDKAPREMONT_MODE": (
             "Binarize / Drop",
@@ -153,12 +175,34 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
         "FLAG_DOCUMENT_3": (
             "Conservar como binaria",
             "Conservar para evaluación. Muestra correlación positiva significativa con TARGET "
-            "(+0.044).",
+            "(+0,0443).",
         ),
         "FLAG_DOCUMENT_6": (
             "Conservar como binaria",
             "Conservar para evaluación. Muestra correlación negativa significativa con TARGET "
-            "(-0.029).",
+            "(-0,0286).",
+        ),
+        # Las tres del bloque de contacto que caían en la rama por defecto y salían con el
+        # detalle genérico, sin decisión propia. Ninguna se decide aquí: las tres son binarias
+        # ya codificadas y van al passthrough, y quien las juzgue es el IV del bloque 5. Lo que
+        # faltaba era su motivo, que es lo que la rama por defecto no puede dar.
+        "FLAG_PHONE": (
+            "Conservar como binaria",
+            "r = -0,0238 con TARGET, la más fuerte de las tres del bloque de contacto y con "
+            "signo negativo: tener teléfono fijo declarado acompaña a menos default, y el EDA lo "
+            "lee como estabilidad residencial residual. Se decide con el IV.",
+        ),
+        "FLAG_WORK_PHONE": (
+            "Conservar como binaria",
+            "r = +0,0285 con TARGET, y es la única de las tres con signo positivo. Declarar "
+            "teléfono del trabajo va con más default, no con menos, así que no es una segunda "
+            "copia de FLAG_PHONE. Se decide con el IV.",
+        ),
+        "FLAG_EMAIL": (
+            "Conservar como binaria",
+            "r = -0,0018 con TARGET, señal despreciable, y solo el 5,67% de los clientes lo "
+            "declara. Es la candidata más clara del bloque a caerse, pero cae por IV y no por "
+            "correlación.",
         ),
     }
 
@@ -180,13 +224,18 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
         cats = sorted(df[col].dropna().unique())
         card = len(cats)
 
-        if col.startswith("FLAG_DOCUMENT_") and col not in ["FLAG_DOCUMENT_3", "FLAG_DOCUMENT_6"]:
+        # las dos que tienen entrada propia se salen de esta rama por `especificas` y no por una
+        # lista con sus nombres, que era el mismo par escrito otra vez al lado del de
+        # `pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`
+        if col.startswith("FLAG_DOCUMENT_") and col not in especificas:
             strategy, detail = (
                 "Filtrar con VarianceThreshold",
                 "Baja varianza (medias de 0,000007 a 0,015) y correlación insignificante con "
                 "TARGET. El conjunto exacto lo fija el VarianceThreshold en Fase 3 sobre el "
-                "split de entrenamiento; FLAG_DOCUMENT_3 y FLAG_DOCUMENT_6 quedan fuera del "
-                "filtro para evaluarlas con IV.",
+                "split de entrenamiento. El pipeline no exceptúa a FLAG_DOCUMENT_3 ni a "
+                "FLAG_DOCUMENT_6 del filtro: con el suelo a cero solo caen las constantes y "
+                "ninguna de las dos puede serlo, así que no hay nada de lo que salvarlas. Quien "
+                "las protege de verdad es el control por IV del bloque 5.",
             )
         elif col in binary_num_cols and col not in especificas:
             strategy, detail = "Conservar como binaria", "Ya es una variable numérica binaria 0/1."
