@@ -35,10 +35,11 @@ from src.features.params import valor
 # colapsa a las 15 que sobreviven a la limpieza sin una sola discrepancia.
 #
 # El de 46 no clasifica igual, y no se arregla sacándole las cuatro categóricas: lo que queda
-# son 42, que dan 6,96%, 7,05% y 9,22%. TOTALAREA_MODE es tan portante como ellas, porque 645
-# clientes tienen ahí su único dato del edificio y sin esa columna pasan a leerse como todo
-# nulo, que es el grupo que carga la señal, más 14 que perderían el completo. Las dos
-# sensibilidades están fijadas en tests/test_build_features.py.
+# son 42, que dan 6,96%, 7,05% y 9,22%. TOTALAREA_MODE es tan portante como ellas, y se ve en
+# las dos direcciones que se mueve el grupo al quitarla: 645 clientes tienen ahí su único dato
+# del edificio y pasan a leerse como todo nulo, que es el grupo que carga la señal, y otros 14
+# que solo a ella le faltan pasan a leerse como completos sin serlo. El parcial pierde los 659
+# de la suma. Las dos sensibilidades están fijadas en tests/test_build_features.py.
 CATEGORICAS_EDIFICIO = (
     "FONDKAPREMONT_MODE",
     "HOUSETYPE_MODE",
@@ -225,6 +226,12 @@ def construir_features_capa1(app: pd.DataFrame) -> pd.DataFrame:
     return anadir_ratios(anadir_banderas_ausencia(app))
 
 
+# Las columnas del informe, declaradas por lo mismo que `COLUMNAS_DETALLE` en el agrupador: en
+# una segunda pasada no hay features nuevas, la comprensión sale vacía y sin esto el frame
+# llegaría sin ninguna columna, que es el patrón de la máscara que indexa por nombre.
+COLUMNAS_INFORME = ["feature", "columnas de origen", "no nulos", "% cobertura", "marcados o media"]
+
+
 def informe_capa1(app: pd.DataFrame, con_features: pd.DataFrame) -> pd.DataFrame:
     """Qué se ha añadido, sobre cuántas columnas y con cuánta cobertura."""
     nuevas = [c for c in con_features.columns if c not in app.columns]
@@ -249,5 +256,6 @@ def informe_capa1(app: pd.DataFrame, con_features: pd.DataFrame) -> pd.DataFrame
                 ),
             }
             for c in nuevas
-        ]
+        ],
+        columns=COLUMNAS_INFORME,
     )

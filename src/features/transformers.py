@@ -229,7 +229,10 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
 
     Un solo criterio, el de rareza, que sale de `n_min_categoria`. **No compara tasas ni elige
     vecino**, y esa ausencia está medida y no supuesta: las celdas que caen aquí tienen 3, 8, 12
-    y 18 observaciones, así que su tasa observada es ruido de muestreo. El plan de la fase ya
+    y 18 observaciones, así que su tasa observada es ruido de muestreo. Y el corte no está en
+    filo de navaja, que es lo que haría discutible el valor: la superviviente más pequeña de los
+    catorce buckets de OHE es `Group of people` con 212, o sea que entre lo que cae y lo que se
+    queda hay un salto de 18 a 212 sin nada en medio. El plan de la fase ya
     había medido este caso exacto con un Fisher entre los dos lados de `NAME_INCOME_TYPE` (p =
     0,0207, pero probabilidad 0,186 de ver cero positivos en 20 obs a la tasa base) y su
     conclusión era colapsar en un residual único si la separación no se sostenía. No se sostiene.
@@ -237,7 +240,9 @@ class AgrupadorDeRaras(BaseEstimator, TransformerMixin):
     **Los tres agrupamientos por tasa que el plan daba por decididos tampoco se reproducen, y el
     motivo no es el mismo en los tres.** Remedidas las tasas sobre train y encadenando por huecos
     de 2pp: los siete niveles con dato de `NAME_TYPE_SUITE` caben dentro de 2,2pp y se funden en
-    uno solo, y los cinco de `NAME_FAMILY_STATUS` igual, así que ahí un criterio de tasas
+    uno solo, y los cinco de `NAME_FAMILY_STATUS` se funden también, aunque abarcando 4,24pp: lo
+    que los junta no es que quepan en la misma banda sino que ningún hueco entre dos consecutivos
+    llega a 2pp, y el mayor es de 1,80pp. Así que ahí un criterio de tasas
     equivalentes se lleva la variable entera. `NAME_HOUSING_TYPE` **no**: sale limpia en dos
     grupos por un hueco de 3,00pp entre `Municipal apartment` (8,631%) y `With parents`
     (11,634%). O sea que en esa el argumento genérico no vale, y lo que la deja sin agrupar es

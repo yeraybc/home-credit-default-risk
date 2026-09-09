@@ -134,9 +134,16 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     12.500, 4.110,                        # tasa de Industry: type 13 y type 12
     2.0415, 0.8920, 0.4840,               # WoE de Industry: type 8, crudo y los dos suavizados
     0.3755, 0.6548, 0.7550, 0.7924,       # WoE de los tipos 13 y 12 y los dos extremos
-    0.0443, 0.0286,                       # correlación de FLAG_DOCUMENT_3 y 6 con el objetivo
+    0.0443, 0.0286, 0.0446, 0.0284,       # correlación de FLAG_DOCUMENT_3 y 6, tabla y train
     0.0207, 0.186,                        # Fisher de las raras y P(0 positivos en 20 obs)
+    8.631, 11.634,                        # el hueco por el que NAME_HOUSING_TYPE no se agrupa
 }  # fmt: skip
+# Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
+# los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
+# lo mismo que los enteros pequeños de las `estimado`: son indistinguibles de una constante
+# estructural, y el 3,00 chocaría de frente con el factor de winsorización y con el ratio de
+# deuda sobre crédito, que valen 3 los dos. Lo que las cubre son las dos tasas de arriba, que
+# son de donde salen.
 
 # params.py es la excepción, y por diseño: ahí una cifra medida está obligada a declarar su
 # procedencia, y `valor()` la bloquea hasta que alguien la refija sobre solo_train(). El

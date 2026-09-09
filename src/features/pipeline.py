@@ -187,7 +187,8 @@ PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
 IMPUTACION_SIN_RASTRO: tuple[str, ...] = ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2")
 
 # Las dos banderas de documento que el EDA decidió conservar pase lo que pase, por su correlación
-# con el objetivo (+0,0443 la 3 y -0,0286 la 6). El plan de la fase pide dejarlas **fuera** del
+# con el objetivo sobre la tabla completa (+0,0443 la 3 y -0,0286 la 6; sobre los 245.993 de
+# entrenamiento son +0,0446 y -0,0284). El plan de la fase pide dejarlas **fuera** del
 # filtro de varianza, y aquí no se implementa esa exclusión: con el suelo a cero solo caen las
 # constantes, y ninguna de las dos puede serlo (70,99% y 8,79% de unos sobre train), así que
 # montar un desvío para las dos columnas sería maquinaria para un caso que no ocurre.

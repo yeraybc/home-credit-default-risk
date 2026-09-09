@@ -187,6 +187,19 @@ def test_el_informe_declara_el_denominador_de_cada_bandera(app):
     assert inf.loc["AGE_YEARS", "% cobertura"] == 100.0
 
 
+def test_el_informe_conserva_sus_columnas_cuando_no_hay_features_nuevas(app):
+    """El caso de la segunda pasada, donde la comprensión sale vacía.
+
+    Sin las columnas declaradas el frame llega sin ninguna, y quien lo indexe después revienta
+    por `KeyError` en un sitio que no tiene nada que ver con la causa.
+    """
+    from src.features.application import COLUMNAS_INFORME
+
+    con = construir_features_capa1(app)
+
+    assert list(informe_capa1(con, con).columns) == COLUMNAS_INFORME
+
+
 # --- disciplina de capas ---------------------------------------------------------------------
 # Los tres cortes que la capa 1 tiene derecho a pedir, todos de dominio. Se listan para que
 # quitar uno también se note, no solo añadir uno de más.
