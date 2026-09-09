@@ -257,6 +257,48 @@ def marcar_moneda_extranjera(bureau: pd.DataFrame) -> pd.DataFrame:
     return bureau
 
 
+# Los importes cuya **ausencia** lee alguna feature de la receta, y por eso hay que fotografiarla
+# antes de anular nada. Los otros dos de `IMPORTES_BUREAU` no llevan foto porque nadie lee su
+# nulo: de `AMT_CREDIT_SUM` se lee la magnitud y de `AMT_CREDIT_SUM_OVERDUE` también.
+IMPORTES_CON_PRESENCIA: dict[str, str] = {
+    "AMT_ANNUITY": "BUREAU_CREDITS_WITH_ANNUITY_COUNT, _RATIO y HAS_BUREAU_ANNUITY",
+    "AMT_CREDIT_SUM_DEBT": "HAS_BUREAU_FINANCIAL_DETAIL",
+    "AMT_CREDIT_SUM_LIMIT": "HAS_BUREAU_FINANCIAL_DETAIL",
+    "AMT_CREDIT_MAX_OVERDUE": "HAS_BUREAU_OVERDUE_HISTORY",
+}
+
+SUFIJO_REPORTADO = "_REPORTADO"
+
+
+def fotografiar_presencia(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Guarda si el buró reportó cada importe, **antes** de que la limpieza lo anule.
+
+    Existe porque la corrección de magnitud y la señal de presencia comparten columna y se pisan.
+    Las features de cuota no leen el importe, leen su `notna()`, y
+    `BUREAU_CREDITS_WITH_ANNUITY_COUNT` entra con tres niveles (sin cuota reportada 7,50%,
+    reportada a cero, reportada con valor) porque el nulo y el cero son grupos de riesgo
+    contrario. Al anular importes, la limpieza mueve filas entre esos tres niveles: sobre la tabla
+    real son 432 filas y 341 clientes, 20 de los cuales caen al nivel del 7,50% sin que nada
+    falle. Es el eje del pendiente 2 de CLAUDE.md, ya escrito para la mora del buró: el relleno
+    sirve para agregar la magnitud y nunca como base de la presencia.
+
+    **La foto va antes y no se reconstruye después**, que era el primer intento y no funciona: la
+    bandera de moneda marca las 1.408 filas extranjeras y solo 412 traían cuota, así que
+    `notna() | bandera` no recupera las 412, inventa las otras 996. La información de si había
+    dato solo existe antes de la máscara.
+
+    Idempotente por el mismo motivo que la bandera del centinela lleva su o lógico: en la segunda
+    pasada el importe ya es NaN, así que refotografiar borraría la foto buena. Se escribe una vez
+    y las siguientes pasadas la respetan.
+    """
+    bureau = bureau.copy()
+    for col in IMPORTES_CON_PRESENCIA:
+        destino = f"{col}{SUFIJO_REPORTADO}"
+        if col in bureau.columns and destino not in bureau.columns:
+            bureau[destino] = bureau[col].notna().astype("int8")
+    return bureau
+
+
 def aplicar_caps_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
     """Importes por encima de su cap de plausibilidad a NaN, no capados al corte.
 
@@ -296,28 +338,50 @@ def capar_deuda_al_credito(bureau: pd.DataFrame) -> pd.DataFrame:
     return bureau
 
 
+# Qué fecha lleva qué acotación, declarado y no escrito dentro de la función, por lo mismo que
+# `CAPS_BUREAU` y que las seis ventanas del buró de arriba: son columnas gemelas y es fácil que
+# una se caiga de su lista sin que se note.
+#
+# El suelo de -30 años es el mismo para las tres y sale del mismo corte, porque son la misma
+# clase de error: una fecha a unos 115 años de la solicitud. El inventario del EDA (notebook 02,
+# celda 79) las enumera juntas y son 146 en el vencimiento, 95 en la actualización y 1 en el
+# cierre. `DAYS_CREDIT` no lleva suelo y no es olvido: su mínimo es -2.922, o sea la ventana de
+# ocho años del buró, y nunca se acerca al corte.
+FECHAS_CON_SUELO: tuple[str, ...] = (
+    "DAYS_CREDIT_ENDDATE",
+    "DAYS_ENDDATE_FACT",
+    "DAYS_CREDIT_UPDATE",
+)
+# Solo el vencimiento tiene además tope por arriba: es el único que mira al futuro.
+FECHAS_CON_TOPE: dict[str, str] = {"DAYS_CREDIT_ENDDATE": "bureau_enddate_max_anios"}
+
+
 def acotar_ventanas_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
-    """Las dos fechas fuera de ventana pasan a NaN, a nivel fila y antes de agregar.
+    """Las fechas fuera de ventana pasan a NaN, a nivel fila y antes de agregar.
 
-    El vencimiento de más de 20 años es placeholder y son 62.604 filas. El corte se aplica aquí
-    y no dentro de la agregación, que es donde lo tenía el EDA: aplicado en un solo sitio
-    alcanza también a `BUREAU_CLOSED_AFTER_ENDDATE`, que compara el cierre real contra esta
-    misma fecha, y deja de haber un corte con dos criterios según quién lo mire.
+    Son las cuatro colas del inventario de validez de dominio del EDA, y van las cuatro juntas
+    porque el argumento es el mismo para todas: 62.604 vencimientos de más de 20 años, que son
+    placeholder de revolving; y por el otro extremo 146 vencimientos, 95 actualizaciones y 1
+    cierre de más de 30 años atrás, que son error de captura.
 
-    El cierre de más de 30 años atrás es error de captura y es una sola fila.
+    El corte se aplica aquí y no dentro de la agregación, que es donde lo tenía el EDA: aplicado
+    en un solo sitio alcanza también a `BUREAU_CLOSED_AFTER_ENDDATE`, que compara el cierre real
+    contra esta misma fecha, y deja de haber un corte con dos criterios según quién lo mire.
+
+    Las 146 del vencimiento pasado son el caso que más pesa, y no por su volumen: **95 de ellas
+    encienden `BUREAU_CLOSED_AFTER_ENDDATE` siendo falsas**, porque cualquier cierre real es
+    posterior a un vencimiento de hace 115 años. Sin acotarlas, 43 clientes llevan esa bandera de
+    riesgo puesta por un dato roto.
     """
     bureau = bureau.copy()
     dias = valor("dias_por_anio")
-    if "DAYS_CREDIT_ENDDATE" in bureau.columns:
-        tope = valor("bureau_enddate_max_anios") * dias
-        bureau["DAYS_CREDIT_ENDDATE"] = bureau["DAYS_CREDIT_ENDDATE"].mask(
-            bureau["DAYS_CREDIT_ENDDATE"] > tope
-        )
-    if "DAYS_ENDDATE_FACT" in bureau.columns:
-        suelo = -valor("bureau_cierre_max_anios") * dias
-        bureau["DAYS_ENDDATE_FACT"] = bureau["DAYS_ENDDATE_FACT"].mask(
-            bureau["DAYS_ENDDATE_FACT"] < suelo
-        )
+    suelo = -valor("bureau_cierre_max_anios") * dias
+    for col in FECHAS_CON_SUELO:
+        if col in bureau.columns:
+            bureau[col] = bureau[col].mask(bureau[col] < suelo)
+    for col, corte in FECHAS_CON_TOPE.items():
+        if col in bureau.columns:
+            bureau[col] = bureau[col].mask(bureau[col] > valor(corte) * dias)
     return bureau
 
 
@@ -328,11 +392,14 @@ def limpiar_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
     entrenamiento, `application_test` y la API. Capar la deuda después de sumarla no arregla la
     suma, y por eso todo esto va aquí y no en `agregar_bureau()`.
 
-    El orden importa en un sitio: la moneda y los caps de importe van antes que el cap de deuda,
-    porque un `AMT_CREDIT_SUM` que se ha ido a NaN deja el ratio sin denominador y su fila sin
-    capar, que es lo correcto cuando el principal es el dato roto.
+    El orden importa en dos sitios. La foto de presencia va **la primera**, porque las tres
+    reglas siguientes anulan importes y la ausencia que las features leen se perdería. Y la
+    moneda y los caps de importe van antes que el cap de deuda, porque un `AMT_CREDIT_SUM` que se
+    ha ido a NaN deja el ratio sin denominador y su fila sin capar, que es lo correcto cuando el
+    principal es el dato roto.
     """
-    limpio = marcar_moneda_extranjera(bureau)
+    limpio = fotografiar_presencia(bureau)
+    limpio = marcar_moneda_extranjera(limpio)
     limpio = aplicar_caps_bureau(limpio)
     limpio = capar_deuda_al_credito(limpio)
     return acotar_ventanas_bureau(limpio)

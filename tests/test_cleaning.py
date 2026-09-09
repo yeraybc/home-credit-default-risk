@@ -17,6 +17,8 @@ from src.features.cleaning import (
     FILAS_POR_CATEGORIA,
     FILAS_POR_NULO,
     IMPORTES_BUREAU,
+    IMPORTES_CON_PRESENCIA,
+    SUFIJO_REPORTADO,
     aplicar_centinela,
     columnas_a_eliminar,
     columnas_edificio_redundantes,
@@ -327,6 +329,12 @@ def bureau():
         (9, "currency 1", 1_000.0, 60_000_000.0, 0.0, 100.0, 0.0, 300.0, -20.0, "Active"),
         # cliente 10: deuda negativa, o sea sobrepago; son 8.418 filas reales y no se tocan
         (10, "currency 1", 100_000.0, -5_000.0, 0.0, 100.0, 0.0, 300.0, -20.0, "Closed"),
+        # cliente 11: vencimiento por debajo del suelo, la cola que enciende en falso
+        # BUREAU_CLOSED_AFTER_ENDDATE. Cierra de verdad, así que sin acotar el vencimiento el
+        # cierre le queda posterior y la bandera sale a 1 por un dato roto
+        (11, "currency 1", 100_000.0, 1_000.0, 0.0, 100.0, 0.0, SUELO_CIERRE - 1, -20.0, "Closed"),
+        # cliente 12: el vencimiento justo en el suelo, que no se toca
+        (12, "currency 1", 100_000.0, 1_000.0, 0.0, 100.0, 0.0, SUELO_CIERRE, -20.0, "Closed"),
     ]
     columnas = [
         "SK_ID_CURR",
@@ -344,6 +352,11 @@ def bureau():
     df.insert(1, "SK_ID_BUREAU", range(1001, 1001 + len(df)))
     df["AMT_CREDIT_SUM_OVERDUE"] = 0.0
     df["DAYS_CREDIT"] = -500.0
+    # La actualización del registro va fuera de la tupla porque solo dos filas la ejercitan: por
+    # defecto es reciente, y el par que cruza el suelo y el que se queda en él se pone a mano.
+    df["DAYS_CREDIT_UPDATE"] = -30.0
+    df.loc[df.SK_ID_CURR == 11, "DAYS_CREDIT_UPDATE"] = SUELO_CIERRE - 1
+    df.loc[df.SK_ID_CURR == 12, "DAYS_CREDIT_UPDATE"] = SUELO_CIERRE
     return df
 
 
@@ -376,6 +389,22 @@ def test_el_fixture_de_bureau_ejercita_cada_rama(bureau):
     assert (bureau.DAYS_CREDIT_ENDDATE == TOPE_ENDDATE).sum() == 1, "falta el borde del vencimiento"
     assert (bureau.DAYS_ENDDATE_FACT < SUELO_CIERRE).sum() == 1
     assert (bureau.DAYS_ENDDATE_FACT == SUELO_CIERRE).sum() == 1, "falta el borde del cierre"
+    # las dos colas por abajo que la primera versión del punto se dejó fuera
+    assert (
+        bureau.DAYS_CREDIT_ENDDATE < SUELO_CIERRE
+    ).sum() == 1, "falta el vencimiento pasado, que enciende la bandera de cierre tardío en falso"
+    assert (
+        bureau.DAYS_CREDIT_ENDDATE == SUELO_CIERRE
+    ).sum() == 1, "falta el borde del vencimiento pasado"
+    assert (bureau.DAYS_CREDIT_UPDATE < SUELO_CIERRE).sum() == 1
+    assert (
+        bureau.DAYS_CREDIT_UPDATE == SUELO_CIERRE
+    ).sum() == 1, "falta el borde de la actualización"
+    # el cierre tardío que el vencimiento roto fabrica: sin acotarlo la bandera sale a 1
+    roto = bureau.DAYS_CREDIT_ENDDATE < SUELO_CIERRE
+    assert (
+        bureau.loc[roto, "DAYS_ENDDATE_FACT"] > bureau.loc[roto, "DAYS_CREDIT_ENDDATE"]
+    ).all(), "el vencimiento roto tiene que ir con un cierre real posterior, o no prueba nada"
     assert (bureau.AMT_CREDIT_SUM_LIMIT < 0).sum() == 1, "falta el sobregiro, la bandera más fuerte"
     assert (bureau.AMT_CREDIT_SUM_DEBT < 0).sum() == 1, "falta el sobrepago, que tampoco se toca"
 
@@ -473,6 +502,52 @@ def test_las_ventanas_anulan_lo_que_cae_fuera_y_respetan_el_borde(bureau):
     assert limpio[limpio.SK_ID_CURR == 6].DAYS_ENDDATE_FACT.iloc[0] == SUELO_CIERRE
 
 
+def test_las_ventanas_acotan_tambien_por_abajo_el_vencimiento_y_la_actualizacion(bureau):
+    """Las dos colas del inventario del EDA que el punto se dejó fuera en su primera versión.
+
+    Son 146 y 95 filas sobre la tabla real, contra las 62.604 del tope y la 1 del cierre. El
+    volumen no es el argumento: 95 de las 146 encienden `BUREAU_CLOSED_AFTER_ENDDATE` en falso.
+    """
+    limpio = limpiar_bureau(bureau)
+    assert limpio[limpio.SK_ID_CURR == 11].DAYS_CREDIT_ENDDATE.isna().all()
+    assert limpio[limpio.SK_ID_CURR == 11].DAYS_CREDIT_UPDATE.isna().all()
+    assert limpio[limpio.SK_ID_CURR == 12].DAYS_CREDIT_ENDDATE.iloc[0] == SUELO_CIERRE
+    assert limpio[limpio.SK_ID_CURR == 12].DAYS_CREDIT_UPDATE.iloc[0] == SUELO_CIERRE
+
+
+def test_el_vencimiento_roto_deja_de_encender_la_bandera_de_cierre_tardio(bureau):
+    """El motivo por el que la cola de abajo del vencimiento es bloqueante y no cosmética.
+
+    `BUREAU_CLOSED_AFTER_ENDDATE` compara el cierre real contra el vencimiento planificado, así
+    que un vencimiento de hace 115 años la enciende siempre. Sobre la tabla real son 95 filas y
+    43 clientes que llevan una bandera de riesgo puesta por un error de captura.
+    """
+
+    def cierre_tardio(df):
+        return df.CREDIT_ACTIVE.eq("Closed") & (df.DAYS_ENDDATE_FACT > df.DAYS_CREDIT_ENDDATE)
+
+    assert cierre_tardio(bureau)[
+        bureau.SK_ID_CURR == 11
+    ].all(), "el fixture no monta el falso positivo"
+    assert not cierre_tardio(limpiar_bureau(bureau))[bureau.SK_ID_CURR == 11].any()
+
+
+def test_las_tres_fechas_con_suelo_comparten_el_mismo_corte(bureau):
+    """Un solo umbral declarado una vez, que es lo que evita los 52.500 frente a 52.497.
+
+    Bajarlo en PARAMS tiene que alcanzar a las tres a la vez. Si alguna leyera su propio literal,
+    se quedaría con la cifra vieja sin que nada fallase.
+    """
+    from src.features.cleaning import FECHAS_CON_SUELO
+    from src.features.params import PARAMS, Parametro
+
+    antes = {c: int(limpiar_bureau(bureau)[c].isna().sum()) for c in FECHAS_CON_SUELO}
+    PARAMS["bureau_cierre_max_anios"] = Parametro(0.05, "dominio", "corte de prueba", "test")
+    despues = {c: int(limpiar_bureau(bureau)[c].isna().sum()) for c in FECHAS_CON_SUELO}
+    for c in FECHAS_CON_SUELO:
+        assert despues[c] > antes[c], f"{c} no lee el suelo de params"
+
+
 def test_el_sobregiro_sobrevive_a_la_limpieza(bureau):
     """AMT_CREDIT_SUM_LIMIT negativo es BUREAU_NEGATIVE_LIMIT_FLAG, +12,72pp, la más fuerte."""
     limpio = limpiar_bureau(bureau)
@@ -506,3 +581,74 @@ def test_cada_importe_con_cap_declara_cual(bureau):
     assert sin_cap == {"AMT_CREDIT_SUM_LIMIT", "AMT_CREDIT_SUM_OVERDUE"}
     for corte in CAPS_BUREAU.values():
         assert valor(corte) > 0
+
+
+# --- la presencia del importe, que la limpieza de magnitud se lleva por delante --------------
+
+
+def test_la_presencia_sobrevive_a_la_limpieza_de_moneda(bureau):
+    """Una cuota en moneda extranjera se reportó: el importe se va, la foto de que hubo dato no.
+
+    Es la propiedad que 2.2 tiene que leer en vez de `notna()`. Con `notna()` sobre la tabla
+    limpia, 432 filas y 341 clientes cambian de nivel en la tripartita de la cuota.
+    """
+    limpio = limpiar_bureau(bureau)
+    extranjera = limpio[COL_MONEDA_EXTRANJERA] == 1
+    con_cuota = extranjera & bureau.AMT_ANNUITY.notna()
+    assert con_cuota.sum() >= 1, "el fixture no tiene ninguna fila extranjera con cuota"
+    assert limpio.loc[con_cuota, "AMT_ANNUITY"].isna().all(), "el importe sí se va"
+    assert limpio.loc[con_cuota, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all(), "la foto no"
+
+
+def test_la_presencia_no_se_inventa_donde_no_habia_dato(bureau):
+    """El fallo del primer intento, que reconstruía con la bandera y no con la foto.
+
+    La bandera marca las 1.408 filas extranjeras y solo 412 traían cuota: `notna() | bandera`
+    habría dado por reportadas las otras 996. La foto distingue las dos.
+    """
+    sin_cuota = bureau.copy()
+    sin_cuota.loc[sin_cuota.CREDIT_CURRENCY.ne("currency 1"), "AMT_ANNUITY"] = np.nan
+    limpio = limpiar_bureau(sin_cuota)
+    extranjera = limpio[COL_MONEDA_EXTRANJERA] == 1
+    assert limpio.loc[extranjera, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(0).all()
+
+
+def test_la_presencia_tambien_se_pierde_cuando_el_importe_esta_roto(bureau):
+    """La foto es de antes de la limpieza, así que un valor por encima del cap sí contaba.
+
+    Y tiene que seguir contando: el cap dice que no se sabe cuánto vale, no que no lo reportaran.
+    Son las 24 filas del cap frente a las 412 de moneda, y las dos se recuperan igual.
+    """
+    limpio = limpiar_bureau(bureau)
+    cliente4 = limpio.SK_ID_CURR == 4  # la cuota de 20M, por encima del cap, en moneda nacional
+    rota = cliente4 & limpio.AMT_ANNUITY.isna()
+    assert rota.sum() == 1, "el fixture no monta la cuota rota en moneda nacional"
+    assert limpio.loc[rota, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all()
+
+
+def test_la_foto_de_presencia_es_idempotente(bureau):
+    """En la segunda pasada el importe ya es NaN: refotografiar borraría la foto buena.
+
+    Es el mismo fallo que la bandera del centinela, que se ponía a cero sola, y se evita igual:
+    la foto se escribe una vez y las pasadas siguientes la respetan.
+    """
+    una = limpiar_bureau(bureau)
+    dos = limpiar_bureau(una)
+    for col in IMPORTES_CON_PRESENCIA:
+        destino = col + SUFIJO_REPORTADO
+        assert una[destino].equals(dos[destino]), f"{destino} se recalcula y se borra"
+    pd.testing.assert_frame_equal(una, dos)
+
+
+def test_cada_importe_con_presencia_declara_quien_la_lee(bureau):
+    """Los cuatro son importes de verdad, y los dos que quedan fuera es porque nadie lee su nulo."""
+    assert set(IMPORTES_CON_PRESENCIA).issubset(set(IMPORTES_BUREAU))
+    assert set(IMPORTES_BUREAU) - set(IMPORTES_CON_PRESENCIA) == {
+        "AMT_CREDIT_SUM",
+        "AMT_CREDIT_SUM_OVERDUE",
+    }
+    for col, quien in IMPORTES_CON_PRESENCIA.items():
+        assert quien.strip(), f"{col} guarda su presencia sin decir quién la lee"
+    limpio = limpiar_bureau(bureau)
+    for col in IMPORTES_CON_PRESENCIA:
+        assert col + SUFIJO_REPORTADO in limpio.columns
