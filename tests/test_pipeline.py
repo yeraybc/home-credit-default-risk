@@ -547,6 +547,61 @@ def test_el_umbral_de_varianza_sale_de_params(entrada, objetivo):
     assert construir_pipeline().fit_transform(entrada, objetivo).shape[1] < antes
 
 
+def test_el_nivel_educativo_no_visto_queda_por_debajo_de_la_escala(entrada, objetivo):
+    """La dirección, que es lo que importa y lo que nadie fijaba.
+
+    El test de arriba compara contra `CODIGO_EDUCACION_DESCONOCIDA`, así que sigue a la constante
+    y pasa con cualquier valor: subirla a 5 dejaba los 375 en verde y un título desconocido se
+    leía como el nivel más alto de la jerarquía, que es la lectura opuesta. Aquí se compara
+    contra el código del nivel más bajo, que es la propiedad de verdad.
+    """
+    p = construir_pipeline().fit(entrada, objetivo)
+    desconocido = entrada.assign(**{COL_EDUCACION: "titulo jamas visto"})
+    mas_bajo = entrada.assign(**{COL_EDUCACION: JERARQUIA_EDUCACION[0]})
+
+    # sin `pytest.warns`: quien avisa de la categoría nueva es el OneHotEncoder, y aquí la única
+    # columna con un valor no visto es la del ordinal, que lo resuelve con `use_encoded_value`
+    assert (
+        p.transform(desconocido)[COL_EDUCACION].iloc[0]
+        < p.transform(mas_bajo)[COL_EDUCACION].iloc[0]
+    )
+
+
+COLUMNA_ASIMETRICA = "EXT_SOURCE_1"
+N_ALTOS, N_NULOS_ASIMETRICA = 50, 50
+VALOR_BAJO, VALOR_ALTO = 1.0, 100.0
+
+
+@pytest.fixture
+def entrada_asimetrica(entrada):
+    """Una numérica con nulos donde la mediana y la media se separan diez veces.
+
+    Con el `linspace` del fixture normal las dos coinciden, así que cambiar la estrategia del
+    imputador no movía un solo valor y la mutación sobrevivía.
+    """
+    columna = ([VALOR_BAJO] * (N - N_ALTOS - N_NULOS_ASIMETRICA)) + ([VALOR_ALTO] * N_ALTOS)
+    return entrada.assign(**{COLUMNA_ASIMETRICA: columna + ([np.nan] * N_NULOS_ASIMETRICA)})
+
+
+def test_la_imputacion_es_la_mediana_y_no_la_media(entrada_asimetrica, objetivo):
+    """El plan pide mediana, y con la media la cola arrastra el relleno de las 32 con nulos."""
+    salida = construir_pipeline().fit_transform(entrada_asimetrica, objetivo)
+    rellenados = salida[COLUMNA_ASIMETRICA][entrada_asimetrica[COLUMNA_ASIMETRICA].isna()]
+    con_dato = entrada_asimetrica[COLUMNA_ASIMETRICA].dropna()
+
+    assert (rellenados == con_dato.median()).all()
+    assert not (rellenados == con_dato.mean()).any()
+
+
+def test_el_fixture_asimetrico_separa_la_mediana_de_la_media(entrada_asimetrica):
+    """Guardián: con las dos iguales el test de arriba no distingue las dos estrategias."""
+    con_dato = entrada_asimetrica[COLUMNA_ASIMETRICA].dropna()
+
+    assert con_dato.isna().sum() == 0
+    assert entrada_asimetrica[COLUMNA_ASIMETRICA].isna().sum() == N_NULOS_ASIMETRICA
+    assert con_dato.mean() > con_dato.median() * 5
+
+
 # --- de dónde se recupera lo que la mediana rellena -------------------------------------------
 
 

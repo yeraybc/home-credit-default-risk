@@ -572,6 +572,39 @@ def test_una_categoria_llamada_como_el_residual_revienta(categorico):
         AgrupadorDeRaras().fit(X, y)
 
 
+def test_una_categoria_llamada_como_la_clave_del_nulo_revienta():
+    """La guarda hermana de la de arriba, en `_clave` y no en el agrupador.
+
+    Sin ella, una columna que traiga el literal de la clave se mezcla con sus propios nulos al
+    contar y al agrupar, y el WoE le da a los dos el mismo peso. Es el mismo fallo que el
+    residual pisado, un nivel más abajo, y hasta ahora solo lo tenía cubierto el residual: quitar
+    el `raise` de `_clave` dejaba la suite entera en verde.
+    """
+    X = pd.DataFrame({"cat": ([NULO] * 200) + (["normal"] * 400)})
+    y = pd.Series(([1] * 200) + ([0] * 400))
+
+    for fit in (lambda: AgrupadorDeRaras().fit(X), lambda: WoEEncoder().fit(X, y)):
+        with pytest.raises(ValueError, match="literal"):
+            fit()
+
+
+def test_la_celda_que_iguala_el_minimo_no_es_rara(categorico):
+    """La frontera del umbral, que es estricta y hasta ahora no la fijaba nadie.
+
+    Ningún fixture tenía una celda de exactamente `n_min_categoria`, así que pasar el `<` a `<=`
+    dejaba los 375 en verde. Sobre el dato real tampoco se movería nada, porque lo más cercano
+    por debajo tiene 18 clientes y lo más cercano por encima 212, pero el criterio tiene que
+    estar escrito en algún sitio que se ponga rojo si cambia.
+    """
+    minimo = valor("n_min_categoria")
+    celdas = (["justa"] * minimo) + (["una_menos"] * (minimo - 1)) + (["masa"] * 500)
+    X = pd.DataFrame({"cat": celdas})
+    a = AgrupadorDeRaras().fit(X)
+
+    assert a.raras_["cat"] == ("una_menos",), "la que iguala el mínimo se queda sola"
+    assert "justa" in set(a.transform(X)["cat"])
+
+
 def test_ajustar_no_necesita_el_target(categorico):
     """Es capa 2a: el criterio es un recuento sobre la covariable, la etiqueta no entra."""
     X, y = categorico
