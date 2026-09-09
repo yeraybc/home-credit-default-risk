@@ -1,8 +1,13 @@
 """El `Pipeline` de las capas 2 montado, con su `ColumnTransformer` dentro.
 
-Convierte las 101 columnas heterogéneas que deja la capa 1 (más los dos ratios del winsorizador)
-en una matriz numérica con nombres. Se ajusta **solo sobre el 80% de entrenamiento**: dos de sus
-pasos estiman parámetros sobre covariables y tres los estiman con el TARGET.
+Convierte 101 columnas heterogéneas en una matriz numérica de 139 con nombres. Se ajusta **solo
+sobre el 80% de entrenamiento**: dos de sus pasos estiman parámetros sobre covariables y tres los
+estiman con el TARGET.
+
+**Ojo con ese 101, que es otro.** La capa 1 deja 101 columnas contando `TARGET` y `SK_ID_CURR`, o
+sea 99 features, y lo que ve el `ColumnTransformer` son esas 99 más los dos ratios que añade el
+winsorizador. Los dos números coinciden porque se quitan dos y se añaden dos, y no porque sean el
+mismo conjunto.
 
 El orden de los pasos no es libre y lo fija `sklearn.md`:
 
@@ -15,6 +20,11 @@ El orden de los pasos no es libre y lo fija `sklearn.md`:
 
 El `SelectorIV` que el boceto de `sklearn.md` dibuja al final **no está**: `iv.py` es del bloque 5
 y este pipeline se cierra en el `VarianceThreshold`.
+
+**Pendiente declarado, para que no viva solo en el docstring que lo comete:** `aplicar_dominio()`
+es capa 1 por la regla de la fase, porque no estima nada y no cruza filas, y sin embargo vive
+aquí. Está así para no reabrir el contrato de esquema del punto 1.2 ni mover sus cifras de puerta
+ya cerradas. Cuando se toque ese contrato, su sitio es `application.py`.
 """
 
 from __future__ import annotations
@@ -230,6 +240,12 @@ JERARQUIA_EDUCACION: tuple[str, ...] = (
 # nulo es del 15,70% y se comporta como ruido de captura. La codificación es idéntica con
 # cualquiera de los dos nombres, porque es un nivel único para todos los nulos, así que se usa
 # uno neutro y la discrepancia queda declarada en vez de resuelta callando.
+#
+# Va sin guarda de colisión, y es la única de las tres del módulo que no la lleva: el agrupador
+# revienta si una categoría real se llama como su residual y `_clave` si se llama como la clave
+# del nulo. Aquí no hace falta porque el nivel es una etiqueta en castellano y el vocabulario de
+# la columna son 18 oficios en inglés, así que la colisión no puede darse sin que alguien cambie
+# antes este nombre. Si se cambia, hay que mirar que el nuevo no exista ya en la columna.
 NIVEL_SIN_OCUPACION = "Sin declarar"
 
 # Los nombres de las tres franjas de la hora de solicitud. Las fronteras no están aquí: son
