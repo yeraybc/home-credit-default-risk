@@ -92,9 +92,11 @@ def _factor_de(columna: str) -> float:
 def _exigir_ajustadas(X: pd.DataFrame, columnas: Iterable[str]) -> None:
     """Estricto donde el `fit` es permisivo: lo que estaba al ajustar tiene que volver a llegar.
 
-    Lo comparten los tres transformers que guardan una lista de columnas ajustadas. El mensaje
-    va en un solo sitio porque es el que lee quien se lo encuentre en la API, y tenerlo escrito
-    tres veces era arreglarlo en uno y dejarlo viejo en dos.
+    Lo comparten los cuatro transformers del módulo. Tres le pasan la lista que guardaron tal
+    cual; `RatiosPosteriores` le pasa los numeradores y denominadores de las derivadas que
+    anotó, que es su equivalente. El mensaje va en un solo sitio porque es el que lee quien se
+    lo encuentre en la API, y tenerlo escrito cuatro veces era arreglarlo en uno y dejarlo
+    viejo en tres.
     """
     faltan = [c for c in columnas if c not in X.columns]
     if faltan:
@@ -198,15 +200,10 @@ class RatiosPosteriores(BaseEstimator, TransformerMixin):
         winsorización solo capa por arriba, así que tampoco puede fabricar un cero nuevo.
         """
         check_is_fitted(self)
+        _exigir_ajustadas(X, {c for n in self.derivadas_ for c in RATIOS_POSTERIORES[n]})
         X = X.copy()
         for nombre in self.derivadas_:
             num, den = RATIOS_POSTERIORES[nombre]
-            faltan = [c for c in (num, den) if c not in X.columns]
-            if faltan:
-                raise ValueError(
-                    f"{nombre} se ajustó y el frame no trae {sorted(faltan)}. "
-                    "Saltárselo daría una matriz distinta de la del entrenamiento"
-                )
             X[nombre] = X[num] / X[den].replace(0, np.nan)
         return X
 
