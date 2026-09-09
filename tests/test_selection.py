@@ -55,8 +55,8 @@ def _detalle(recomendaciones, variable):
     return recomendaciones.set_index("Variable").loc[variable, "Detalle"]
 
 
-def test_las_cinco_divergentes_anuncian_que_el_pipeline_hace_otra_cosa(tabla):
-    """El marcador va en el detalle y no en un comentario porque el detalle es lo que se renderiza."""
+def test_las_divergentes_anuncian_que_el_pipeline_hace_otra_cosa(tabla):
+    """El marcador va en el detalle y no en un comentario: el detalle es lo que se renderiza."""
     recomendaciones = recomendar_codificacion(tabla)
 
     for variable, anuncio in DIVERGENTES.items():

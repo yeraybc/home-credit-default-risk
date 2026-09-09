@@ -19,21 +19,21 @@ from sklearn.preprocessing import OneHotEncoder
 from src.features.params import valor
 from src.features.transformers import (
     COLUMNAS_DETALLE,
-    NULO,
-    AgrupadorDeRaras,
-    _clave,
     CORTES_WINSOR,
     FACTOR_POR_COLUMNA,
+    NULO,
     RATIOS_POSTERIORES,
+    RESIDUAL,
+    AgrupadorDeRaras,
     RatiosPosteriores,
     Winsorizador,
+    WoEEncoder,
+    _clave,
     informe_agrupamiento,
     informe_winsorizacion,
-    WoEEncoder,
     informe_woe,
     nombre_woe,
     registrar_limites,
-    RESIDUAL,
 )
 
 # las que el EDA deja sin capar a propósito: su cola tiene señal real, en las dos direcciones

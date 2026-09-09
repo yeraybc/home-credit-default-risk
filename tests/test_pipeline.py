@@ -15,21 +15,21 @@ import pytest
 
 from src.features.pipeline import (
     BINARIAS,
-    COLUMNAS_PROTEGIDAS_DE_VARIANZA,
-    IMPUTACION_SIN_RASTRO,
     CATEGORICAS_OHE,
+    CODIGO_EDUCACION_DESCONOCIDA,
     COL_DIA,
     COL_EDUCACION,
     COL_FRANJA,
     COL_HORA,
     COL_OCUPACION,
     COL_ORGANIZACION,
+    COLUMNAS_PROTEGIDAS_DE_VARIANZA,
     DIA_FIN_DE_SEMANA,
     DIA_LABORABLE,
-    CODIGO_EDUCACION_DESCONOCIDA,
     FRANJA_FUERA,
     FRANJA_MANANA,
     FRANJA_TARDE,
+    IMPUTACION_SIN_RASTRO,
     JERARQUIA_EDUCACION,
     NIVEL_SIN_OCUPACION,
     NUMERICAS,
@@ -299,7 +299,7 @@ def test_get_feature_names_out_casa_con_las_columnas_de_la_salida(entrada, objet
 
 
 def test_la_educacion_sale_ordinal_en_el_orden_de_la_jerarquia(entrada, objetivo):
-    """La jerarquía es de dominio, así que el orden tiene que ser el declarado y no el alfabético."""
+    """La jerarquía es de dominio: el orden es el declarado y no el alfabético."""
     p = construir_pipeline().fit(entrada, objetivo)
     salida = p.transform(entrada)
     codigos = pd.Series(salida[COL_EDUCACION].to_numpy(), index=entrada[COL_EDUCACION])
@@ -325,7 +325,7 @@ def test_el_fixture_da_riesgo_diferencial_a_la_organizacion(entrada, objetivo):
 
 
 def test_la_varianza_se_lleva_la_columna_constante(entrada, objetivo):
-    """La red que justifica el paso: hoy no elimina nada, y con una constante sí tiene que hacerlo."""
+    """La red que justifica el paso: hoy no elimina nada, y con una constante sí debe."""
     con_constante = entrada.assign(**{BINARIAS[0]: 0})
     salida = construir_pipeline().fit_transform(con_constante, objetivo)
 

@@ -24,10 +24,15 @@ jobs:
         run: python .github/scripts/check.py
 
       # La version sale de requirements-dev.txt para no tener el pin en dos sitios.
+      #
+      # tests/ entra en el lint desde que un test duplicado paso meses sin ejecutarse: dos
+      # funciones con el mismo nombre en el mismo modulo, y Python se queda con la ultima. Ruff
+      # lo veia como F811 y nadie lo corria sobre tests. Es estatico, asi que no necesita el
+      # stack que este job no instala.
       - name: Lint
         run: |
           grep '^ruff==' requirements-dev.txt | xargs pip install
-          ruff check src/
+          ruff check src/ tests/
 
   tests:
     name: Tests

@@ -27,7 +27,10 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*" = ["ANN001", "ANN201", "E402"]
-"tests/*"     = ["ANN001", "ANN201"]
+# N806 por lo mismo que abajo: los tests de los transformers llaman a fit(X, y) con el nombre
+# que usa scikit-learn, y son 48 avisos que enterraban a los que si dicen algo. Con ellos fuera,
+# ruff sobre tests/ sale limpio y puede entrar en CI, que es lo que caza el test duplicado.
+"tests/*"     = ["ANN001", "ANN201", "N806"]
 # La X mayuscula de fit(X, y) es el nombre que usa scikit-learn en toda su API y el que espera
 # quien lee un transformer. Renombrarla aqui seria apartarse del contrato para contentar al
 # linter, asi que se acota al fichero de los transformers y no se abre en todo src.
