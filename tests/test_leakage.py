@@ -111,12 +111,23 @@ def base_y_split():
     return base, split
 
 
-def _ajustado(pipeline):
-    """Los parámetros ajustados de cada paso, en una forma que se puede comparar."""
+def _pasos(pipeline):
+    """Todos los pasos del pipeline por nombre, con los anidados del `ColumnTransformer` subidos.
+
+    Lo comparten la comparación de parámetros y el guardián de cobertura, y esa es la gracia: el
+    guardián existe para ver un paso nuevo que ajuste algo, y con su propia copia del aplanado
+    dejaría de verlo justo el día que el pipeline anide uno más.
+    """
     pasos = dict(pipeline.named_steps)
     ct = pasos["columnas"]
     pasos.update(ct.named_transformers_)
     pasos.update(dict(ct.named_transformers_["ohe"].named_steps))
+    return pasos
+
+
+def _ajustado(pipeline):
+    """Los parámetros ajustados de cada paso, en una forma que se puede comparar."""
+    pasos = _pasos(pipeline)
     return {
         nombre: repr(getattr(pasos[nombre], atributo))
         for nombre, atributo in ESTADO_AJUSTADO.items()
@@ -161,10 +172,7 @@ def test_el_fixture_cubre_todos_los_pasos_que_guardan_estado(base_y_split):
     """Guardián: un paso que ajuste algo y no esté en la tabla se colaría sin comparar nada."""
     base, split = base_y_split
     pipeline = _fit(base, split, solo_train)
-    pasos = dict(pipeline.named_steps)
-    ct = pasos["columnas"]
-    pasos.update(ct.named_transformers_)
-    pasos.update(dict(ct.named_transformers_["ohe"].named_steps))
+    pasos = _pasos(pipeline)
     con_estado = {
         nombre
         for nombre, paso in pasos.items()
