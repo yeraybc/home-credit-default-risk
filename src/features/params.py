@@ -198,7 +198,9 @@ PARAMS: dict[str, Parametro] = {
         12, "dominio", "hora a la que la mañana da paso a la tarde", "eda-application-train 3.x"
     ),
     "app_hora_fin_tarde": Parametro(
-        18, "dominio", "hora a la que acaba la tarde y empieza el fuera de horario",
+        18,
+        "dominio",
+        "hora a la que acaba la tarde y empieza el fuera de horario",
         "eda-application-train 3.x",
     ),
     # Suelo de varianza del filtro final. Cero significa que solo caen las constantes, que es lo

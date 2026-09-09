@@ -210,7 +210,9 @@ def test_totalarea_mode_mueve_la_tripartita_y_por_eso_esta_en_el_contrato(base):
     assert len(con_pareja) == 14
     assert _tripartita(conteo, base["TARGET"], 14) == TRIPARTITA_SIN_TOTALAREA
     assert TRIPARTITA_SIN_TOTALAREA != completa, "si coincidieran, el test no diría nada"
-    assert int(conteo.eq(0).sum() - base["BUILDING_INFO_COUNT"].eq(0).sum()) == SOLO_TIENEN_TOTALAREA
+    assert (
+        int(conteo.eq(0).sum() - base["BUILDING_INFO_COUNT"].eq(0).sum()) == SOLO_TIENEN_TOTALAREA
+    )
     assert int(conteo.eq(14).sum() - base["BUILDING_INFO_COUNT"].eq(15).sum()) == (
         COMPLETOS_QUE_LO_PIERDEN
     )
@@ -422,7 +424,11 @@ def test_el_ohe_expande_sus_14_columnas_en_52():
 
     assert len(ohe.named_steps["codifica"].get_feature_names_out()) == COLUMNAS_DE_OHE
     assert (
-        BUCKETS["num"] + COLUMNAS_DE_OHE + BUCKETS["ord"] + BUCKETS["woe"] + BUCKETS["tgt"]
+        BUCKETS["num"]
+        + COLUMNAS_DE_OHE
+        + BUCKETS["ord"]
+        + BUCKETS["woe"]
+        + BUCKETS["tgt"]
         + BUCKETS["bin"]
     ) == COLUMNAS_DE_LA_MATRIZ_FINAL
 

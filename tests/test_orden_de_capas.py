@@ -98,9 +98,7 @@ def base_y_split():
             "AMT_INCOME_TOTAL": [INGRESO_TRAIN] * 5 + [INGRESO_VALID] * 5,
         }
     )
-    split = pd.DataFrame(
-        {"SK_ID_CURR": range(1, 11), "split": ["train"] * 5 + ["valid"] * 5}
-    )
+    split = pd.DataFrame({"SK_ID_CURR": range(1, 11), "split": ["train"] * 5 + ["valid"] * 5})
     return base, split
 
 

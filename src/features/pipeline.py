@@ -395,9 +395,7 @@ def construir_pipeline() -> Pipeline:
             # por frecuencia y quien decide la rareza es el paso de delante, con su umbral.
             (
                 "codifica",
-                OneHotEncoder(
-                    handle_unknown="ignore", drop="if_binary", sparse_output=False
-                ),
+                OneHotEncoder(handle_unknown="ignore", drop="if_binary", sparse_output=False),
             ),
         ]
     )
@@ -466,9 +464,7 @@ def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd
                 "entran": len(columnas),
                 "presentes": len(set(columnas) & set(tras_dominio.columns)),
                 "salen": (
-                    emitidas[nombre].stop - emitidas[nombre].start
-                    if nombre in emitidas
-                    else pd.NA
+                    emitidas[nombre].stop - emitidas[nombre].start if nombre in emitidas else pd.NA
                 ),
             }
             for nombre, columnas in REPARTO

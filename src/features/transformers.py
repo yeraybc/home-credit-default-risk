@@ -212,9 +212,7 @@ class RatiosPosteriores(BaseEstimator, TransformerMixin):
         check_is_fitted(self)
         entrada = list(self.feature_names_in_ if input_features is None else input_features)
         # las que ya vengan en el frame no se duplican: `transform` las reescribe en su sitio
-        return np.asarray(
-            entrada + [c for c in self.derivadas_ if c not in entrada], dtype=object
-        )
+        return np.asarray(entrada + [c for c in self.derivadas_ if c not in entrada], dtype=object)
 
 
 class AgrupadorDeRaras(OneToOneFeatureMixin, BaseEstimator, TransformerMixin):

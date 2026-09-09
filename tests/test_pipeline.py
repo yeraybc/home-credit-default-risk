@@ -93,8 +93,9 @@ def entrada():
     # target encoding es binario y sus medias por fold coinciden, así que la codificación cruzada
     # no deja huella y no se puede distinguir de una media directa
     oficios = [f"oficio{i % 5}" for i in range(N)]
-    frame[COL_OCUPACION] = [None if i % (N // N_NULOS_OCUPACION) == 0 else o
-                            for i, o in enumerate(oficios)]
+    frame[COL_OCUPACION] = [
+        None if i % (N // N_NULOS_OCUPACION) == 0 else o for i, o in enumerate(oficios)
+    ]
     return frame
 
 
@@ -219,8 +220,16 @@ def test_lo_que_sale_de_los_buckets_suma_la_matriz(entrada, objetivo):
 
 @pytest.mark.parametrize(
     ("hora", "esperada"),
-    [(0, FRANJA_FUERA), (5, FRANJA_FUERA), (6, FRANJA_MANANA), (11, FRANJA_MANANA),
-     (12, FRANJA_TARDE), (17, FRANJA_TARDE), (18, FRANJA_FUERA), (23, FRANJA_FUERA)],
+    [
+        (0, FRANJA_FUERA),
+        (5, FRANJA_FUERA),
+        (6, FRANJA_MANANA),
+        (11, FRANJA_MANANA),
+        (12, FRANJA_TARDE),
+        (17, FRANJA_TARDE),
+        (18, FRANJA_FUERA),
+        (23, FRANJA_FUERA),
+    ],
 )
 def test_las_fronteras_de_la_franja_horaria(hora, esperada):
     """Los bordes son donde se equivoca un rango, así que van uno a uno."""
@@ -295,7 +304,9 @@ def test_la_educacion_sale_ordinal_en_el_orden_de_la_jerarquia(entrada, objetivo
     salida = p.transform(entrada)
     codigos = pd.Series(salida[COL_EDUCACION].to_numpy(), index=entrada[COL_EDUCACION])
 
-    assert [codigos[n].iloc[0] for n in JERARQUIA_EDUCACION] == list(range(len(JERARQUIA_EDUCACION)))
+    assert [codigos[n].iloc[0] for n in JERARQUIA_EDUCACION] == list(
+        range(len(JERARQUIA_EDUCACION))
+    )
 
 
 def test_la_organizacion_sale_con_el_sufijo_del_woe(entrada, objetivo):
@@ -417,9 +428,9 @@ def test_cada_codificacion_trata_lo_no_visto_como_toca(entrada, objetivo):
     assert fila[f"{COL_ORGANIZACION}_WOE"] == 0.0, "el WoE neutro es cero"
     assert fila[COL_EDUCACION] == CODIGO_EDUCACION_DESCONOCIDA, "el ordinal sale de la escala"
     columnas_suite = [c for c in p.get_feature_names_out() if c.startswith("NAME_TYPE_SUITE")]
-    assert salida[columnas_suite].to_numpy().sum() == 0, (
-        "el OHE con handle_unknown='ignore' tiene que dejar la fila a ceros"
-    )
+    assert (
+        salida[columnas_suite].to_numpy().sum() == 0
+    ), "el OHE con handle_unknown='ignore' tiene que dejar la fila a ceros"
 
 
 def test_el_fixture_usa_categorias_que_de_verdad_no_estaban(entrada):
@@ -499,9 +510,7 @@ def test_cada_categorica_saca_una_columna_por_nivel_salvo_las_binarias(entrada, 
 
     for columna, k in niveles.items():
         esperadas = 1 if k == 2 else k
-        real = len(
-            [c for c in codificador.get_feature_names_out() if c.startswith(f"{columna}_")]
-        )
+        real = len([c for c in codificador.get_feature_names_out() if c.startswith(f"{columna}_")])
         assert real == esperadas, f"{columna} tiene {k} niveles y saca {real} columnas"
         assert salen[columna] == k
 
@@ -690,7 +699,9 @@ def test_los_cuatro_grupos_de_presencia_no_se_solapan():
     union = set().union(*grupos)
 
     assert sum(len(g) for g in grupos) == len(union)
-    assert union <= set(NUMERICAS), f"declaradas fuera del bucket numérico: {union - set(NUMERICAS)}"
+    assert union <= set(
+        NUMERICAS
+    ), f"declaradas fuera del bucket numérico: {union - set(NUMERICAS)}"
 
 
 def test_las_banderas_de_presencia_estan_de_verdad_en_la_matriz():
