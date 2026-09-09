@@ -204,6 +204,140 @@ def aplicar_caps_de_dominio(app: pd.DataFrame) -> pd.DataFrame:
     return app
 
 
+# - bureau -
+# Los seis importes de la tabla. Son los que no se pueden sumar entre monedas distintas, y por
+# eso la lista existe: el resto de columnas de una fila en moneda extranjera (estado, tipo y las
+# cuatro fechas) sigue siendo válido y se conserva.
+IMPORTES_BUREAU: tuple[str, ...] = (
+    "AMT_CREDIT_SUM",
+    "AMT_CREDIT_SUM_DEBT",
+    "AMT_CREDIT_SUM_LIMIT",
+    "AMT_CREDIT_SUM_OVERDUE",
+    "AMT_CREDIT_MAX_OVERDUE",
+    "AMT_ANNUITY",
+)
+
+MONEDA_NACIONAL = "currency 1"
+COL_MONEDA = "CREDIT_CURRENCY"
+COL_MONEDA_EXTRANJERA = "BUREAU_FOREIGN_CURRENCY"
+
+# Qué importe pasa a NaN por encima de qué corte. Son las cuatro columnas que el EDA declaró, y
+# las otras dos de `IMPORTES_BUREAU` quedan fuera por medición y no por olvido: el máximo de
+# AMT_CREDIT_SUM_LIMIT es 4.705.600 y el de AMT_CREDIT_SUM_OVERDUE 3.756.681, o sea que ninguna
+# se acerca a los 50M y un cap suyo no llegaría a dispararse nunca sobre esta tabla.
+CAPS_BUREAU: dict[str, str] = {
+    "AMT_CREDIT_SUM": "bureau_importe_max",
+    "AMT_CREDIT_SUM_DEBT": "bureau_importe_max",
+    "AMT_CREDIT_MAX_OVERDUE": "bureau_importe_max",
+    "AMT_ANNUITY": "bureau_cuota_max",
+}
+
+
+def marcar_moneda_extranjera(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Los importes en moneda distinta de la nacional pasan a NaN, con su bandera al lado.
+
+    Son 1.408 filas de 1.716.428, el 0,082%, y cargan el 3,83% de la cuota total de la tabla:
+    la cifra no es grande, está en otra unidad, y sumarla con las nacionales infla el agregado
+    sin que falle nada. La fila no se borra ni se vacía entera porque 1.072 de los 1.110
+    clientes afectados tienen mezcla de monedas, y de los 38 que no, 29 tienen un único crédito
+    y borrarlos los dejaría leyéndose como clientes sin historial, que es el grupo del 10,12%
+    de default frente al 7,73%.
+
+    La bandera se recalcula en cada pasada y no se acumula con un o lógico, al revés que la del
+    centinela: aquí el dato que la define es la moneda, que no se toca, así que la segunda
+    pasada da lo mismo que la primera.
+    """
+    if COL_MONEDA not in bureau.columns:
+        return bureau
+    bureau = bureau.copy()
+    extranjera = bureau[COL_MONEDA].ne(MONEDA_NACIONAL)
+    bureau[COL_MONEDA_EXTRANJERA] = extranjera.astype("int8")
+    presentes = [col for col in IMPORTES_BUREAU if col in bureau.columns]
+    bureau[presentes] = bureau[presentes].mask(extranjera, axis=0)
+    return bureau
+
+
+def aplicar_caps_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Importes por encima de su cap de plausibilidad a NaN, no capados al corte.
+
+    A NaN y no al valor del corte porque no se sabe cuánto vale de verdad ese crédito, y dejarlo
+    en 50M seguiría dominando la suma del cliente. La cola alta tiene señal, pero esto no es
+    cola: es error de captura.
+    """
+    bureau = bureau.copy()
+    for col, corte in CAPS_BUREAU.items():
+        if col in bureau.columns:
+            bureau[col] = bureau[col].mask(bureau[col] > valor(corte))
+    return bureau
+
+
+def capar_deuda_al_credito(bureau: pd.DataFrame) -> pd.DataFrame:
+    """El exceso grosero de deuda sobre crédito se capa al propio crédito.
+
+    Capa y no anula, que es la diferencia con el resto: el exceso leve y el moderado son deuda
+    real (intereses y penalizaciones sobre el principal) y ahí vive la señal de
+    sobreendeudamiento, así que solo se corta lo que pasa del ratio declarado. Sobre la tabla
+    completa son 1.211 filas de las 27.644 con deuda mayor que crédito, el 4,38%, con un máximo
+    de 139.396 veces el principal.
+
+    Idempotente por construcción: después del cap el ratio de esas filas vale exactamente 1 y
+    ya no vuelve a cruzar el corte.
+    """
+    if not {"AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT"}.issubset(bureau.columns):
+        return bureau
+    bureau = bureau.copy()
+    credito = bureau["AMT_CREDIT_SUM"]
+    deuda = bureau["AMT_CREDIT_SUM_DEBT"]
+    # el denominador solo cuenta donde es positivo: con crédito 0 o negativo el ratio no
+    # significa nada y la fila se deja como está
+    ratio = deuda / credito.where(credito > 0)
+    grosero = ratio > valor("bureau_ratio_deuda_credito_max")
+    bureau["AMT_CREDIT_SUM_DEBT"] = deuda.mask(grosero, credito)
+    return bureau
+
+
+def acotar_ventanas_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Las dos fechas fuera de ventana pasan a NaN, a nivel fila y antes de agregar.
+
+    El vencimiento de más de 20 años es placeholder y son 62.604 filas. El corte se aplica aquí
+    y no dentro de la agregación, que es donde lo tenía el EDA: aplicado en un solo sitio
+    alcanza también a `BUREAU_CLOSED_AFTER_ENDDATE`, que compara el cierre real contra esta
+    misma fecha, y deja de haber un corte con dos criterios según quién lo mire.
+
+    El cierre de más de 30 años atrás es error de captura y es una sola fila.
+    """
+    bureau = bureau.copy()
+    dias = valor("dias_por_anio")
+    if "DAYS_CREDIT_ENDDATE" in bureau.columns:
+        tope = valor("bureau_enddate_max_anios") * dias
+        bureau["DAYS_CREDIT_ENDDATE"] = bureau["DAYS_CREDIT_ENDDATE"].mask(
+            bureau["DAYS_CREDIT_ENDDATE"] > tope
+        )
+    if "DAYS_ENDDATE_FACT" in bureau.columns:
+        suelo = -valor("bureau_cierre_max_anios") * dias
+        bureau["DAYS_ENDDATE_FACT"] = bureau["DAYS_ENDDATE_FACT"].mask(
+            bureau["DAYS_ENDDATE_FACT"] < suelo
+        )
+    return bureau
+
+
+def limpiar_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Validez de dominio de bureau, a nivel fila y antes de cualquier agregación.
+
+    Ninguna fila se borra: bureau no tiene TARGET propio y el mismo frame lo recorren
+    entrenamiento, `application_test` y la API. Capar la deuda después de sumarla no arregla la
+    suma, y por eso todo esto va aquí y no en `agregar_bureau()`.
+
+    El orden importa en un sitio: la moneda y los caps de importe van antes que el cap de deuda,
+    porque un `AMT_CREDIT_SUM` que se ha ido a NaN deja el ratio sin denominador y su fila sin
+    capar, que es lo correcto cuando el principal es el dato roto.
+    """
+    limpio = marcar_moneda_extranjera(bureau)
+    limpio = aplicar_caps_bureau(limpio)
+    limpio = capar_deuda_al_credito(limpio)
+    return acotar_ventanas_bureau(limpio)
+
+
 def limpiar_application(app: pd.DataFrame) -> pd.DataFrame:
     """Limpieza válida en cualquier ruta: no elimina ni una fila.
 
