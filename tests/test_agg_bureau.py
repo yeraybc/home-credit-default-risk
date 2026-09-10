@@ -1,8 +1,7 @@
 """Tests de la agregación de bureau por cliente (capa 1, punto 2.2).
 
-Todos sobre un frame sintético, así que corren en CI sin los CSV. La puerta contra el dato real
-(263.491 y 44.020 sobre la tabla cruda, 263.475 y 44.017 sobre la de modelado, y las presencias
-leídas de la foto idénticas a la receta) se reprodujo fuera de la suite al cerrar el punto.
+Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
+real del final, que se salta sin `bureau.csv` y el split y solo corre en local.
 """
 
 import numpy as np
@@ -10,7 +9,8 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.config import RAIZ
+from src.config import RAIZ, ruta
+from src.data.loader import TABLE_FILES, load_table
 from src.features.agg_bureau import (
     COLUMNAS_ORIGEN,
     COLUMNAS_SIN_RECETA,
@@ -20,6 +20,7 @@ from src.features.agg_bureau import (
 )
 from src.features.cleaning import COL_MONEDA, limpiar_bureau
 from src.features.params import fijar_operativo, parametro, valor
+from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Los cortes salen del registro y no de literales, por lo mismo que en test_cleaning: dos copias
 # del mismo corte dejan el fixture adaptándose en silencio al que cambie. Los `medido` se pasan
@@ -61,6 +62,16 @@ def credito(cliente, **campos):
 
 def agregar(bureau):
     return agregar_bureau(bureau, REFERENCIA)
+
+
+def nivel_de_cuota(agregado):
+    """La tripartita: sin cuota reportada, reportada a cero y con valor."""
+    nivel = np.select(
+        [agregado.HAS_BUREAU_ANNUITY == 0, agregado.BUREAU_CREDITS_WITH_ANNUITY_COUNT == 0],
+        ["sin", "cero"],
+        "valor",
+    )
+    return pd.Series(nivel, index=agregado.index)
 
 
 @pytest.fixture
@@ -356,16 +367,7 @@ def test_cada_cliente_agregado_solo_da_lo_mismo_que_acompanado(bureau):
 
 def test_la_tripartita_de_la_cuota_tiene_sus_tres_niveles(bureau):
     """Sin cuota reportada, reportada a cero y con valor: el nulo y el cero no son lo mismo."""
-    agregado = agregar(bureau)
-    nivel = np.select(
-        [
-            agregado.HAS_BUREAU_ANNUITY == 0,
-            agregado.BUREAU_CREDITS_WITH_ANNUITY_COUNT == 0,
-        ],
-        ["sin", "cero"],
-        "valor",
-    )
-    niveles = pd.Series(nivel, index=agregado.index)
+    niveles = nivel_de_cuota(agregar(bureau))
     assert niveles.loc[[2, 4, 1]].tolist() == ["cero", "sin", "valor"]
 
 
@@ -537,3 +539,93 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(bureau):
     duplicado = pd.concat([agregado, agregado.loc[[5]]])
     with pytest.raises(ValueError, match="repetidos"):
         unir_bureau(pd.DataFrame({"SK_ID_CURR": [5, 1]}), duplicado)
+
+
+# --- la puerta contra el dato real -----------------------------------------------------------
+
+sin_dato_real = pytest.mark.skipif(
+    not (ruta("raw_data") / TABLE_FILES["bureau"]).exists()
+    or not (ruta("processed_data") / NOMBRE_FICHERO).exists(),
+    reason="data/raw y el split no viajan con el repo",
+)
+
+# La puerta del bloque 2 sobre sus dos poblaciones: la tabla cruda, que es la del EDA, y la de
+# modelado, que es la del split. Las presencias son las de la receta, idénticas porque se leen de
+# la foto; el ratio pasó de 262.408 a 255.109 por la limpieza y el min_count.
+PUERTA = {
+    "crudo": {
+        "con historial": 263_491,
+        "sin historial": 44_020,
+        "ratio de deuda no nulo": 255_109,
+        "BUREAU_NEGATIVE_LIMIT_FLAG": 323,
+        "BUREAU_HAS_ANY_OVERDUE": 70_440,
+        "BUREAU_OVERDUE_UNION": 72_419,
+        "BUREAU_HAS_CURRENT_OVERDUE": 3_334,
+        "HAS_BUREAU_FINANCIAL_DETAIL": 256_134,
+        "HAS_BUREAU_OVERDUE_HISTORY": 183_886,
+        "HAS_BUREAU_ANNUITY": 80_009,
+        "cuota sin": 183_482,
+        "cuota cero": 19_737,
+        "cuota valor": 60_272,
+    },
+    "modelado": {
+        "con historial": 263_475,
+        "sin historial": 44_017,
+        "ratio de deuda no nulo": 255_094,
+        "BUREAU_NEGATIVE_LIMIT_FLAG": 323,
+        "BUREAU_HAS_ANY_OVERDUE": 70_435,
+        "BUREAU_OVERDUE_UNION": 72_413,
+        "BUREAU_HAS_CURRENT_OVERDUE": 3_332,
+        "HAS_BUREAU_FINANCIAL_DETAIL": 256_119,
+        "HAS_BUREAU_OVERDUE_HISTORY": 183_877,
+        "HAS_BUREAU_ANNUITY": 79_998,
+        "cuota sin": 183_477,
+        "cuota cero": 19_736,
+        "cuota valor": 60_262,
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def dato_real():
+    bureau = load_table("bureau")
+    poblaciones = {
+        "crudo": load_table("application_train", usecols=["SK_ID_CURR"]).SK_ID_CURR,
+        "modelado": cargar_split().SK_ID_CURR,
+    }
+    return bureau, agregar(bureau), poblaciones
+
+
+@sin_dato_real
+@pytest.mark.parametrize("poblacion", sorted(PUERTA))
+def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
+    _, agregado, poblaciones = dato_real
+    unido = unir_bureau(pd.DataFrame({"SK_ID_CURR": poblaciones[poblacion]}), agregado)
+    con = unido[unido.HAS_BUREAU_HISTORY == 1]
+    presencias = [c for c in PUERTA[poblacion] if c.isupper()]
+    medido = {
+        "con historial": len(con),
+        "sin historial": len(unido) - len(con),
+        "ratio de deuda no nulo": int(con.BUREAU_DEBT_CREDIT_RATIO.notna().sum()),
+        **{c: int(con[c].sum()) for c in presencias},
+        **{f"cuota {k}": int(n) for k, n in nivel_de_cuota(con).value_counts().items()},
+    }
+    assert medido == PUERTA[poblacion]
+
+
+@sin_dato_real
+def test_sobre_el_dato_real_la_particion_cuadra_en_todos_los_clientes(dato_real):
+    _, agregado, _ = dato_real
+    estados = ["BUREAU_ACTIVE_COUNT", "BUREAU_CLOSED_COUNT", "BUREAU_BAD_DEBT_COUNT"]
+    assert len(agregado) == 305_811
+    assert (agregado[estados].sum(axis=1) == agregado.BUREAU_LOAN_COUNT).all()
+
+
+@sin_dato_real
+def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_real):
+    """El fila a fila, sobre 300 clientes al azar y el único sin ninguna actualización válida."""
+    bureau, agregado, _ = dato_real
+    muestra = [*np.random.default_rng(0).choice(agregado.index, 300, replace=False), 170_304]
+    trozo = bureau[bureau.SK_ID_CURR.isin(muestra)]
+    for cliente, filas in trozo.groupby("SK_ID_CURR"):
+        pd.testing.assert_frame_equal(agregar(filas), agregado.loc[[cliente]])
