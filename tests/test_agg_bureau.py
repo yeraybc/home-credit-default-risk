@@ -80,8 +80,16 @@ def bureau():
             AMT_CREDIT_SUM=9_000.0,
             AMT_CREDIT_SUM_DEBT=9_000.0,
         ),
-        # 2: solo extranjera, con la cuota reportada a cero: todos sus importes se anulan
-        credito(2, **{COL_MONEDA: "currency 3"}, AMT_ANNUITY=0.0, AMT_CREDIT_MAX_OVERDUE=0.0),
+        # 2: solo extranjera, con la cuota reportada a cero y mora activa sin mora máxima: todos
+        # sus importes se anulan, y la unión solo la ve por la foto de la mora activa
+        credito(
+            2,
+            **{COL_MONEDA: "currency 3"},
+            AMT_ANNUITY=0.0,
+            AMT_CREDIT_MAX_OVERDUE=0.0,
+            AMT_CREDIT_SUM_OVERDUE=200.0,
+        ),
+        credito(2, **{COL_MONEDA: "currency 4"}),
         # 3: cuota rota por encima del cap, ninguna deuda reportada, y un activo con cierre real
         # posterior al vencimiento, que no es cierre tardío porque no está cerrado (435 filas así
         # en la tabla real)
@@ -137,8 +145,29 @@ def bureau():
             DAYS_ENDDATE_FACT=-825.0,
             DAYS_CREDIT_UPDATE=SUELO_FECHA - 1,
         ),
+        # 9: dos filas que encienden las mismas banderas, que siguen a 1 y no cuentan filas; la
+        # segunda es una tarjeta cerrada, que no es tarjeta activa
+        credito(
+            9,
+            AMT_CREDIT_MAX_OVERDUE=100.0,
+            AMT_CREDIT_SUM_OVERDUE=50.0,
+            AMT_CREDIT_SUM_LIMIT=-10.0,
+        ),
+        credito(
+            9,
+            CREDIT_ACTIVE="Closed",
+            CREDIT_TYPE="Credit card",
+            AMT_CREDIT_MAX_OVERDUE=100.0,
+            AMT_CREDIT_SUM_OVERDUE=50.0,
+            AMT_CREDIT_SUM_LIMIT=-10.0,
+        ),
         # 10: huérfano, en bureau y en ninguna lista de clientes
         credito(10),
+        # 11: solo una tarjeta, así que ningún vencimiento a término, con el límite reportado y
+        # sin deuda: tiene detalle financiero solo por el límite
+        credito(
+            11, CREDIT_TYPE="Credit card", AMT_CREDIT_SUM_LIMIT=0.0, AMT_CREDIT_SUM_DEBT=np.nan
+        ),
     ]
     return pd.DataFrame(filas)
 
@@ -172,6 +201,27 @@ def test_el_fixture_ejercita_cada_rama(bureau):
     assert (tarjeta & (fin > TRAMO_MIN) & (fin <= TRAMO_MAX)).any(), "falta la tarjeta en tramo"
     assert ((bureau.CREDIT_DAY_OVERDUE > 0) & (bureau.AMT_CREDIT_SUM_OVERDUE == 0)).any()
     assert (bureau.AMT_CREDIT_SUM_LIMIT < 0).any() and (bureau.CNT_CREDIT_PROLONG > 0).any()
+    # sin estos, un sum en vez de un max, una tarjeta cerrada contada como activa o un relleno
+    # del vencimiento a término pasan en verde
+    detalle = bureau.AMT_CREDIT_SUM_LIMIT.notna() | bureau.AMT_CREDIT_SUM_DEBT.notna()
+    filas_que_encienden = {
+        "moneda extranjera": extranjera,
+        "mora máxima": bureau.AMT_CREDIT_MAX_OVERDUE > 0,
+        "mora activa": bureau.AMT_CREDIT_SUM_OVERDUE > 0,
+        "sobregiro": bureau.AMT_CREDIT_SUM_LIMIT < 0,
+        "detalle financiero": detalle,
+        "historial de mora": bureau.AMT_CREDIT_MAX_OVERDUE.notna(),
+        "cuota reportada": bureau.AMT_ANNUITY.notna(),
+    }
+    for nombre, filas in filas_que_encienden.items():
+        assert filas.groupby(bureau.SK_ID_CURR).sum().max() >= 2, f"falta el doble de {nombre}"
+    assert (tarjeta & bureau.CREDIT_ACTIVE.ne("Active")).any(), "falta la tarjeta no activa"
+    solo_tarjetas = tarjeta.groupby(bureau.SK_ID_CURR).all()
+    assert solo_tarjetas.any(), "falta el cliente sin ningún vencimiento a término"
+    limite_sin_deuda = bureau.AMT_CREDIT_SUM_LIMIT.notna() & bureau.AMT_CREDIT_SUM_DEBT.isna()
+    assert limite_sin_deuda.any(), "falta el detalle financiero solo por el límite"
+    activa_sin_maxima = (bureau.AMT_CREDIT_SUM_OVERDUE > 0) & ~(bureau.AMT_CREDIT_MAX_OVERDUE > 0)
+    assert (extranjera & activa_sin_maxima).any(), "falta la mora activa extranjera sin máxima"
 
 
 def test_cada_columna_de_la_salida_varia_entre_clientes(bureau):
@@ -209,6 +259,11 @@ ESPERADO = {
         "HAS_BUREAU_FINANCIAL_DETAIL": 1,
         "HAS_BUREAU_OVERDUE_HISTORY": 1,
         "BUREAU_HAS_ANY_OVERDUE": 0,
+        # la proporción es de créditos con cuota positiva, no de cuotas reportadas
+        "BUREAU_ANNUITY_ACTIVE_RATIO": 0.0,
+        # su única mora es activa y extranjera: leída del importe limpio, la unión la perdería
+        "BUREAU_HAS_CURRENT_OVERDUE": 1,
+        "BUREAU_OVERDUE_UNION": 1,
         # sum() rellena con 0 lo que es todo NaN, que en el EDA leía como deuda cero a 7.254
         "BUREAU_CURRENT_OVERDUE_SUM": np.nan,
         "BUREAU_MAX_OVERDUE_EVER": np.nan,
@@ -257,8 +312,25 @@ ESPERADO = {
         "BUREAU_ENDDATE_2_5Y_COUNT": 2,
         "BUREAU_DAYS_CREDIT_ENDDATE_MAX": TRAMO_MAX,
         "BUREAU_ACTIVE_CARD_COUNT": 2,
+        # cinco créditos de dos tipos: cuenta tipos, no filas
+        "BUREAU_CREDIT_TYPE_NUNIQUE": 2,
     },
     8: {"BUREAU_DAYS_CREDIT_UPDATE_FLAG": np.nan, "BUREAU_CLOSED_COUNT": 1},
+    9: {
+        "BUREAU_ACTIVE_CARD_COUNT": 0,
+        "BUREAU_CLOSED_COUNT": 1,
+        # la magnitud suma las dos filas; las banderas no, y eso lo fija el test de binarias
+        "BUREAU_CURRENT_OVERDUE_SUM": 100.0,
+        "BUREAU_MAX_OVERDUE_EVER": 100.0,
+    },
+    11: {
+        # sin ningún crédito a término no hay vencimiento: NaN, ni 0 ni una mediana de la tabla
+        "BUREAU_DAYS_CREDIT_ENDDATE_MAX": np.nan,
+        "BUREAU_ENDDATE_2_5Y_COUNT": 0,
+        "HAS_BUREAU_FINANCIAL_DETAIL": 1,
+        "BUREAU_NEGATIVE_LIMIT_FLAG": 0,
+        "BUREAU_DEBT_CREDIT_RATIO": np.nan,
+    },
 }
 
 
@@ -272,7 +344,9 @@ def test_el_agregado_de_cada_cliente_es_el_calculado_a_mano(bureau, cliente):
 def test_cada_cliente_agregado_solo_da_lo_mismo_que_acompanado(bureau):
     """La premisa que deja a la agregación correr fuera del split: no cruza clientes.
 
-    Comprobado metiendo un estadístico de la tabla entera dentro de la agregación: lo caza.
+    Caza un estadístico de la tabla entera solo si algún cliente lo deja ver: una normalización
+    por el máximo del lote la ve cualquiera, y una mediana que rellena el vencimiento a término
+    solo el cliente 11, que no tiene ninguno. Sin él pasaba en verde.
     """
     juntos = agregar(bureau)
     for cliente in bureau.SK_ID_CURR.unique():
@@ -301,6 +375,54 @@ def test_la_particion_de_conteos_por_estado_cuadra_con_el_total(bureau):
         agregado.BUREAU_ACTIVE_COUNT + agregado.BUREAU_CLOSED_COUNT + agregado.BUREAU_BAD_DEBT_COUNT
     )
     pd.testing.assert_series_equal(suma, agregado.BUREAU_LOAN_COUNT, check_names=False)
+
+
+# El tipo de cada columna, que es el contrato que el bloque 5 reparte en buckets; el resto sale en
+# float64. Fijado en absoluto y no solo entre dos lotes: una bandera que pierde el int8 lo pierde
+# en todos los lotes a la vez, y compararlos entre sí no lo ve.
+BANDERAS = {
+    "BUREAU_HAS_ANY_OVERDUE",
+    "BUREAU_HAS_CURRENT_OVERDUE",
+    "BUREAU_HAS_FOREIGN_CURRENCY",
+    "BUREAU_NEGATIVE_LIMIT_FLAG",
+    "BUREAU_OVERDUE_UNION",
+    "HAS_BEEN_PROLONGED",
+    "HAS_BUREAU_ANNUITY",
+    "HAS_BUREAU_FINANCIAL_DETAIL",
+    "HAS_BUREAU_OVERDUE_HISTORY",
+}
+CONTEOS = {
+    "BUREAU_LOAN_COUNT",
+    "BUREAU_ACTIVE_COUNT",
+    "BUREAU_CLOSED_COUNT",
+    "BUREAU_BAD_DEBT_COUNT",
+    "BUREAU_ACTIVE_CARD_COUNT",
+    "BUREAU_ACTIVE_CONSUMER_COUNT",
+    "BUREAU_CLOSED_AFTER_ENDDATE",
+    "BUREAU_CREDITS_WITH_ANNUITY_COUNT",
+    "BUREAU_CREDIT_TYPE_NUNIQUE",
+    "BUREAU_ENDDATE_2_5Y_COUNT",
+}
+
+
+def test_la_salida_tiene_el_esquema_declarado(bureau):
+    agregado = agregar(bureau)
+    esperado = {
+        c: "int8" if c in BANDERAS else "int64" if c in CONTEOS else "float64"
+        for c in agregado.columns
+    }
+    assert agregado.dtypes.astype(str).to_dict() == esperado
+
+
+def test_las_banderas_valen_cero_o_uno(bureau):
+    """Una bandera es el max de su auxiliar: con dos filas que la encienden sigue a 1.
+
+    Recorre las declaradas y no las `int8` de la salida, que serían ninguna si las banderas
+    perdiesen el tipo.
+    """
+    agregado = agregar(bureau)
+    for col in BANDERAS | {"BUREAU_DAYS_CREDIT_UPDATE_FLAG"}:
+        assert set(agregado[col].dropna()) <= {0, 1}, f"{col}: {sorted(agregado[col].unique())}"
 
 
 def test_el_tipo_de_cada_columna_no_depende_del_volumen_del_cliente():
