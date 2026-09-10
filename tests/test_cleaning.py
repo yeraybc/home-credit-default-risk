@@ -17,8 +17,8 @@ from src.features.cleaning import (
     FILAS_POR_CATEGORIA,
     FILAS_POR_NULO,
     IMPORTES_BUREAU,
-    IMPORTES_CON_PRESENCIA,
-    SUFIJO_REPORTADO,
+    IMPORTES_CON_FOTO,
+    SUFIJO_SIGNO,
     acotar_ventanas_bureau,
     aplicar_caps_bureau,
     aplicar_centinela,
@@ -27,7 +27,7 @@ from src.features.cleaning import (
     columnas_edificio_redundantes,
     columnas_pendientes_de_decidir,
     filas_a_eliminar,
-    fotografiar_presencia,
+    fotografiar_signo,
     informe_limpieza,
     limpiar_application,
     limpiar_application_entrenamiento,
@@ -278,9 +278,9 @@ def test_el_informe_no_revienta_si_faltan_columnas_de_fila(app):
 # mano serían el mismo corte en dos sitios, que es lo que dejó 52.500 frente a 52.497 en bureau.
 # Se evalúan al importar y `test_los_cortes_de_ventana_del_fixture_salen_de_params` comprueba que
 # siguen cuadrando, que es lo que un módulo de constantes no puede hacer por sí solo.
-ANIOS = valor("dias_por_anio")
-TOPE_ENDDATE = valor("bureau_enddate_max_anios") * ANIOS
-SUELO_CIERRE = -valor("bureau_cierre_max_anios") * ANIOS
+DIAS_POR_ANIO = valor("dias_por_anio")
+TOPE_ENDDATE = valor("bureau_enddate_max_anios") * DIAS_POR_ANIO
+SUELO_CIERRE = -valor("bureau_cierre_max_anios") * DIAS_POR_ANIO
 
 
 @pytest.fixture
@@ -402,10 +402,13 @@ def test_el_fixture_de_bureau_ejercita_cada_rama(bureau):
     # las dos filas que cruzan el ratio se separan por si la deuda es además un importe roto:
     # la sana se capa al crédito y la rota se anula, y son ramas distintas
     rota = bureau.AMT_CREDIT_SUM_DEBT > valor("bureau_importe_max")
-    assert ((ratio > 3) & ~rota).sum() == 1, "falta el exceso grosero que sí se capa"
-    assert ((ratio > 3) & rota).sum() == 1, "falta la fila donde el orden de los dos caps decide"
-    assert (ratio == 3).sum() == 1, "falta el borde del ratio de deuda"
-    assert ((ratio > 1) & (ratio < 3)).sum() == 1, "falta el exceso leve, que se conserva"
+    ratio_max = valor("bureau_ratio_deuda_credito_max")
+    assert ((ratio > ratio_max) & ~rota).sum() == 1, "falta el exceso grosero que sí se capa"
+    assert (
+        (ratio > ratio_max) & rota
+    ).sum() == 1, "falta la fila donde el orden de los dos caps decide"
+    assert (ratio == ratio_max).sum() == 1, "falta el borde del ratio de deuda"
+    assert ((ratio > 1) & (ratio < ratio_max)).sum() == 1, "falta el exceso leve, que se conserva"
     assert ((bureau.AMT_CREDIT_SUM == 0) & (bureau.AMT_CREDIT_SUM_DEBT > 0)).sum() == 1
     assert (bureau.DAYS_CREDIT_ENDDATE > TOPE_ENDDATE).sum() == 1
     assert (bureau.DAYS_CREDIT_ENDDATE == TOPE_ENDDATE).sum() == 1, "falta el borde del vencimiento"
@@ -437,7 +440,7 @@ def test_los_cortes_de_ventana_del_fixture_salen_de_params():
     Sin esto, cambiar el corte en PARAMS movería a la vez el fixture y lo que se le exige, y el
     test seguiría verde midiendo otra cosa: el fixture se adaptaría al corte nuevo en silencio.
     """
-    assert ANIOS == 365.25
+    assert DIAS_POR_ANIO == 365.25
     assert TOPE_ENDDATE == 20 * 365.25
     assert SUELO_CIERRE == -30 * 365.25
 
@@ -603,6 +606,7 @@ def test_el_sobregiro_sobrevive_a_la_limpieza(bureau):
 
 
 def test_la_limpieza_de_bureau_es_idempotente(bureau):
+    """Protege la foto de presencia: refotografiar sobre el importe ya anulado la borraría."""
     una = limpiar_bureau(bureau)
     dos = limpiar_bureau(una)
     pd.testing.assert_frame_equal(una, dos)
@@ -617,7 +621,7 @@ def test_la_limpieza_de_bureau_no_muta_el_frame_de_entrada(bureau):
 @pytest.mark.parametrize(
     "regla",
     [
-        fotografiar_presencia,
+        fotografiar_signo,
         marcar_moneda_extranjera,
         aplicar_caps_bureau,
         capar_deuda_al_credito,
@@ -647,10 +651,8 @@ def test_la_limpieza_de_bureau_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_entera
     tiene que estar libre para poder correr sobre la tabla entera.
     """
     entera = limpiar_bureau(bureau)
-    fila_a_fila = pd.concat([limpiar_bureau(bureau.iloc[[i]]) for i in range(len(bureau))]).reindex(
-        columns=entera.columns
-    )
-    pd.testing.assert_frame_equal(entera, fila_a_fila, check_dtype=False)
+    fila_a_fila = pd.concat([limpiar_bureau(bureau.iloc[[i]]) for i in range(len(bureau))])
+    pd.testing.assert_frame_equal(entera, fila_a_fila)
 
 
 def test_la_limpieza_de_bureau_no_revienta_si_faltan_columnas(bureau):
@@ -661,7 +663,7 @@ def test_la_limpieza_de_bureau_no_revienta_si_faltan_columnas(bureau):
     assert COL_MONEDA_EXTRANJERA not in limpiar_bureau(sin_moneda).columns
 
 
-def test_cada_importe_con_cap_declara_cual(bureau):
+def test_cada_importe_con_cap_declara_cual():
     """Los cuatro con cap salen de CAPS_BUREAU, y los dos sin él están en IMPORTES_BUREAU igual."""
     assert set(CAPS_BUREAU).issubset(set(IMPORTES_BUREAU))
     sin_cap = set(IMPORTES_BUREAU) - set(CAPS_BUREAU)
@@ -684,20 +686,36 @@ def test_la_presencia_sobrevive_a_la_limpieza_de_moneda(bureau):
     con_cuota = extranjera & bureau.AMT_ANNUITY.notna()
     assert con_cuota.sum() >= 1, "el fixture no tiene ninguna fila extranjera con cuota"
     assert limpio.loc[con_cuota, "AMT_ANNUITY"].isna().all(), "el importe sí se va"
-    assert limpio.loc[con_cuota, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all(), "la foto no"
+    assert limpio.loc[con_cuota, "AMT_ANNUITY" + SUFIJO_SIGNO].eq(1).all(), "la foto no"
 
 
 def test_la_presencia_no_se_inventa_donde_no_habia_dato(bureau):
     """El fallo del primer intento, que reconstruía con la bandera y no con la foto.
 
     La bandera marca las 1.408 filas extranjeras y solo 412 traían cuota: `notna() | bandera`
-    habría dado por reportadas las otras 996. La foto distingue las dos.
+    habría dado por reportadas las otras 996. La foto distingue las dos: sin dato, NaN.
     """
     sin_cuota = bureau.copy()
     sin_cuota.loc[sin_cuota.CREDIT_CURRENCY.ne("currency 1"), "AMT_ANNUITY"] = np.nan
     limpio = limpiar_bureau(sin_cuota)
     extranjera = limpio[COL_MONEDA_EXTRANJERA] == 1
-    assert limpio.loc[extranjera, "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(0).all()
+    assert extranjera.sum() >= 1, "el fixture no tiene ninguna fila extranjera"
+    assert limpio.loc[extranjera, "AMT_ANNUITY" + SUFIJO_SIGNO].isna().all()
+
+
+def test_la_foto_guarda_el_cero_ademas_de_la_presencia(bureau):
+    """Reportada a cero y reportada con valor son dos niveles de la tripartita, de riesgo contrario.
+
+    Una foto de solo presencia los funde: de las 432 cuotas que la limpieza anula, 191 eran cero,
+    y con ella 20 clientes seguían cambiando de nivel.
+    """
+    a_cero = bureau.copy()
+    extranjera = a_cero.CREDIT_CURRENCY.ne("currency 1")
+    a_cero.loc[extranjera, "AMT_ANNUITY"] = 0.0
+    limpio = limpiar_bureau(a_cero)
+    assert extranjera.sum() >= 1, "el fixture no tiene ninguna fila extranjera"
+    assert limpio.loc[extranjera, "AMT_ANNUITY"].isna().all(), "el importe se va"
+    assert limpio.loc[extranjera, "AMT_ANNUITY" + SUFIJO_SIGNO].eq(0).all(), "el cero no"
 
 
 def test_la_presencia_tambien_se_pierde_cuando_el_importe_esta_roto(bureau):
@@ -710,32 +728,15 @@ def test_la_presencia_tambien_se_pierde_cuando_el_importe_esta_roto(bureau):
     cliente4 = credito_de(limpio, 4).index  # la cuota de 20M, por encima del cap, nacional
     rota = limpio.loc[cliente4, "AMT_ANNUITY"].isna()
     assert rota.sum() == 1, "el fixture no monta la cuota rota en moneda nacional"
-    assert limpio.loc[cliente4[rota], "AMT_ANNUITY" + SUFIJO_REPORTADO].eq(1).all()
+    assert limpio.loc[cliente4[rota], "AMT_ANNUITY" + SUFIJO_SIGNO].eq(1).all()
 
 
-def test_la_foto_de_presencia_es_idempotente(bureau):
-    """En la segunda pasada el importe ya es NaN: refotografiar borraría la foto buena.
-
-    Es el mismo fallo que la bandera del centinela, que se ponía a cero sola, y se evita igual:
-    la foto se escribe una vez y las pasadas siguientes la respetan.
-    """
-    una = limpiar_bureau(bureau)
-    dos = limpiar_bureau(una)
-    for col in IMPORTES_CON_PRESENCIA:
-        destino = col + SUFIJO_REPORTADO
-        assert una[destino].equals(dos[destino]), f"{destino} se recalcula y se borra"
-    pd.testing.assert_frame_equal(una, dos)
-
-
-def test_cada_importe_con_presencia_declara_quien_la_lee(bureau):
-    """Los cuatro son importes de verdad, y los dos que quedan fuera es porque nadie lee su nulo."""
-    assert set(IMPORTES_CON_PRESENCIA).issubset(set(IMPORTES_BUREAU))
-    assert set(IMPORTES_BUREAU) - set(IMPORTES_CON_PRESENCIA) == {
-        "AMT_CREDIT_SUM",
-        "AMT_CREDIT_SUM_OVERDUE",
-    }
-    for col, quien in IMPORTES_CON_PRESENCIA.items():
-        assert quien.strip(), f"{col} guarda su presencia sin decir quién la lee"
+def test_cada_importe_con_foto_declara_quien_la_lee(bureau):
+    """Los cinco son importes de verdad, y al que queda fuera solo se le lee la magnitud."""
+    assert set(IMPORTES_CON_FOTO).issubset(set(IMPORTES_BUREAU))
+    assert set(IMPORTES_BUREAU) - set(IMPORTES_CON_FOTO) == {"AMT_CREDIT_SUM"}
+    for col, quien in IMPORTES_CON_FOTO.items():
+        assert quien.strip(), f"{col} guarda su foto sin decir quién la lee"
     limpio = limpiar_bureau(bureau)
-    for col in IMPORTES_CON_PRESENCIA:
-        assert col + SUFIJO_REPORTADO in limpio.columns
+    for col in IMPORTES_CON_FOTO:
+        assert col + SUFIJO_SIGNO in limpio.columns

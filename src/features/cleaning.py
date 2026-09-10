@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from src.features.params import valor
@@ -109,7 +110,6 @@ COLUMNAS_PROVISIONALES = {
         "adopta convierte el descarte en firme sin necesidad de mirar al objetivo",
     ),
 }
-# La limpieza de bureau vive más abajo en este mismo fichero, bajo su propia cabecera.
 
 # Del bloque edificio se conserva solo la versión AVG de cada concepto numérico: MODE y MEDI
 # son estadísticamente intercambiables. La lista se deriva del propio frame en vez de
@@ -286,45 +286,59 @@ def marcar_moneda_extranjera(bureau: pd.DataFrame) -> pd.DataFrame:
     return bureau
 
 
-# Los importes cuya **ausencia** lee alguna feature de la receta, y por eso hay que fotografiarla
-# antes de anular nada. Los otros dos de `IMPORTES_BUREAU` no llevan foto porque nadie lee su
-# nulo: de `AMT_CREDIT_SUM` se lee la magnitud y de `AMT_CREDIT_SUM_OVERDUE` también.
-IMPORTES_CON_PRESENCIA: dict[str, str] = {
-    "AMT_ANNUITY": "BUREAU_CREDITS_WITH_ANNUITY_COUNT, _RATIO y HAS_BUREAU_ANNUITY",
-    "AMT_CREDIT_SUM_DEBT": "HAS_BUREAU_FINANCIAL_DETAIL",
-    "AMT_CREDIT_SUM_LIMIT": "HAS_BUREAU_FINANCIAL_DETAIL",
-    "AMT_CREDIT_MAX_OVERDUE": "HAS_BUREAU_OVERDUE_HISTORY",
+# Los importes cuya **ausencia o signo** lee alguna feature de la receta, y por eso hay que
+# fotografiarlos antes de anular nada. `AMT_CREDIT_SUM` es el único de `IMPORTES_BUREAU` sin foto,
+# porque de él solo se lee la magnitud.
+IMPORTES_CON_FOTO: dict[str, str] = {
+    "AMT_ANNUITY": (
+        "presencia y signo: BUREAU_CREDITS_WITH_ANNUITY_COUNT, _RATIO, HAS_BUREAU_ANNUITY y el "
+        "nivel de la cuota"
+    ),
+    "AMT_CREDIT_SUM_DEBT": "presencia: HAS_BUREAU_FINANCIAL_DETAIL",
+    "AMT_CREDIT_SUM_LIMIT": (
+        "presencia y signo: HAS_BUREAU_FINANCIAL_DETAIL y BUREAU_NEGATIVE_LIMIT_FLAG"
+    ),
+    "AMT_CREDIT_MAX_OVERDUE": (
+        "presencia y signo: HAS_BUREAU_OVERDUE_HISTORY, BUREAU_HAS_ANY_OVERDUE y "
+        "BUREAU_OVERDUE_UNION"
+    ),
+    "AMT_CREDIT_SUM_OVERDUE": "signo: BUREAU_OVERDUE_UNION",
 }
 
-SUFIJO_REPORTADO = "_REPORTADO"
+SUFIJO_SIGNO = "_SIGNO"
 
 
-def fotografiar_presencia(bureau: pd.DataFrame) -> pd.DataFrame:
-    """Guarda si el buró reportó cada importe, **antes** de que la limpieza lo anule.
+def fotografiar_signo(bureau: pd.DataFrame) -> pd.DataFrame:
+    """Guarda el signo de cada importe, **antes** de que la limpieza lo anule.
 
-    Existe porque la corrección de magnitud y la señal de presencia comparten columna y se pisan.
-    Las features de cuota no leen el importe, leen su `notna()`, y
+    La foto vale -1, 0 o +1, y NaN si el buró no reportó el dato, así que la presencia es su
+    `notna()` y no hace falta otra columna que pueda contradecirla.
+
+    Existe porque la corrección de magnitud y las banderas comparten columna y se pisan. Las
+    features de cuota no leen el importe, leen si se reportó y si era cero:
     `BUREAU_CREDITS_WITH_ANNUITY_COUNT` entra con tres niveles (sin cuota reportada 7,50%,
     reportada a cero, reportada con valor) porque el nulo y el cero son grupos de riesgo
-    contrario. Al anular importes, la limpieza mueve filas entre esos tres niveles: sobre la tabla
-    real son 432 filas y 341 clientes, 20 de los cuales caen al nivel del 7,50% sin que nada
-    falle. Es el eje del pendiente 2 de CLAUDE.md, ya escrito para la mora del buró: el relleno
-    sirve para agregar la magnitud y nunca como base de la presencia.
+    contrario. Leída la presencia del importe limpio, 432 filas y 341 clientes cambian de nivel.
+    Y guardar solo la presencia se queda corto, porque de esas 432 cuotas 191 eran cero y 241
+    positivas: sin el signo, 20 clientes siguen cambiando de nivel. Lo mismo pasa con la mora:
+    `BUREAU_HAS_ANY_OVERDUE` y `BUREAU_OVERDUE_UNION` leen `> 0` y perdían 60 clientes. El signo
+    no depende de la moneda ni de que la magnitud sea un error de captura, así que se conserva
+    donde el importe se anula.
 
     **La foto va antes y no se reconstruye después**, que era el primer intento y no funciona: la
     bandera de moneda marca las 1.408 filas extranjeras y solo 412 traían cuota, así que
-    `notna() | bandera` no recupera las 412, inventa las otras 996. La información de si había
-    dato solo existe antes de la máscara.
+    `notna() | bandera` no recupera las 412, inventa las otras 996. La información solo existe
+    antes de la máscara.
 
     Idempotente por el mismo motivo que la bandera del centinela lleva su o lógico: en la segunda
     pasada el importe ya es NaN, así que refotografiar borraría la foto buena. Se escribe una vez
     y las siguientes pasadas la respetan.
     """
     bureau = bureau.copy()
-    for col in IMPORTES_CON_PRESENCIA:
-        destino = f"{col}{SUFIJO_REPORTADO}"
+    for col in IMPORTES_CON_FOTO:
+        destino = f"{col}{SUFIJO_SIGNO}"
         if col in bureau.columns and destino not in bureau.columns:
-            bureau[destino] = bureau[col].notna().astype("int8")
+            bureau[destino] = np.sign(bureau[col])
     return bureau
 
 
@@ -372,10 +386,9 @@ def capar_deuda_al_credito(bureau: pd.DataFrame) -> pd.DataFrame:
 # una se caiga de su lista sin que se note.
 #
 # El suelo de -30 años es el mismo para las tres y sale del mismo corte, porque son la misma
-# clase de error: una fecha a unos 115 años de la solicitud. El inventario del EDA (notebook 02,
-# celda 79) las enumera juntas y son 146 en el vencimiento, 95 en la actualización y 1 en el
-# cierre. `DAYS_CREDIT` no lleva suelo y no es olvido: su mínimo es -2.922, o sea la ventana de
-# ocho años del buró, y nunca se acerca al corte.
+# clase de error y el inventario del EDA (notebook 02, celda 79) las enumera juntas. `DAYS_CREDIT`
+# no lleva suelo y no es olvido: su mínimo es -2.922, o sea la ventana de ocho años del buró, y
+# nunca se acerca al corte.
 FECHAS_CON_SUELO: tuple[str, ...] = (
     "DAYS_CREDIT_ENDDATE",
     "DAYS_ENDDATE_FACT",
@@ -421,13 +434,13 @@ def limpiar_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
     entrenamiento, `application_test` y la API. Capar la deuda después de sumarla no arregla la
     suma, y por eso todo esto va aquí y no en `agregar_bureau()`.
 
-    El orden importa en dos sitios. La foto de presencia va **la primera**, porque las tres
-    reglas siguientes anulan importes y la ausencia que las features leen se perdería. Y la
+    El orden importa en dos sitios. La foto va **la primera**, porque las tres reglas siguientes
+    anulan importes y la presencia y el signo que las features leen se perderían. Y la
     moneda y los caps de importe van antes que el cap de deuda, porque un `AMT_CREDIT_SUM` que se
     ha ido a NaN deja el ratio sin denominador y su fila sin capar, que es lo correcto cuando el
     principal es el dato roto.
     """
-    limpio = fotografiar_presencia(bureau)
+    limpio = fotografiar_signo(bureau)
     limpio = marcar_moneda_extranjera(limpio)
     limpio = aplicar_caps_bureau(limpio)
     limpio = capar_deuda_al_credito(limpio)
