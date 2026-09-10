@@ -678,8 +678,8 @@ def test_cada_importe_con_cap_declara_cual():
 def test_la_presencia_sobrevive_a_la_limpieza_de_moneda(bureau):
     """Una cuota en moneda extranjera se reportó: el importe se va, la foto de que hubo dato no.
 
-    Es la propiedad que 2.2 tiene que leer en vez de `notna()`. Con `notna()` sobre la tabla
-    limpia, 432 filas y 341 clientes cambian de nivel en la tripartita de la cuota.
+    Es la propiedad que 2.2 tiene que leer en vez de `notna()`. La limpieza anula 432 cuotas de
+    341 clientes, y con `notna()` sobre la tabla limpia 27 cambian de nivel en la tripartita.
     """
     limpio = limpiar_bureau(bureau)
     extranjera = limpio[COL_MONEDA_EXTRANJERA] == 1

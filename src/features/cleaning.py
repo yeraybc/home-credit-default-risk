@@ -302,7 +302,7 @@ IMPORTES_CON_FOTO: dict[str, str] = {
         "presencia y signo: HAS_BUREAU_OVERDUE_HISTORY, BUREAU_HAS_ANY_OVERDUE y "
         "BUREAU_OVERDUE_UNION"
     ),
-    "AMT_CREDIT_SUM_OVERDUE": "signo: BUREAU_OVERDUE_UNION",
+    "AMT_CREDIT_SUM_OVERDUE": "signo: BUREAU_OVERDUE_UNION y BUREAU_HAS_CURRENT_OVERDUE",
 }
 
 SUFIJO_SIGNO = "_SIGNO"
@@ -318,9 +318,10 @@ def fotografiar_signo(bureau: pd.DataFrame) -> pd.DataFrame:
     features de cuota no leen el importe, leen si se reportó y si era cero:
     `BUREAU_CREDITS_WITH_ANNUITY_COUNT` entra con tres niveles (sin cuota reportada 7,50%,
     reportada a cero, reportada con valor) porque el nulo y el cero son grupos de riesgo
-    contrario. Leída la presencia del importe limpio, 432 filas y 341 clientes cambian de nivel.
-    Y guardar solo la presencia se queda corto, porque de esas 432 cuotas 191 eran cero y 241
-    positivas: sin el signo, 20 clientes siguen cambiando de nivel. Lo mismo pasa con la mora:
+    contrario. La limpieza anula 432 cuotas de 341 clientes, y leída la presencia del importe
+    limpio 27 clientes cambian de nivel, 13 de ellos al de sin cuota reportada. Y guardar solo la
+    presencia se queda corto, porque de esas 432 cuotas 191 eran cero y 241 positivas: sin el
+    signo, 20 clientes siguen cambiando de nivel. Lo mismo pasa con la mora:
     `BUREAU_HAS_ANY_OVERDUE` y `BUREAU_OVERDUE_UNION` leen `> 0` y perdían 60 clientes. El signo
     no depende de la moneda ni de que la magnitud sea un error de captura, así que se conserva
     donde el importe se anula.
