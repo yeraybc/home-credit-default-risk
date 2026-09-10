@@ -110,6 +110,8 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
     tramo = (a_termino > c["bureau_enddate_tramo_min_anios"] * dias) & (
         a_termino <= c["bureau_enddate_tramo_max_anios"] * dias
     )
+    mora_maxima = signo("AMT_CREDIT_MAX_OVERDUE") > 0
+    mora_activa = signo("AMT_CREDIT_SUM_OVERDUE") > 0
     # las auxiliares van en booleano y no en int8: la suma de un int8 vuelve a int8 si el
     # resultado cabe y se queda en int64 si no, así que un cliente de 128 créditos cambiaría el
     # tipo de la columna de todo su lote. La de un booleano sale siempre en int64
@@ -126,14 +128,12 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
         _neg_limit=signo("AMT_CREDIT_SUM_LIMIT") < 0,
         _has_annuity=signo("AMT_ANNUITY") > 0,
         _annuity_reported=signo("AMT_ANNUITY").notna(),
-        _has_overdue=signo("AMT_CREDIT_MAX_OVERDUE") > 0,
+        _has_overdue=mora_maxima,
         _has_overdue_hist=signo("AMT_CREDIT_MAX_OVERDUE").notna(),
         _has_fin_detail=signo("AMT_CREDIT_SUM_LIMIT").notna()
         | signo("AMT_CREDIT_SUM_DEBT").notna(),
-        _current_overdue=signo("AMT_CREDIT_SUM_OVERDUE") > 0,
-        _overdue_union=(signo("AMT_CREDIT_MAX_OVERDUE") > 0)
-        | (signo("AMT_CREDIT_SUM_OVERDUE") > 0)
-        | (b["CREDIT_DAY_OVERDUE"] > 0),
+        _current_overdue=mora_activa,
+        _overdue_union=mora_maxima | mora_activa | (b["CREDIT_DAY_OVERDUE"] > 0),
     )
     g = f.groupby("SK_ID_CURR")
     agregado = g.agg(
@@ -192,12 +192,9 @@ def unir_bureau(clientes: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
     No rellena: el cliente sin historial queda con NaN en todo, conteos incluidos, porque su grupo
     es de mayor riesgo (10,12% frente a 7,73%) y un 0 lo mezclaría con quien tiene historial y
     ningún crédito activo. Qué se hace con ese NaN es de la capa 2.
+
+    El `validate` revienta con un agregado de clientes repetidos, que duplicaría filas en silencio.
     """
-    unido = clientes.join(agregado, on="SK_ID_CURR")
-    if len(unido) != len(clientes):
-        raise ValueError(
-            f"el join ha pasado de {len(clientes)} a {len(unido)} filas: el agregado trae "
-            "clientes repetidos"
-        )
+    unido = clientes.join(agregado, on="SK_ID_CURR", validate="m:1")
     unido["HAS_BUREAU_HISTORY"] = unido["BUREAU_LOAN_COUNT"].notna().astype("int8")
     return unido

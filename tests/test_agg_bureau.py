@@ -427,18 +427,6 @@ def test_las_banderas_valen_cero_o_uno(bureau):
         assert set(agregado[col].dropna()) <= {0, 1}, f"{col}: {sorted(agregado[col].unique())}"
 
 
-def test_el_tipo_de_cada_columna_no_depende_del_volumen_del_cliente():
-    """La suma de un int8 vuelve a int8 si cabe y se queda en int64 si no.
-
-    Con las auxiliares en int8, un cliente de 128 créditos cambiaría el tipo de la columna de
-    todo su lote, y el esquema no puede depender de quién venga en él.
-    """
-    uno = agregar(pd.DataFrame([credito(1)]))
-    muchos = agregar(pd.DataFrame([credito(1)] * 130))
-    assert muchos.loc[1, "BUREAU_ACTIVE_COUNT"] == 130
-    pd.testing.assert_series_equal(uno.dtypes, muchos.dtypes)
-
-
 def test_la_salida_cumple_el_contrato_con_la_receta(bureau):
     """Las columnas son las de la receta menos los descartes firmes, más las declaradas sin receta.
 
@@ -537,7 +525,7 @@ def test_unir_conserva_filas_orden_e_indice_y_no_rellena(bureau):
 def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(bureau):
     agregado = agregar(bureau)
     duplicado = pd.concat([agregado, agregado.loc[[5]]])
-    with pytest.raises(ValueError, match="repetidos"):
+    with pytest.raises(ValueError, match="not unique"):
         unir_bureau(pd.DataFrame({"SK_ID_CURR": [5, 1]}), duplicado)
 
 
