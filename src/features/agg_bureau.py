@@ -70,6 +70,15 @@ COLUMNAS_SIN_RECETA: dict[str, str] = {
 }
 
 
+def vencimiento_a_termino(b: pd.DataFrame) -> pd.Series:
+    """El vencimiento solo de los créditos a término, NaN en las tarjetas, que son revolving.
+
+    Los placeholders de más de 20 años ya los anuló la limpieza. Es la población del tramo, y la
+    comparten la agregación y su refijado para que no midan sobre filas distintas.
+    """
+    return b["DAYS_CREDIT_ENDDATE"].where(b["CREDIT_TYPE"].ne("Credit card"))
+
+
 def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con historial, indexada por `SK_ID_CURR`.
 
@@ -105,9 +114,7 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
     activo = b["CREDIT_ACTIVE"].eq("Active")
     cerrado = b["CREDIT_ACTIVE"].eq("Closed")
     tarjeta = b["CREDIT_TYPE"].eq("Credit card")
-    # vencimiento solo de créditos a término: sin revolving, y los placeholders ya los anuló la
-    # limpieza
-    a_termino = b["DAYS_CREDIT_ENDDATE"].where(~tarjeta)
+    a_termino = vencimiento_a_termino(b)
     tramo = (a_termino > c["bureau_enddate_tramo_min_anios"] * dias) & (
         a_termino <= c["bureau_enddate_tramo_max_anios"] * dias
     )

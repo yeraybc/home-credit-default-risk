@@ -145,6 +145,7 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     6.12, 16.15,                          # los extremos del gradiente de BUREAU_CREDITS_PER_YEAR
     16.99, 13.16, 7.82,                   # default de deuda mayor que credito, grosero y base
     # las que publica el 2.3, sobre los 210.875 clientes de train con historial
+    10.09, 8.37, 8.31,                    # el tramo pico de vencimiento y sus dos vecinos
     9.35, 5.77, 2.47, 1.91,               # la ventana: tasas extremas, delta a 180 y a 730 dias
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,

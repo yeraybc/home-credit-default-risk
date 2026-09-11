@@ -1,4 +1,4 @@
-"""Tests de la agregación de bureau por cliente (capa 1, punto 2.2).
+"""Tests de la agregación de bureau por cliente (punto 2.2) y del refijado de su tramo (2.3).
 
 Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `bureau.csv` y el split y solo corre en local.
@@ -18,6 +18,7 @@ from src.features.agg_bureau import (
     agregar_bureau,
     unir_bureau,
 )
+from src.features.build_features import ajustar_tramo_bureau
 from src.features.cleaning import COL_MONEDA, limpiar_bureau
 from src.features.params import fijar_operativo, parametro, valor
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -530,6 +531,85 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(bureau):
         unir_bureau(pd.DataFrame({"SK_ID_CURR": [5, 1]}), duplicado)
 
 
+# --- el refijado del tramo sobre train -------------------------------------------------------
+
+TRAMO = ("bureau_enddate_tramo_min_anios", "bureau_enddate_tramo_max_anios")
+
+
+def escenario(*grupos):
+    """Cada grupo es (años de vencimiento, targets, parte, tipo[, créditos por cliente])."""
+    filas, clientes = [], []
+    for anios, targets, parte, tipo, *creditos in grupos:
+        for target in targets:
+            cliente = len(clientes) + 1
+            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
+            fila = credito(cliente, DAYS_CREDIT_ENDDATE=anios * DIAS, CREDIT_TYPE=tipo)
+            filas += [fila] * (creditos[0] if creditos else 1)
+    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+
+def refijar(*grupos, sobrescribir=False):
+    """El tramo que sale de refijar sobre el escenario, y el informe."""
+    bureau, clientes = escenario(*grupos)
+    informe = ajustar_tramo_bureau(bureau, clientes, clientes, sobrescribir)
+    return tuple(valor(n) for n in TRAMO), informe
+
+
+# el pico en 5 a 10 años (67%), por encima de 0 a 2 (25%) y 2 a 5 (33%), y dos grupos que lo
+# llevarían a 2 a 5 si contaran
+PICO = [
+    (-1, [0, 0], "train", "Consumer credit"),
+    (1, [0, 0, 0, 1], "train", "Consumer credit"),
+    (3, [0, 0, 1], "train", "Consumer credit"),
+    (7, [1, 1, 0], "train", "Consumer credit"),
+]
+VALID = (3, [1] * 10, "valid", "Consumer credit")
+TARJETAS = (3, [1] * 10, "train", "Credit card")
+
+
+def test_el_refijado_toma_los_extremos_del_tramo_pico():
+    tramo, informe = refijar(*PICO)
+    assert tramo == (5, 10)
+    assert informe.pico.sum() == 1
+    assert informe.index[informe.pico][0].left == 5
+
+
+@pytest.mark.parametrize("fuera", [VALID, TARJETAS], ids=["valid", "tarjetas"])
+def test_ni_valid_ni_las_tarjetas_mueven_el_pico(fuera):
+    """Las dos direcciones: el grupo no cuenta, y el mismo grupo contado sí movería el pico."""
+    assert refijar(*PICO, fuera)[0] == (5, 10)
+    contado = (fuera[0], fuera[1], "train", "Consumer credit")
+    assert refijar(*PICO, contado, sobrescribir=True)[0] == (2, 5)
+
+
+def test_n_train_son_los_clientes_de_train_con_historial():
+    """Clientes y no créditos, las tarjetas cuentan aunque no tengan vencimiento a término, y ni
+    valid ni el cliente de train sin historial suman."""
+    bureau, clientes = escenario(*PICO, TARJETAS, VALID)
+    segundo_credito = bureau.iloc[[0]]
+    sin_historial = pd.DataFrame([{"SK_ID_CURR": 999, "TARGET": 1, "split": "train"}])
+    clientes = pd.concat([clientes, sin_historial], ignore_index=True)
+    ajustar_tramo_bureau(pd.concat([bureau, segundo_credito]), clientes, clientes)
+    assert {parametro(n).n_train_operativo for n in TRAMO} == {12 + 10}
+
+
+def test_refijar_otra_vez_exige_sobrescribir():
+    refijar(*PICO)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar(*PICO)
+    assert refijar(*PICO, sobrescribir=True)[0] == (5, 10)
+
+
+def test_un_pico_de_0_a_2_anios_es_futuro_y_se_acepta():
+    """El borde del 0 no revienta: vencer dentro de dos años es vencimiento futuro."""
+    assert refijar(*PICO, (1, [1] * 10, "train", "Consumer credit"))[0] == (0, 2)
+
+
+def test_un_pico_en_un_vencimiento_pasado_revienta():
+    with pytest.raises(ValueError, match="ya pasado"):
+        refijar(*PICO, (-1, [1] * 10, "train", "Consumer credit"))
+
+
 # --- la puerta contra el dato real -----------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -618,3 +698,59 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
     trozo = bureau[bureau.SK_ID_CURR.isin(muestra)]
     for cliente, filas in trozo.groupby("SK_ID_CURR"):
         pd.testing.assert_frame_equal(agregar(filas), agregado.loc[[cliente]])
+
+
+def train_real(dato_real):
+    """Los clientes de train con su TARGET, y las filas de bureau que son suyas."""
+    split = cargar_split()
+    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
+    bureau = dato_real[0]
+    return train, bureau[bureau.SK_ID_CURR.isin(train.SK_ID_CURR)]
+
+
+@sin_dato_real
+def test_sobre_el_split_el_tramo_refijado_sigue_en_2_a_5_anios(dato_real):
+    """El pico sigue en 2 a 5 años, con 10,09% frente a 8,37% y 8,31% a los lados."""
+    split = cargar_split()
+    informe = ajustar_tramo_bureau(dato_real[0], split, split)
+    assert tuple(valor(n) for n in TRAMO) == (2, 5)
+    assert parametro(TRAMO[0]).n_train_operativo == 210_875
+    assert (informe.tasa * 100).round(2).tolist() == [5.75, 6.48, 7.69, 8.37, 10.09, 8.31, 5.29]
+
+
+@sin_dato_real
+def test_contraste_de_la_ventana_de_actualizacion(dato_real):
+    """La señal no depende de los 180 días, que por eso son dominio y no un corte medido.
+
+    Fila a fila la tasa baja sin saltos del 9,35% al 5,77%, y la bandera separa con cualquier
+    ventana de 90 a 730 días, de +2,62pp a +1,91pp.
+    """
+    train, bureau = train_real(dato_real)
+    filas = limpiar_bureau(bureau).merge(train, on="SK_ID_CURR")
+    antiguedad = pd.cut(-filas.DAYS_CREDIT_UPDATE / DIAS, [-np.inf, 0.5, 1, 2, 3, 5, np.inf])
+    tasas = filas.TARGET.groupby(antiguedad, observed=False).mean()
+    assert tasas.notna().sum() == 6, "sin los seis tramos, el all() de abajo sería vacuo"
+    assert tasas.diff().dropna().lt(0).all()
+    for dias in (90, 180, 365, 730):
+        cortes = {**REFERENCIA, "bureau_update_reciente_dias": dias}
+        unido = unir_bureau(train, agregar_bureau(bureau, cortes))
+        bandera = unido.BUREAU_DAYS_CREDIT_UPDATE_FLAG
+        assert unido.TARGET[bandera == 1].mean() > unido.TARGET[bandera == 0].mean(), dias
+
+
+@sin_dato_real
+def test_contraste_del_suelo_de_medio_anio(dato_real):
+    """El gradiente del ritmo anual es monótono con suelos de 0,25 a 1 año.
+
+    Con el de medio año va del 6,16% al 15,93%. Con 2 años se rompe en el primer tramo, porque el
+    suelo mete los historiales cortos, que son los de más riesgo, entre los de ritmo bajo.
+    """
+    train, bureau = train_real(dato_real)
+    for suelo in (0.25, 0.5, 1.0):
+        cortes = {**REFERENCIA, "suelo_anios_denominador": suelo}
+        unido = unir_bureau(train, agregar_bureau(bureau, cortes))
+        con = unido[unido.HAS_BUREAU_HISTORY == 1]
+        ritmo = pd.cut(con.BUREAU_CREDITS_PER_YEAR, [0, 0.5, 1, 2, 3, np.inf], include_lowest=True)
+        tasas = con.TARGET.groupby(ritmo, observed=False).mean()
+        assert tasas.notna().sum() == 5, suelo
+        assert tasas.diff().dropna().gt(0).all(), suelo

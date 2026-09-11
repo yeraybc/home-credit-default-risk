@@ -24,17 +24,21 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config
 from src.data.loader import load_table
+from src.features.agg_bureau import vencimiento_a_termino
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
     limpiar_application,
     limpiar_application_entrenamiento,
+    limpiar_bureau,
 )
+from src.features.params import fijar_operativo, valor
 from src.features.pipeline import construir_pipeline
 from src.features.split import construir_split, solo_train
 from src.features.transformers import Winsorizador, registrar_limites
@@ -45,6 +49,12 @@ logger = logging.getLogger(__name__)
 # documentó que eso convierte en desigualdad estricta 453 comparaciones de fechas que en
 # realidad son iguales. Son 307.511 filas, la memoria no es el problema aquí.
 REDUCIR_MEMORIA = False
+
+# La rejilla con la que el EDA vio la U de DAYS_CREDIT_ENDDATE (notebook 02, celda 58), en años con
+# signo. El tramo sale de ella y no de una más fina: sobre train, la fina sube el pico hasta 4 a 7
+# años y un barrido por delta a nivel cliente lo lleva a 3 a 5, así que el valor lo decidiría la
+# rejilla y no el dato.
+REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -137,6 +147,54 @@ def ajustar_capa2a(
     winsorizador = Winsorizador().fit(entrenamiento)
     logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
     return winsorizador, registrar_limites(winsorizador, sobrescribir)
+
+
+def _bureau_de_train(
+    bureau: pd.DataFrame, base: pd.DataFrame, split: pd.DataFrame | None
+) -> pd.DataFrame:
+    """Las filas limpias de bureau de los clientes de train, con `SK_ID_CURR` y `TARGET`.
+
+    Es la población de los refijados de bureau: el `n_train` que declaran son sus clientes, los de
+    train con historial.
+    """
+    entrenamiento = solo_train(base, split)[["SK_ID_CURR", "TARGET"]]
+    return limpiar_bureau(bureau).merge(entrenamiento, on="SK_ID_CURR")
+
+
+def ajustar_tramo_bureau(
+    bureau: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el tramo de `BUREAU_ENDDATE_2_5Y_COUNT` con el criterio del EDA.
+
+    El criterio es el pico de la tasa de default fila a fila en `REJILLA_VENCIMIENTO_ANIOS`,
+    medido sobre las filas a las que se aplica el corte: créditos a término, limpios y de clientes
+    de train. Los extremos del tramo pico pasan a `fijar_operativo()`.
+
+    Los refijados de bureau van fuera del `Pipeline`, igual que `registrar_limites()`, porque la
+    agregación que consume sus cortes también va fuera. La consecuencia, declarada: en el CV de la
+    Fase 4 el corte elegido sobre todo el 80% se usa en cada fold.
+
+    Devuelve el informe, la tasa y la n por tramo con el pico marcado. Revienta si el pico cae en
+    un vencimiento pasado, porque la feature cuenta vencimientos futuros.
+    """
+    filas = _bureau_de_train(bureau, base, split)
+    anios = vencimiento_a_termino(filas) / valor("dias_por_anio")
+    informe = (
+        filas["TARGET"]
+        .groupby(pd.cut(anios, REJILLA_VENCIMIENTO_ANIOS), observed=False)
+        .agg(n="size", tasa="mean")
+    )
+    pico = informe["tasa"].idxmax()
+    if pico.left < 0:
+        raise ValueError(f"el pico de la tasa cae en {pico}, un vencimiento ya pasado")
+    n_train = filas["SK_ID_CURR"].nunique()
+    fijar_operativo("bureau_enddate_tramo_min_anios", pico.left, n_train, sobrescribir)
+    fijar_operativo("bureau_enddate_tramo_max_anios", pico.right, n_train, sobrescribir)
+    logger.info("tramo de vencimiento refijado en %s sobre %s clientes", pico, f"{n_train:,}")
+    return informe.assign(pico=informe.index == pico)
 
 
 def ajustar_pipeline(

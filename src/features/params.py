@@ -168,7 +168,8 @@ PARAMS: dict[str, Parametro] = {
             "la receta de bureau lo deja pendiente de refijar sobre el split. Al no ser un "
             "corte medido no se refija, pero el contraste se mantiene como control: medir "
             "BUREAU_CREDITS_PER_YEAR con varios suelos y comprobar que el gradiente monótono "
-            "del 6,12% al 16,15% no depende de este valor"
+            "del 6,12% al 16,15% no depende de este valor. En bureau, ejecutado en el 2.3 y "
+            "fijado en test_contraste_del_suelo_de_medio_anio: monótono con 0,25, 0,5 y 1 año"
         ),
     ),
     # migrados desde config.yaml al aplicar la frontera del docstring
@@ -339,7 +340,8 @@ PARAMS: dict[str, Parametro] = {
         contraste_pendiente=(
             "comprobar sobre el split que la tasa baja con la antigüedad de la última "
             "actualización y que el delta de BUREAU_DAYS_CREDIT_UPDATE_FLAG es positivo con "
-            "cualquier ventana de 90 a 730 días, o sea que la señal no depende de este valor"
+            "cualquier ventana de 90 a 730 días, o sea que la señal no depende de este valor. "
+            "Ejecutado en el 2.3 y fijado en test_contraste_de_la_ventana_de_actualizacion"
         ),
     ),
     # bureau: cortes medidos
@@ -501,8 +503,8 @@ def fijar_operativo(
         )
     if p.valor_operativo is not None and not sobrescribir:
         raise ValueError(
-            f"{nombre!r} ya está fijado en {p.valor_operativo} sobre {p.n_train_operativo} "
-            f"filas y se intenta poner {valor_nuevo} sobre {n_train}. Refijarlo invalida todo "
+            f"{nombre!r} ya está fijado en {p.valor_operativo} con n_train {p.n_train_operativo} "
+            f"y se intenta poner {valor_nuevo} con {n_train}. Refijarlo invalida todo "
             "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
         )
     PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
