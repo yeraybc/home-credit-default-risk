@@ -359,6 +359,16 @@ PARAMS: dict[str, Parametro] = {
     "bureau_enddate_tramo_max_anios": Parametro(
         5, "medido", "techo del tramo de vencimiento que se cuenta aparte", "notebook 02 celda 88"
     ),
+    # Sin referencia porque el EDA de bureau no la midió, siendo la tabla con más cobertura. Se
+    # refija con el criterio de prev_count_cola, el primer corte que cruza umbral_flags_pp; sobre
+    # train sale 18, con +2,33pp y 4.327 marcados, y el p99 más uno de bb daría 21 con 1.943.
+    "bureau_count_cola": Parametro(
+        None,
+        "medido",
+        "créditos a partir de los cuales el cliente está en la cola del conteo: el primer corte "
+        "cuyo delta cruza umbral_flags_pp",
+        "auditoría transversal, pendiente 5",
+    ),
     # bureau_balance: cortes medidos
     "bb_min_meses_reportados": Parametro(
         6,
@@ -438,6 +448,7 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
             "bureau_enddate_tramo_min_anios",
             "bureau_enddate_tramo_max_anios",
         ),
+        "BUREAU_COUNT_COLA": ("bureau_count_cola",),
     },
     "bureau_balance": {
         "BB_PCT_MONTHS_DPD": ("bb_min_meses_reportados",),

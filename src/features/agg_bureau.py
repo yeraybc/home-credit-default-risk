@@ -68,6 +68,10 @@ COLUMNAS_SIN_RECETA: dict[str, str] = {
         "el > 0 con el que la receta usa BUREAU_CURRENT_OVERDUE_SUM, leído de la foto: desde la "
         "magnitud limpia pierde al cliente cuya única mora activa está en otra moneda"
     ),
+    "BUREAU_COUNT_COLA": (
+        "la cola del conteo, el pendiente 5 de la auditoría transversal: previous_application y "
+        "bureau_balance la tienen citando a BUREAU_LOAN_COUNT y el EDA de bureau no la midió"
+    ),
 }
 
 
@@ -99,10 +103,10 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
     cambia, y uno crudo no puede saltarse el orden de dominio antes de agregar ni leer una foto que
     no existe.
 
-    `cortes` sustituye a los de `params.py`, y los `medido` revientan en `valor()` hasta que
-    alguien los refija sobre `solo_train()`. Pasarlos a mano es para los contrastes de la ventana
-    de actualización y del suelo de medio año, que son de dominio y aun así tienen uno, nunca para
-    construir la matriz.
+    `cortes` sustituye a los de `params.py`, y los `medido` (el tramo y la cola del conteo)
+    revientan en `valor()` hasta que alguien los refija sobre `solo_train()`. Pasarlos a mano es
+    para los contrastes de la ventana de actualización y del suelo de medio año, que son de dominio
+    y aun así tienen uno, nunca para construir la matriz.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in bureau.columns]
     if faltan:
@@ -196,6 +200,7 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
     anios = (-agregado["BUREAU_DAYS_CREDIT_MIN"] / dias).clip(lower=c["suelo_anios_denominador"])
     agregado["BUREAU_CREDITS_PER_YEAR"] = agregado["BUREAU_LOAN_COUNT"] / anios
     agregado["HAS_BEEN_PROLONGED"] = agregado.pop("_prolong_max") > 0
+    agregado["BUREAU_COUNT_COLA"] = agregado["BUREAU_LOAN_COUNT"] >= c["bureau_count_cola"]
     banderas = agregado.select_dtypes("bool").columns
     agregado[banderas] = agregado[banderas].astype("int8")
     # NaN y no 0 cuando no queda ninguna actualización válida, que no es un registro dormido. En

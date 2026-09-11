@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from src.config import RAIZ, cargar_config
+from src.features.agg_bureau import COLUMNAS_SIN_RECETA
 from src.features.params import (
     CORTES_POR_FEATURE,
     PARAMS,
@@ -62,9 +63,10 @@ def test_usar_un_parametro_sin_fijar_falla_en_vez_de_devolver_none(nombre):
         valor(nombre)
 
 
-def test_los_pendientes_son_los_tres_declarados_de_la_capa_2b():
+def test_los_pendientes_sin_referencia_son_los_declarados():
     """Deuda declarada, no olvidos. Si aparece uno nuevo, que se note aquí."""
     assert set(sin_fijar()) == {
+        "bureau_count_cola",
         "umbral_continuas_rb",
         "min_denominador_proporcion",
         "prev_ratio_rechazo_min_solicitudes",
@@ -147,6 +149,7 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     # las que publica el 2.3, sobre los 210.875 clientes de train con historial
     10.09, 8.37, 8.31,                    # el tramo pico de vencimiento y sus dos vecinos
     9.35, 5.77, 2.47, 1.91,               # la ventana: tasas extremas, delta a 180 y a 730 dias
+    2.33, 1.94,                           # la cola del conteo con 18 y con 17 creditos
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -263,6 +266,8 @@ def test_los_umbrales_metodologicos_coinciden_con_las_recetas_del_eda():
 # --- cruce entre las recetas del EDA y el registro de cortes --------------------------------
 
 TABLAS = ["bureau", "bureau_balance", "previous_application"]
+# lo que cada agregación añade sin receta, con su motivo declarado en su módulo
+SIN_RECETA = {"bureau": set(COLUMNAS_SIN_RECETA)}
 
 
 def _receta(tabla):
@@ -271,8 +276,8 @@ def _receta(tabla):
 
 @pytest.mark.parametrize("tabla", TABLAS)
 def test_cada_feature_del_mapa_existe_en_su_receta(tabla):
-    """El mapa no puede referirse a features que la receta no tiene."""
-    de_la_receta = {f["nombre"] for f in _receta(tabla)["features"]}
+    """El mapa no puede referirse a features que ni la receta ni la agregación declaran."""
+    de_la_receta = {f["nombre"] for f in _receta(tabla)["features"]} | SIN_RECETA.get(tabla, set())
     del_mapa = set(CORTES_POR_FEATURE[tabla])
     assert del_mapa <= de_la_receta, f"features inventadas: {sorted(del_mapa - de_la_receta)}"
 
@@ -304,7 +309,8 @@ def test_una_feature_con_corte_solo_es_firme_si_su_descarte_es_estructural(tabla
     """
     receta = {f["nombre"]: f for f in _receta(tabla)["features"]}
     for feature, cortes in CORTES_POR_FEATURE[tabla].items():
-        if receta[feature]["firmeza"] == "provisional":
+        # lo que no tiene receta no se decidió en firme contra nada
+        if feature not in receta or receta[feature]["firmeza"] == "provisional":
             continue
         assert (
             receta[feature]["decision"] == "descartar"

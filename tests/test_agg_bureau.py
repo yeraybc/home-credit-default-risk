@@ -19,7 +19,7 @@ from src.features.agg_bureau import (
     agregar_bureau,
     unir_bureau,
 )
-from src.features.build_features import ajustar_tramo_bureau
+from src.features.build_features import ajustar_cola_bureau, ajustar_tramo_bureau
 from src.features.cleaning import COL_MONEDA, limpiar_bureau
 from src.features.eval import remedir_receta
 from src.features.params import fijar_operativo, parametro, valor
@@ -34,8 +34,11 @@ DIAS = valor("dias_por_anio")
 SUELO_FECHA = -valor("bureau_cierre_max_anios") * DIAS
 CUOTA_MAX = valor("bureau_cuota_max")
 SUELO_ANIOS = valor("suelo_anios_denominador")
+# La cola del conteo no tiene referencia del EDA: el 3 es del fixture, para que marque al cliente de
+# tres créditos y no al de dos.
 REFERENCIA = {
-    n: parametro(n).valor_referencia for n in CORTES if parametro(n).procedencia == "medido"
+    **{n: parametro(n).valor_referencia for n in CORTES if parametro(n).procedencia == "medido"},
+    "bureau_count_cola": 3,
 }
 UPDATE = valor("bureau_update_reciente_dias")
 TRAMO_MIN = REFERENCIA["bureau_enddate_tramo_min_anios"] * DIAS
@@ -252,6 +255,7 @@ def test_cada_columna_de_la_salida_varia_entre_clientes(bureau):
 ESPERADO = {
     1: {
         "BUREAU_LOAN_COUNT": 2,
+        "BUREAU_COUNT_COLA": 0,
         # la presencia y el signo se leen de la foto: la cuota, la mora y el sobregiro de la fila
         # extranjera cuentan aunque la limpieza anule sus importes. Leídas del importe limpio, 27
         # clientes cambiaban de nivel en la tripartita y 60 perdían la mora sobre la tabla real
@@ -306,7 +310,9 @@ ESPERADO = {
         "BUREAU_HAS_ANY_OVERDUE": 0,
     },
     6: {
+        # la cola es inclusiva: tres créditos con el corte en tres ya marcan
         "BUREAU_LOAN_COUNT": 3,
+        "BUREAU_COUNT_COLA": 1,
         "BUREAU_ACTIVE_COUNT": 1,
         "BUREAU_CLOSED_COUNT": 1,
         "BUREAU_BAD_DEBT_COUNT": 1,
@@ -397,6 +403,7 @@ BANDERAS = {
     "HAS_BUREAU_ANNUITY",
     "HAS_BUREAU_FINANCIAL_DETAIL",
     "HAS_BUREAU_OVERDUE_HISTORY",
+    "BUREAU_COUNT_COLA",
 }
 CONTEOS = {
     "BUREAU_LOAN_COUNT",
@@ -629,6 +636,63 @@ def test_un_pico_en_un_vencimiento_pasado_revienta():
         refijar(*PICO, (-1, [1] * 10, "train", "Consumer credit"))
 
 
+# --- el refijado de la cola del conteo sobre train ------------------------------------------
+
+CONSUMO = "Consumer credit"
+# con dos créditos o más la tasa baja (10,6% frente a 15%), con tres o más cruza (71% frente a 5%)
+# y con cuatro separa todavía más (100% frente a 9%): el corte es 3, el primero que cruza, y ni el 2
+# ni el de más delta
+COLA = [
+    (1, [1] * 3 + [0] * 17, "train", CONSUMO, 1),
+    (1, [0] * 40, "train", CONSUMO, 2),
+    (1, [1] * 3 + [0] * 2, "train", CONSUMO, 3),
+    (1, [1] * 2, "train", CONSUMO, 4),
+]
+# diez clientes de dos créditos, todos impagados: si contaran, el corte bajaría a 2
+COLA_VALID = (1, [1] * 10, "valid", CONSUMO, 2)
+
+
+def refijar_cola(*grupos, sobrescribir=False):
+    bureau, clientes = escenario(*grupos)
+    informe = ajustar_cola_bureau(bureau, clientes, clientes, sobrescribir)
+    return valor("bureau_count_cola"), informe
+
+
+def test_la_cola_es_el_primer_corte_que_cruza_el_umbral_y_no_el_de_mas_delta():
+    corte, informe = refijar_cola(*COLA)
+    assert corte == 3
+    assert informe.loc[2, "delta_pp"] < valor("umbral_flags_pp") <= informe.loc[3, "delta_pp"]
+    assert informe.delta_pp.idxmax() == 4
+    assert informe.elegido.sum() == 1 and informe.loc[3, "elegido"]
+
+
+def test_valid_no_mueve_la_cola():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train bajaría el corte a 2."""
+    assert refijar_cola(*COLA, COLA_VALID)[0] == 3
+    en_train = (*COLA_VALID[:2], "train", *COLA_VALID[3:])
+    assert refijar_cola(*COLA, en_train, sobrescribir=True)[0] == 2
+
+
+def test_n_train_de_la_cola_son_los_clientes_de_train_con_historial():
+    bureau, clientes = escenario(*COLA, COLA_VALID)
+    sin_historial = pd.DataFrame([{"SK_ID_CURR": 999, "TARGET": 1, "split": "train"}])
+    clientes = pd.concat([clientes, sin_historial], ignore_index=True)
+    ajustar_cola_bureau(bureau, clientes, clientes)
+    assert parametro("bureau_count_cola").n_train_operativo == 20 + 40 + 5 + 2
+
+
+def test_una_cola_sin_senal_revienta():
+    plana = [(1, [1] + [0] * 9, "train", CONSUMO, 1), (1, [1] + [0] * 9, "train", CONSUMO, 3)]
+    with pytest.raises(ValueError, match="ningún corte"):
+        refijar_cola(*plana)
+
+
+def test_refijar_la_cola_otra_vez_exige_sobrescribir():
+    refijar_cola(*COLA)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar_cola(*COLA)
+
+
 # --- la puerta contra el dato real -----------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -780,6 +844,7 @@ def test_sobre_el_split_lo_provisional_sigue_en_el_mismo_orden(dato_real):
     """Las 28 provisionales, con cocientes frente a la receta entre 0,85 y 1,31."""
     split = cargar_split()
     ajustar_tramo_bureau(dato_real[0], split, split)
+    ajustar_cola_bureau(dato_real[0], split, split)
     train, _ = train_real(dato_real)
     unido = unir_bureau(train, agregar_bureau(dato_real[0]))
     tabla = remedir_receta(unido, unido.TARGET, cargar_receta("bureau"), POBLACIONES)
@@ -792,3 +857,14 @@ def test_sobre_el_split_lo_provisional_sigue_en_el_mismo_orden(dato_real):
     # eq(True) y no all(): sobre object, un vacío cuenta como verdadero
     assert tabla.mismo_orden.eq(True).all(), tabla.feature[~tabla.mismo_orden.eq(True)].tolist()
     assert tabla.set_index("feature").loc["HAS_BUREAU_HISTORY", "n"] == 210_875
+
+
+@sin_dato_real
+def test_sobre_el_split_la_cola_del_conteo_empieza_en_18_creditos(dato_real):
+    """El primero que cruza los 2pp: con 17 se queda en +1,94pp, con 18 llega a +2,33pp."""
+    split = cargar_split()
+    informe = ajustar_cola_bureau(dato_real[0], split, split)
+    assert valor("bureau_count_cola") == 18
+    assert parametro("bureau_count_cola").n_train_operativo == 210_875
+    assert informe.loc[[17, 18], "marcados"].tolist() == [5_661, 4_327]
+    assert informe.loc[[17, 18], "delta_pp"].round(2).tolist() == [1.94, 2.33]

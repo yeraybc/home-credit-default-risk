@@ -197,6 +197,37 @@ def ajustar_tramo_bureau(
     return informe.assign(pico=informe.index == pico)
 
 
+def ajustar_cola_bureau(
+    bureau: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `BUREAU_COUNT_COLA`, el primero cuyo delta cruza el umbral.
+
+    Es el criterio de `prev_count_cola`: al subir el corte se gana delta y se pierde cobertura, así
+    que se queda el primero que llega a `umbral_flags_pp` y no el de más delta, que acabaría en un
+    puñado de clientes. El delta es el de la bandera sobre los clientes de train con historial.
+
+    Devuelve el barrido, marcados y delta por corte con el elegido marcado. Revienta si ningún corte
+    cruza el umbral.
+    """
+    filas = _bureau_de_train(bureau, base, split)
+    clientes = filas.groupby("SK_ID_CURR")["TARGET"].agg(n="size", target="first")
+    barrido = []
+    for corte in range(2, clientes["n"].max() + 1):
+        cola = clientes["n"].ge(corte)
+        delta = clientes["target"][cola].mean() - clientes["target"][~cola].mean()
+        barrido.append((corte, int(cola.sum()), delta * 100))
+    informe = pd.DataFrame(barrido, columns=["corte", "marcados", "delta_pp"]).set_index("corte")
+    cruzan = informe.index[informe["delta_pp"] >= valor("umbral_flags_pp")]
+    if cruzan.empty:
+        raise ValueError("ningún corte del conteo cruza el umbral de banderas")
+    fijar_operativo("bureau_count_cola", int(cruzan[0]), len(clientes), sobrescribir)
+    logger.info("cola del conteo refijada en %s sobre %s clientes", cruzan[0], f"{len(clientes):,}")
+    return informe.assign(elegido=informe.index == cruzan[0])
+
+
 def ajustar_pipeline(
     base: pd.DataFrame, split: pd.DataFrame | None = None
 ) -> tuple[Pipeline, pd.DataFrame]:
