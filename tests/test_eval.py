@@ -249,6 +249,16 @@ def test_remedir_mide_cada_poblacion_y_codificacion_como_a_mano(frame_receta):
         assert fila.n == e["n_pos"], e["feature"]
 
 
+def test_en_una_bandera_mayor_que_cero_el_sin_dato_no_cuenta_como_cero(frame_receta):
+    """Sin la máscara de historial, los 100 sin dato no pueden caer en el grupo 0 de CONTEO > 0,
+    que es lo que la puerta sobre el dato real no ve: en las banderas `n` son los marcados."""
+    frame, target = frame_receta
+    receta = {"features": [_feature("CONTEO", "flag", "con historial", codificacion="> 0")]}
+    con = remedir_receta(frame, target, receta, POBLACIONES)
+    sin = remedir_receta(frame, target, receta, {**POBLACIONES, "con historial": None})
+    assert sin.efecto.item() == pytest.approx(con.efecto.item())
+
+
 def test_remedir_revienta_con_una_poblacion_sin_mascara(frame_receta):
     frame, target = frame_receta
     sin_auto = {k: v for k, v in POBLACIONES.items() if k != "auto"}

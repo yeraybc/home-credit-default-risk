@@ -196,7 +196,8 @@ def remedir_receta(
         if f["tipo"] == "flag":
             valores = frame[f["nombre"]]
             if f.get("codificacion") == "> 0":
-                valores = valores.gt(0).astype(int)
+                # el sin dato queda fuera de los dos grupos, sea cual sea la máscara: no es un 0
+                valores = valores.gt(0).astype(float).where(valores.notna())
             flags.append((f["nombre"], valores.to_numpy(), poblacion, f["poblacion_medicion"]))
         elif f["tipo"] == "continua":
             continuas.append((f["nombre"], False, poblacion, f["poblacion_medicion"]))
