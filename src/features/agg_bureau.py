@@ -77,9 +77,10 @@ def agregar_bureau(bureau: pd.DataFrame, cortes: dict[str, float] | None = None)
     cambia, y uno crudo no puede saltarse el orden de dominio antes de agregar ni leer una foto que
     no existe.
 
-    `cortes` sustituye a los de `params.py`, y los tres `medido` revientan en `valor()` hasta que
-    alguien los refija sobre `solo_train()`. Pasarlos a mano es lo que hace el barrido que los
-    refija, y el contraste del suelo de medio año, que es de dominio y aun así tiene uno pendiente.
+    `cortes` sustituye a los de `params.py`, y los `medido` revientan en `valor()` hasta que
+    alguien los refija sobre `solo_train()`. Pasarlos a mano es para los contrastes de la ventana
+    de actualización y del suelo de medio año, que son de dominio y aun así tienen uno, nunca para
+    construir la matriz.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in bureau.columns]
     if faltan:

@@ -327,13 +327,22 @@ PARAMS: dict[str, Parametro] = {
     "bureau_cierre_max_anios": Parametro(
         30, "dominio", "cierres más antiguos son error de captura", "eda-bureau 5.7"
     ),
-    # bureau: cortes medidos
+    # Dominio y no medido: es la ventana de seis meses, y no hay pico que medir. Sobre los 210.875
+    # clientes de train con historial la tasa fila a fila baja sin saltos del 9,35% del primer
+    # medio año al 5,77% de más de cinco, y el delta de la bandera pasa de +2,62pp con 90 días a
+    # +2,47pp con 180 y +1,91pp con 730. Un barrido por delta se iría a la ventana más corta.
     "bureau_update_reciente_dias": Parametro(
         180,
-        "medido",
-        "ventana de actualización reciente del registro del buró",
+        "dominio",
+        "ventana de actualización reciente del registro del buró, seis meses",
         "notebook 02 celda 88",
+        contraste_pendiente=(
+            "comprobar sobre el split que la tasa baja con la antigüedad de la última "
+            "actualización y que el delta de BUREAU_DAYS_CREDIT_UPDATE_FLAG es positivo con "
+            "cualquier ventana de 90 a 730 días, o sea que la señal no depende de este valor"
+        ),
     ),
+    # bureau: cortes medidos
     "bureau_enddate_tramo_min_anios": Parametro(
         2, "medido", "suelo del tramo de vencimiento que se cuenta aparte", "notebook 02 celda 88"
     ),

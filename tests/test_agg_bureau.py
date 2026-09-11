@@ -24,7 +24,8 @@ from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Los cortes salen del registro y no de literales, por lo mismo que en test_cleaning: dos copias
 # del mismo corte dejan el fixture adaptándose en silencio al que cambie. Los `medido` se pasan
-# con su referencia porque `valor()` los bloquea hasta el 2.3, y aquí solo se prueba el cómputo.
+# con su referencia porque `valor()` los bloquea hasta que se refijan sobre train, y aquí solo se
+# prueba el cómputo.
 DIAS = valor("dias_por_anio")
 SUELO_FECHA = -valor("bureau_cierre_max_anios") * DIAS
 CUOTA_MAX = valor("bureau_cuota_max")
@@ -32,7 +33,7 @@ SUELO_ANIOS = valor("suelo_anios_denominador")
 REFERENCIA = {
     n: parametro(n).valor_referencia for n in CORTES if parametro(n).procedencia == "medido"
 }
-UPDATE = REFERENCIA["bureau_update_reciente_dias"]
+UPDATE = valor("bureau_update_reciente_dias")
 TRAMO_MIN = REFERENCIA["bureau_enddate_tramo_min_anios"] * DIAS
 TRAMO_MAX = REFERENCIA["bureau_enddate_tramo_max_anios"] * DIAS
 

@@ -144,6 +144,8 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     0.1828, 0.1569,                       # rank-biserial del ratio de deuda y del ritmo anual
     6.12, 16.15,                          # los extremos del gradiente de BUREAU_CREDITS_PER_YEAR
     16.99, 13.16, 7.82,                   # default de deuda mayor que credito, grosero y base
+    # las que publica el 2.3, sobre los 210.875 clientes de train con historial
+    9.35, 5.77, 2.47, 1.91,               # la ventana: tasas extremas, delta a 180 y a 730 dias
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
