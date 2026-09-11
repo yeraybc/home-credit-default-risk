@@ -542,19 +542,28 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(bureau):
 
 
 def test_las_poblaciones_son_exactamente_las_de_la_receta(bureau):
-    """Ninguna etiqueta de lo provisional sin máscara, ninguna máscara que no use nadie, y ninguna
-    población condicionada deja entrar a un cliente sin historial."""
+    """Ninguna etiqueta de lo provisional sin máscara, ninguna máscara que no use nadie, ninguna
+    población condicionada deja entrar a un cliente sin historial, y las que no son la de
+    historial dejan fuera a alguno que sí lo tiene. Sin eso, una máscara con `ge(0)` mide sobre
+    todos los clientes con historial y solo lo ve la puerta local."""
     receta = cargar_receta("bureau")["features"]
     assert {f["poblacion_medicion"] for f in receta if f["firmeza"] == "provisional"} == set(
         POBLACIONES
     )
     clientes = pd.DataFrame({"SK_ID_CURR": [99, *bureau.SK_ID_CURR.unique()]})
     unido = unir_bureau(clientes, agregar(bureau))
+    # del conteo y no de la bandera, que es la expresión de la propia máscara
+    historial = unido["BUREAU_LOAN_COUNT"].notna()
     for etiqueta, mascara in POBLACIONES.items():
-        if mascara is not None:
-            dentro = mascara(unido)
-            assert dentro.dtype == bool and dentro.any(), etiqueta
-            assert not dentro.iloc[0], f"{etiqueta} incluye al cliente sin historial"
+        if mascara is None:
+            continue
+        dentro = mascara(unido)
+        assert dentro.dtype == bool and dentro.any(), etiqueta
+        assert not (dentro & ~historial).any(), f"{etiqueta} incluye a un cliente sin historial"
+        if etiqueta == "con historial":
+            assert dentro.equals(historial)
+        else:
+            assert (historial & ~dentro).any(), f"{etiqueta} no deja fuera a nadie con historial"
 
 
 # --- el refijado del tramo sobre train -------------------------------------------------------

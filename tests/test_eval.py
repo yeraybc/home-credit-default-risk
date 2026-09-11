@@ -274,17 +274,21 @@ def test_remedir_revienta_con_un_tipo_sin_medicion(frame_receta):
 
 
 def test_el_mismo_orden_es_un_factor_de_dos_hacia_los_dos_lados(frame_receta):
-    """Dentro a 1,9 veces por arriba y por abajo, fuera a 2,1 y con el signo cambiado, y vacío
-    cuando la receta no trae efecto con el que comparar."""
+    """Dentro a 1,9 veces y fuera a 2,1, por arriba y por abajo, fuera con el signo cambiado, y
+    vacío cuando la receta no trae efecto con el que comparar. El cociente es el remedido sobre el
+    de la receta: el factor es simétrico y no ve la división al revés."""
     frame, target = frame_receta
     medido = remedir_receta(frame, target, RECETA, POBLACIONES).efecto
-    # la receta lleva el efecto medido por la escala, así que el cociente es su inversa
-    escalas = [1.9, 1 / 1.9, 2.1, -1, None]
+    # la receta lleva el efecto medido por la escala, así que el cociente es su inversa; la primera
+    # feature va dos veces, para tener fuera los dos lados
+    escalas = [1.9, 1 / 1.9, 2.1, -1, None, 1 / 2.1]
     provisionales = [f for f in RECETA["features"] if f["firmeza"] == "provisional"]
     features = []
-    for f, efecto, escala in zip(provisionales, medido, escalas):
+    for f, efecto, escala in zip([*provisionales, provisionales[0]], [*medido, medido[0]], escalas):
         f = {k: v for k, v in f.items() if k != "efecto"}
         features.append(f if escala is None else {**f, "efecto": efecto * escala})
     tabla = remedir_receta(frame, target, {"features": features}, POBLACIONES)
-    assert tabla.mismo_orden.tolist()[:4] == [True, True, False, False]
+    con_efecto = tabla.drop(index=4)
+    assert con_efecto.mismo_orden.tolist() == [True, True, False, False, False]
+    assert con_efecto.cociente.tolist() == pytest.approx([1 / e for e in escalas if e is not None])
     assert pd.isna(tabla.mismo_orden.iloc[4]) and pd.isna(tabla.cociente.iloc[4])
