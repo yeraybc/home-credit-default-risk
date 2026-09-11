@@ -15,12 +15,15 @@ from src.features.agg_bureau import (
     COLUMNAS_ORIGEN,
     COLUMNAS_SIN_RECETA,
     CORTES,
+    POBLACIONES,
     agregar_bureau,
     unir_bureau,
 )
 from src.features.build_features import ajustar_tramo_bureau
 from src.features.cleaning import COL_MONEDA, limpiar_bureau
+from src.features.eval import remedir_receta
 from src.features.params import fijar_operativo, parametro, valor
+from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Los cortes salen del registro y no de literales, por lo mismo que en test_cleaning: dos copias
@@ -531,6 +534,22 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(bureau):
         unir_bureau(pd.DataFrame({"SK_ID_CURR": [5, 1]}), duplicado)
 
 
+def test_las_poblaciones_son_exactamente_las_de_la_receta(bureau):
+    """Ninguna etiqueta de lo provisional sin máscara, ninguna máscara que no use nadie, y ninguna
+    población condicionada deja entrar a un cliente sin historial."""
+    receta = cargar_receta("bureau")["features"]
+    assert {f["poblacion_medicion"] for f in receta if f["firmeza"] == "provisional"} == set(
+        POBLACIONES
+    )
+    clientes = pd.DataFrame({"SK_ID_CURR": [99, *bureau.SK_ID_CURR.unique()]})
+    unido = unir_bureau(clientes, agregar(bureau))
+    for etiqueta, mascara in POBLACIONES.items():
+        if mascara is not None:
+            dentro = mascara(unido)
+            assert dentro.dtype == bool and dentro.any(), etiqueta
+            assert not dentro.iloc[0], f"{etiqueta} incluye al cliente sin historial"
+
+
 # --- el refijado del tramo sobre train -------------------------------------------------------
 
 TRAMO = ("bureau_enddate_tramo_min_anios", "bureau_enddate_tramo_max_anios")
@@ -754,3 +773,22 @@ def test_contraste_del_suelo_de_medio_anio(dato_real):
         tasas = con.TARGET.groupby(ritmo, observed=False).mean()
         assert tasas.notna().sum() == 5, suelo
         assert tasas.diff().dropna().gt(0).all(), suelo
+
+
+@sin_dato_real
+def test_sobre_el_split_lo_provisional_sigue_en_el_mismo_orden(dato_real):
+    """Las 28 provisionales, con cocientes frente a la receta entre 0,85 y 1,31."""
+    split = cargar_split()
+    ajustar_tramo_bureau(dato_real[0], split, split)
+    train, _ = train_real(dato_real)
+    unido = unir_bureau(train, agregar_bureau(dato_real[0]))
+    tabla = remedir_receta(unido, unido.TARGET, cargar_receta("bureau"), POBLACIONES)
+    assert len(tabla) == 28
+    # medida sobre la población de la receta: su 80%, con el margen de lo que mueve el split en una
+    # bandera rara (0,746 en la de límite negativo). El cociente del efecto no basta, que una
+    # máscara que mida el ratio de cuota sobre todos los clientes con historial lo deja en 0,58
+    proporcion = tabla.n / tabla.n_receta
+    assert proporcion.between(0.7, 0.9).all(), tabla.feature[~proporcion.between(0.7, 0.9)].tolist()
+    # eq(True) y no all(): sobre object, un vacío cuenta como verdadero
+    assert tabla.mismo_orden.eq(True).all(), tabla.feature[~tabla.mismo_orden.eq(True)].tolist()
+    assert tabla.set_index("feature").loc["HAS_BUREAU_HISTORY", "n"] == 210_875

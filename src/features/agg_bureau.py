@@ -57,7 +57,8 @@ COLUMNAS_ORIGEN: tuple[str, ...] = ("SK_ID_CURR", *CATEGORICAS_ORIGEN, *NUMERICA
 CORTES = tuple(sorted({c for cortes in CORTES_POR_FEATURE["bureau"].values() for c in cortes}))
 
 # Lo que la agregación añade y la receta no tiene, con su motivo. Es la lista que el bloque 5
-# tiene que repartir en buckets, y ninguna de las dos tiene aún efecto medido.
+# tiene que repartir en buckets; su efecto sobre train se midió en el 2.3, sin receta con la que
+# compararlo.
 COLUMNAS_SIN_RECETA: dict[str, str] = {
     "BUREAU_HAS_FOREIGN_CURRENCY": (
         "max de la bandera de fila de la limpieza: algún importe del cliente no se sumó por estar "
@@ -67,6 +68,18 @@ COLUMNAS_SIN_RECETA: dict[str, str] = {
         "el > 0 con el que la receta usa BUREAU_CURRENT_OVERDUE_SUM, leído de la foto: desde la "
         "magnitud limpia pierde al cliente cuya única mora activa está en otra moneda"
     ),
+}
+
+
+# Las poblaciones sobre las que la receta midió cada feature, como máscara del frame que devuelve
+# `unir_bureau()`. Son el denominador de cada una y no miran el TARGET; con ellas `remedir_receta()`
+# mide sobre train donde midió el EDA. None es la población del propio evaluador.
+POBLACIONES = {
+    "global (nulo=0)": None,
+    "no nulos (auto-cond.)": None,
+    "con historial": lambda d: d["HAS_BUREAU_HISTORY"].eq(1),
+    "con créditos cerrados": lambda d: d["BUREAU_CLOSED_COUNT"].gt(0),
+    "solo con cuota": lambda d: d["BUREAU_CREDITS_WITH_ANNUITY_COUNT"].gt(0),
 }
 
 

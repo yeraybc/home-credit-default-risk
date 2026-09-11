@@ -165,6 +165,16 @@ def construir_receta(
     }
 
 
+def _ruta_receta(tabla: str, raiz: Path | None) -> Path:
+    """config/<tabla>_features.yaml, el mismo sitio para quien la escribe y quien la lee."""
+    return (raiz or Path(__file__).resolve().parents[2]) / "config" / f"{tabla}_features.yaml"
+
+
+def cargar_receta(tabla: str, raiz: Path | None = None) -> dict[str, Any]:
+    """Lee la receta de una tabla, el contrato que el EDA le dejó al pipeline."""
+    return yaml.safe_load(_ruta_receta(tabla, raiz).read_text())
+
+
 def exportar_receta(
     tabla: str,
     nivel: str,
@@ -180,7 +190,6 @@ def exportar_receta(
     receta = construir_receta(
         tabla, nivel, nota, rankings, alfa_bonferroni, firmes, controles, extra
     )
-    raiz = raiz or Path(__file__).resolve().parents[2]
-    destino = raiz / "config" / f"{tabla}_features.yaml"
+    destino = _ruta_receta(tabla, raiz)
     destino.write_text(yaml.safe_dump(receta, allow_unicode=True, sort_keys=False))
-    return destino.relative_to(raiz)
+    return destino.relative_to(destino.parents[1])

@@ -141,6 +141,14 @@ PARAMS: dict[str, Parametro] = {
         "y previous_application lo mide sin fijarlo",
         "auditoría transversal, pendiente 1",
     ),
+    "remedicion_factor_max": Parametro(
+        2.0,
+        "dominio",
+        "veces que el efecto remedido sobre train puede alejarse del de la receta, por arriba o "
+        "por abajo, para seguir en el mismo orden de magnitud; lo que sale se revisa, no se "
+        "descarta, que la decisión es del IV",
+        "puerta del bloque 2 en fase3-pipeline, criterio del punto 2.3",
+    ),
     "redundancia_pearson": Parametro(
         0.70,
         "dominio",
