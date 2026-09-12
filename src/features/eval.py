@@ -15,12 +15,14 @@ Uso:
     ev.fb_flags, ev.fb_cont, ev.fb_comparisons
 """
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu, norm
+
+from src.features.params import valor
 
 
 class EvaluadorSenal:
@@ -165,3 +167,69 @@ class EvaluadorSenal:
         from IPython.display import display  # import perezoso: no acopla src.features a IPython
 
         display(pd.DataFrame(rows).style.hide(axis="index"))
+
+
+# la máscara de una población de la receta sobre el frame; None es la del propio evaluador, todos en
+# las banderas y los no nulos en las continuas
+Mascara = Optional[Callable[[pd.DataFrame], pd.Series]]
+
+
+def remedir_receta(
+    frame: pd.DataFrame, target: Any, receta: dict[str, Any], poblaciones: Mapping[str, Mascara]
+) -> pd.DataFrame:
+    """Remide las features provisionales de una receta como las midió el EDA, sobre `frame`.
+
+    Cada una con su `tipo`, su `codificacion` y su `poblacion_medicion`, que `poblaciones` traduce
+    a máscara porque las etiquetas son de cada tabla. Los descartes `firme` no se remiden: son
+    redundancia estructural y valen en cualquier submuestra.
+
+    Devuelve una fila por feature con el efecto de la receta, el remedido y su cociente. En las
+    continuas el rank-biserial va en valor absoluto, así que ahí el cociente compara magnitud y no
+    dirección. Qué se hace con lo que se aleje es del IV del bloque 5, no de esta tabla.
+    """
+    features = [f for f in receta["features"] if f["firmeza"] == "provisional"]
+    flags, continuas = [], []
+    for f in features:
+        # una etiqueta sin máscara revienta aquí con su nombre, antes de medir nada
+        mascara = poblaciones[f["poblacion_medicion"]]
+        poblacion = None if mascara is None else mascara(frame).to_numpy()
+        if f["tipo"] == "flag":
+            valores = frame[f["nombre"]]
+            if f.get("codificacion") == "> 0":
+                # el sin dato queda fuera de los dos grupos, sea cual sea la máscara: no es un 0
+                valores = valores.gt(0).astype(float).where(valores.notna())
+            flags.append((f["nombre"], valores.to_numpy(), poblacion, f["poblacion_medicion"]))
+        elif f["tipo"] == "continua":
+            continuas.append((f["nombre"], False, poblacion, f["poblacion_medicion"]))
+        else:
+            raise ValueError(f"{f['nombre']}: tipo {f['tipo']!r} sin medición definida")
+
+    ev = EvaluadorSenal(frame, target)
+    ev.evaluar_flags(flags)
+    ev.evaluar_continuas(continuas)
+    # por tipo, porque una misma feature puede estar como bandera y como continua
+    medido = {("flag", e["feature"]): e for e in ev.fb_flags}
+    medido.update({("continua", e["feature"]): e for e in ev.fb_cont})
+
+    filas = []
+    for f in features:
+        m = medido.get((f["tipo"], f["nombre"]), {})
+        filas.append(
+            {
+                "feature": f["nombre"],
+                "tipo": f["tipo"],
+                "poblacion": f["poblacion_medicion"],
+                "efecto_receta": f.get("efecto", np.nan),
+                "efecto": m.get("efecto", np.nan),
+                "p": m.get("p", np.nan),
+                "n_receta": f.get("n_marcados", f.get("n")),
+                "n": m.get("n_pos"),
+            }
+        )
+    tabla = pd.DataFrame(filas)
+    tabla["cociente"] = tabla["efecto"] / tabla["efecto_receta"]
+    factor = valor("remedicion_factor_max")
+    # vacío y no False cuando la receta no trae efecto: sin nada con qué comparar no está fuera
+    dentro = tabla["cociente"].between(1 / factor, factor)
+    tabla["mismo_orden"] = dentro.astype(object).where(tabla["cociente"].notna())
+    return tabla

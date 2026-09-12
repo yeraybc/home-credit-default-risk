@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.features.eval import EvaluadorSenal
+from src.features.eval import EvaluadorSenal, remedir_receta
 
 
 @pytest.fixture
@@ -177,3 +177,118 @@ def test_grupo_vacio_se_ignora_en_vez_de_reventar():
     ev.evaluar_flags([("FLAG_SIN_POSITIVOS", valores)])
 
     assert ev.fb_flags == []
+
+
+# --- remedir_receta -------------------------------------------------------------------------
+
+
+def _feature(nombre, tipo, poblacion, **extra):
+    return {
+        "nombre": nombre,
+        "tipo": tipo,
+        "poblacion_medicion": poblacion,
+        "firmeza": "provisional",
+        "efecto": 1.0,
+        **extra,
+    }
+
+
+# un conteo que la receta usa como bandera '> 0' y como continua, que es el caso de
+# BUREAU_ENDDATE_2_5Y_COUNT, y un firme cuya columna ni existe
+RECETA = {
+    "features": [
+        _feature("BANDERA", "flag", "con historial"),
+        _feature("CONTEO", "flag", "con historial", codificacion="> 0"),
+        _feature("HAS", "flag", "global"),
+        _feature("CONTINUA", "continua", "auto"),
+        _feature("CONTEO", "continua", "con historial"),
+        _feature("NO_EXISTE", "flag", "global", firmeza="firme"),
+    ]
+}
+POBLACIONES = {"global": None, "auto": None, "con historial": lambda d: d["HAS"].eq(1)}
+
+
+@pytest.fixture
+def frame_receta():
+    """200 clientes con historial y 100 sin, con NaN en todo lo suyo."""
+    rng = np.random.default_rng(0)
+    historial = np.r_[np.ones(200), np.zeros(100)]
+
+    def solo_con(valores):
+        return np.where(historial == 1, valores, np.nan)
+
+    frame = pd.DataFrame(
+        {
+            "HAS": historial,
+            "BANDERA": solo_con(rng.integers(0, 2, 300)),
+            "CONTEO": solo_con(rng.integers(0, 4, 300)),
+            "CONTINUA": solo_con(rng.normal(size=300)),
+        }
+    )
+    return frame, rng.integers(0, 2, 300)
+
+
+def test_remedir_mide_cada_poblacion_y_codificacion_como_a_mano(frame_receta):
+    frame, target = frame_receta
+    tabla = remedir_receta(frame, target, RECETA, POBLACIONES).set_index(["tipo", "feature"])
+    historial = frame.HAS.eq(1).to_numpy()
+    ev = EvaluadorSenal(frame, target)
+    ev.evaluar_flags(
+        [
+            ("BANDERA", frame.BANDERA.to_numpy(), historial),
+            ("CONTEO", (frame.CONTEO > 0).astype(int).to_numpy(), historial),
+            ("HAS", frame.HAS.to_numpy()),
+        ]
+    )
+    ev.evaluar_continuas(["CONTINUA", ("CONTEO", False, historial)])
+    a_mano = [*ev.fb_flags, *ev.fb_cont]
+    assert len(tabla) == len(a_mano) == 5, "el firme no se remide"
+    for e in a_mano:
+        fila = tabla.loc[(e["tipo"], e["feature"])]
+        assert fila.efecto == pytest.approx(e["efecto"]), e["feature"]
+        assert fila.n == e["n_pos"], e["feature"]
+
+
+def test_en_una_bandera_mayor_que_cero_el_sin_dato_no_cuenta_como_cero(frame_receta):
+    """Sin la máscara de historial, los 100 sin dato no pueden caer en el grupo 0 de CONTEO > 0,
+    que es lo que la puerta sobre el dato real no ve: en las banderas `n` son los marcados."""
+    frame, target = frame_receta
+    receta = {"features": [_feature("CONTEO", "flag", "con historial", codificacion="> 0")]}
+    con = remedir_receta(frame, target, receta, POBLACIONES)
+    sin = remedir_receta(frame, target, receta, {**POBLACIONES, "con historial": None})
+    assert sin.efecto.item() == pytest.approx(con.efecto.item())
+
+
+def test_remedir_revienta_con_una_poblacion_sin_mascara(frame_receta):
+    frame, target = frame_receta
+    sin_auto = {k: v for k, v in POBLACIONES.items() if k != "auto"}
+    with pytest.raises(KeyError, match="auto"):
+        remedir_receta(frame, target, RECETA, sin_auto)
+
+
+def test_remedir_revienta_con_un_tipo_sin_medicion(frame_receta):
+    frame, target = frame_receta
+    receta = {"features": [_feature("HAS", "control", "global")]}
+    with pytest.raises(ValueError, match="control"):
+        remedir_receta(frame, target, receta, POBLACIONES)
+
+
+def test_el_mismo_orden_es_un_factor_de_dos_hacia_los_dos_lados(frame_receta):
+    """Dentro a 1,9 veces y fuera a 2,1, por arriba y por abajo, fuera con el signo cambiado, y
+    vacío cuando la receta no trae efecto con el que comparar. El cociente es el remedido sobre el
+    de la receta: el factor es simétrico y no ve la división al revés."""
+    frame, target = frame_receta
+    medido = remedir_receta(frame, target, RECETA, POBLACIONES).efecto
+    # la receta lleva el efecto medido por la escala, así que el cociente es su inversa; la primera
+    # feature va dos veces, para tener fuera los dos lados
+    escalas = [1.9, 1 / 1.9, 2.1, -1, None, 1 / 2.1]
+    provisionales = [f for f in RECETA["features"] if f["firmeza"] == "provisional"]
+    features = []
+    for f, efecto, escala in zip([*provisionales, provisionales[0]], [*medido, medido[0]], escalas):
+        f = {k: v for k, v in f.items() if k != "efecto"}
+        features.append(f if escala is None else {**f, "efecto": efecto * escala})
+    tabla = remedir_receta(frame, target, {"features": features}, POBLACIONES)
+    con_efecto = tabla.drop(index=4)
+    assert con_efecto.mismo_orden.tolist() == [True, True, False, False, False]
+    assert con_efecto.cociente.tolist() == pytest.approx([1 / e for e in escalas if e is not None])
+    assert pd.isna(tabla.mismo_orden.iloc[4]) and pd.isna(tabla.cociente.iloc[4])

@@ -141,6 +141,14 @@ PARAMS: dict[str, Parametro] = {
         "y previous_application lo mide sin fijarlo",
         "auditoría transversal, pendiente 1",
     ),
+    "remedicion_factor_max": Parametro(
+        2.0,
+        "dominio",
+        "veces que el efecto remedido sobre train puede alejarse del de la receta, por arriba o "
+        "por abajo, para seguir en el mismo orden de magnitud; lo que sale se revisa, no se "
+        "descarta, que la decisión es del IV",
+        "puerta del bloque 2 en fase3-pipeline, criterio del punto 2.3",
+    ),
     "redundancia_pearson": Parametro(
         0.70,
         "dominio",
@@ -168,7 +176,8 @@ PARAMS: dict[str, Parametro] = {
             "la receta de bureau lo deja pendiente de refijar sobre el split. Al no ser un "
             "corte medido no se refija, pero el contraste se mantiene como control: medir "
             "BUREAU_CREDITS_PER_YEAR con varios suelos y comprobar que el gradiente monótono "
-            "del 6,12% al 16,15% no depende de este valor"
+            "del 6,12% al 16,15% no depende de este valor. En bureau, ejecutado en el 2.3 y "
+            "fijado en test_contraste_del_suelo_de_medio_anio: monótono con 0,25, 0,5 y 1 año"
         ),
     ),
     # migrados desde config.yaml al aplicar la frontera del docstring
@@ -327,18 +336,38 @@ PARAMS: dict[str, Parametro] = {
     "bureau_cierre_max_anios": Parametro(
         30, "dominio", "cierres más antiguos son error de captura", "eda-bureau 5.7"
     ),
-    # bureau: cortes medidos
+    # Dominio y no medido: es la ventana de seis meses, y no hay pico que medir. Sobre los 210.875
+    # clientes de train con historial la tasa fila a fila baja sin saltos del 9,35% del primer
+    # medio año al 5,77% de más de cinco, y el delta de la bandera pasa de +2,62pp con 90 días a
+    # +2,47pp con 180 y +1,91pp con 730. Un barrido por delta se iría a la ventana más corta.
     "bureau_update_reciente_dias": Parametro(
         180,
-        "medido",
-        "ventana de actualización reciente del registro del buró",
+        "dominio",
+        "ventana de actualización reciente del registro del buró, seis meses",
         "notebook 02 celda 88",
+        contraste_pendiente=(
+            "comprobar sobre el split que la tasa baja con la antigüedad de la última "
+            "actualización y que el delta de BUREAU_DAYS_CREDIT_UPDATE_FLAG es positivo con "
+            "cualquier ventana de 90 a 730 días, o sea que la señal no depende de este valor. "
+            "Ejecutado en el 2.3 y fijado en test_contraste_de_la_ventana_de_actualizacion"
+        ),
     ),
+    # bureau: cortes medidos
     "bureau_enddate_tramo_min_anios": Parametro(
         2, "medido", "suelo del tramo de vencimiento que se cuenta aparte", "notebook 02 celda 88"
     ),
     "bureau_enddate_tramo_max_anios": Parametro(
         5, "medido", "techo del tramo de vencimiento que se cuenta aparte", "notebook 02 celda 88"
+    ),
+    # Sin referencia porque el EDA de bureau no la midió, siendo la tabla con más cobertura. Se
+    # refija con el criterio de prev_count_cola, el primer corte que cruza umbral_flags_pp; sobre
+    # train sale 18, con +2,33pp y 4.327 marcados, y el p99 más uno de bb daría 21 con 1.943.
+    "bureau_count_cola": Parametro(
+        None,
+        "medido",
+        "créditos a partir de los cuales el cliente está en la cola del conteo: el primer corte "
+        "cuyo delta cruza umbral_flags_pp",
+        "auditoría transversal, pendiente 5",
     ),
     # bureau_balance: cortes medidos
     "bb_min_meses_reportados": Parametro(
@@ -419,6 +448,7 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
             "bureau_enddate_tramo_min_anios",
             "bureau_enddate_tramo_max_anios",
         ),
+        "BUREAU_COUNT_COLA": ("bureau_count_cola",),
     },
     "bureau_balance": {
         "BB_PCT_MONTHS_DPD": ("bb_min_meses_reportados",),
@@ -492,8 +522,8 @@ def fijar_operativo(
         )
     if p.valor_operativo is not None and not sobrescribir:
         raise ValueError(
-            f"{nombre!r} ya está fijado en {p.valor_operativo} sobre {p.n_train_operativo} "
-            f"filas y se intenta poner {valor_nuevo} sobre {n_train}. Refijarlo invalida todo "
+            f"{nombre!r} ya está fijado en {p.valor_operativo} con n_train {p.n_train_operativo} "
+            f"y se intenta poner {valor_nuevo} con {n_train}. Refijarlo invalida todo "
             "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
         )
     PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)

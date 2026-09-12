@@ -8,6 +8,7 @@ import yaml
 
 from src.features.recipes import (
     DECISIONES,
+    cargar_receta,
     clasificar_estado,
     construir_receta,
     exportar_receta,
@@ -259,3 +260,11 @@ def test_exportar_escribe_yaml_valido(tmp_path):
     cargado = yaml.safe_load((tmp_path / destino).read_text())
     assert [f["nombre"] for f in cargado["features"]] == ["X_COUNT", "HAS_X", "X_COUNT"]
     assert cargado["tabla"] == "t"
+
+
+def test_cargar_lee_lo_que_exportar_escribe(tmp_path):
+    (tmp_path / "config").mkdir()
+    args = ("t", "SK_ID_CURR", "nota", [FLAGS, CONT], 1.67e-03)
+    exportar_receta(*args, raiz=tmp_path)
+    assert cargar_receta("t", raiz=tmp_path) == construir_receta(*args)
+    assert cargar_receta("bureau")["tabla"] == "bureau"

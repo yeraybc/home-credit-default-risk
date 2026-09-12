@@ -24,17 +24,21 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config
 from src.data.loader import load_table
+from src.features.agg_bureau import vencimiento_a_termino
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
     limpiar_application,
     limpiar_application_entrenamiento,
+    limpiar_bureau,
 )
+from src.features.params import fijar_operativo, valor
 from src.features.pipeline import construir_pipeline
 from src.features.split import construir_split, solo_train
 from src.features.transformers import Winsorizador, registrar_limites
@@ -45,6 +49,15 @@ logger = logging.getLogger(__name__)
 # documentó que eso convierte en desigualdad estricta 453 comparaciones de fechas que en
 # realidad son iguales. Son 307.511 filas, la memoria no es el problema aquí.
 REDUCIR_MEMORIA = False
+
+# La rejilla con la que el EDA vio la U de DAYS_CREDIT_ENDDATE (notebook 02, celda 58), en años con
+# signo. El tramo sale de ella y no de una más fina, y las dos lecturas que lo comprueban acaban en
+# el mismo sitio: con tramos de un año el pico se va a 5 a 6 (11,17% sobre 1.307 filas, con 4 a 5
+# detrás en 10,93% sobre 29.974, y dejando fuera el extremo de una sola fila), y un barrido por
+# delta a nivel cliente sobre tramos enteros elige ese mismo 5 a 6 (+3,45pp sobre 1.228 clientes,
+# frente a los +2,49pp sobre 71.580 del 2 a 5). Las dos se quedan con el tramo más estrecho que la
+# rejilla permita, así que el valor lo decidiría la rejilla y no el dato.
+REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -137,6 +150,85 @@ def ajustar_capa2a(
     winsorizador = Winsorizador().fit(entrenamiento)
     logger.info("capa 2a ajustada sobre %s filas de entrenamiento", f"{len(entrenamiento):,}")
     return winsorizador, registrar_limites(winsorizador, sobrescribir)
+
+
+def _bureau_de_train(
+    bureau: pd.DataFrame, base: pd.DataFrame, split: pd.DataFrame | None
+) -> pd.DataFrame:
+    """Las filas limpias de bureau de los clientes de train, con `SK_ID_CURR` y `TARGET`.
+
+    Es la población de los refijados de bureau: el `n_train` que declaran son sus clientes, los de
+    train con historial.
+    """
+    entrenamiento = solo_train(base, split)[["SK_ID_CURR", "TARGET"]]
+    return limpiar_bureau(bureau).merge(entrenamiento, on="SK_ID_CURR")
+
+
+def ajustar_tramo_bureau(
+    bureau: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el tramo de `BUREAU_ENDDATE_2_5Y_COUNT` con el criterio del EDA.
+
+    El criterio es el pico de la tasa de default fila a fila en `REJILLA_VENCIMIENTO_ANIOS`,
+    medido sobre las filas a las que se aplica el corte: créditos a término, limpios y de clientes
+    de train. Los extremos del tramo pico pasan a `fijar_operativo()`.
+
+    Los refijados de bureau van fuera del `Pipeline`, igual que `registrar_limites()`, porque la
+    agregación que consume sus cortes también va fuera. La consecuencia, declarada: en el CV de la
+    Fase 4 el corte elegido sobre todo el 80% se usa en cada fold.
+
+    Devuelve el informe, la tasa y la n por tramo con el pico marcado. Revienta si el pico cae en
+    un vencimiento pasado, porque la feature cuenta vencimientos futuros.
+    """
+    filas = _bureau_de_train(bureau, base, split)
+    anios = vencimiento_a_termino(filas) / valor("dias_por_anio")
+    informe = (
+        filas["TARGET"]
+        .groupby(pd.cut(anios, REJILLA_VENCIMIENTO_ANIOS), observed=False)
+        .agg(n="size", tasa="mean")
+    )
+    pico = informe["tasa"].idxmax()
+    if pico.left < 0:
+        raise ValueError(f"el pico de la tasa cae en {pico}, un vencimiento ya pasado")
+    n_train = filas["SK_ID_CURR"].nunique()
+    fijar_operativo("bureau_enddate_tramo_min_anios", pico.left, n_train, sobrescribir)
+    fijar_operativo("bureau_enddate_tramo_max_anios", pico.right, n_train, sobrescribir)
+    logger.info("tramo de vencimiento refijado en %s sobre %s clientes", pico, f"{n_train:,}")
+    return informe.assign(pico=informe.index == pico)
+
+
+def ajustar_cola_bureau(
+    bureau: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `BUREAU_COUNT_COLA`, el primero cuyo delta cruza el umbral.
+
+    Es el criterio de `prev_count_cola`: al subir el corte se gana delta y se pierde cobertura, así
+    que se queda el primero que llega a `umbral_flags_pp` y no el de más delta, que acabaría en un
+    puñado de clientes. El delta es el de la bandera sobre los clientes de train con historial.
+
+    Devuelve el barrido, marcados y delta por corte con el elegido marcado. Revienta si ningún corte
+    cruza el umbral.
+    """
+    filas = _bureau_de_train(bureau, base, split)
+    clientes = filas.groupby("SK_ID_CURR")["TARGET"].agg(n="size", target="first")
+    barrido = []
+    for corte in range(2, clientes["n"].max() + 1):
+        cola = clientes["n"].ge(corte)
+        delta = clientes["target"][cola].mean() - clientes["target"][~cola].mean()
+        barrido.append((corte, int(cola.sum()), delta * 100))
+    informe = pd.DataFrame(barrido, columns=["corte", "marcados", "delta_pp"]).set_index("corte")
+    cruzan = informe.index[informe["delta_pp"] >= valor("umbral_flags_pp")]
+    if cruzan.empty:
+        raise ValueError("ningún corte del conteo cruza el umbral de banderas")
+    fijar_operativo("bureau_count_cola", int(cruzan[0]), len(clientes), sobrescribir)
+    logger.info("cola del conteo refijada en %s sobre %s clientes", cruzan[0], f"{len(clientes):,}")
+    return informe.assign(elegido=informe.index == cruzan[0])
 
 
 def ajustar_pipeline(
