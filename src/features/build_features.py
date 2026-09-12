@@ -51,9 +51,12 @@ logger = logging.getLogger(__name__)
 REDUCIR_MEMORIA = False
 
 # La rejilla con la que el EDA vio la U de DAYS_CREDIT_ENDDATE (notebook 02, celda 58), en años con
-# signo. El tramo sale de ella y no de una más fina: sobre train, la fina sube el pico hasta 4 a 7
-# años y un barrido por delta a nivel cliente lo lleva a 3 a 5, así que el valor lo decidiría la
-# rejilla y no el dato.
+# signo. El tramo sale de ella y no de una más fina, y las dos lecturas que lo comprueban acaban en
+# el mismo sitio: con tramos de un año el pico se va a 5 a 6 (11,17% sobre 1.307 filas, con 4 a 5
+# detrás en 10,93% sobre 29.974, y dejando fuera el extremo de una sola fila), y un barrido por
+# delta a nivel cliente sobre tramos enteros elige ese mismo 5 a 6 (+3,45pp sobre 1.228 clientes,
+# frente a los +2,49pp sobre 71.580 del 2 a 5). Las dos se quedan con el tramo más estrecho que la
+# rejilla permita, así que el valor lo decidiría la rejilla y no el dato.
 REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
 
 

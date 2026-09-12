@@ -148,6 +148,7 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     16.99, 13.16, 7.82,                   # default de deuda mayor que credito, grosero y base
     # las que publica el 2.3, sobre los 210.875 clientes de train con historial
     10.09, 8.37, 8.31,                    # el tramo pico de vencimiento y sus dos vecinos
+    11.17, 10.93, 3.45, 2.49,             # lo que dan las dos rejillas finas que no se adoptan
     9.35, 5.77, 2.62, 2.47, 1.91,         # la ventana: tasas extremas, delta a 90, 180 y 730 dias
     2.33, 1.94,                           # la cola del conteo con 18 y con 17 creditos
 }  # fmt: skip
