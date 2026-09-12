@@ -344,6 +344,12 @@ def bureau():
         (11, "currency 1", 100_000.0, 1_000.0, 0.0, 100.0, 0.0, SUELO_CIERRE - 1, -20.0, "Closed"),
         # cliente 12: el vencimiento justo en el suelo, que no se toca
         (12, "currency 1", 100_000.0, 1_000.0, 0.0, 100.0, 0.0, SUELO_CIERRE, -20.0, "Closed"),
+        # cliente 13: crédito negativo con un sobrepago que lo quintuplica. Es la única forma de
+        # separar el denominador bueno del que solo excluye el cero: con los dos importes negativos
+        # el ratio sale +5 y cruza el corte, así que un `!= 0` capa la deuda al crédito y reescribe
+        # un sobrepago apoyándose en un principal roto. En bureau.csv no hay ni una fila así, que
+        # es justo por lo que hace falta aquí: por la API sí puede llegar
+        (13, "currency 1", -1_000.0, -5_000.0, 0.0, 100.0, 0.0, 300.0, -20.0, "Closed"),
     ]
     columnas = [
         "SK_ID_CURR",
@@ -431,7 +437,17 @@ def test_el_fixture_de_bureau_ejercita_cada_rama(bureau):
         bureau.loc[roto, "DAYS_ENDDATE_FACT"] > bureau.loc[roto, "DAYS_CREDIT_ENDDATE"]
     ).all(), "el vencimiento roto tiene que ir con un cierre real posterior, o no prueba nada"
     assert (bureau.AMT_CREDIT_SUM_LIMIT < 0).sum() == 1, "falta el sobregiro, la bandera más fuerte"
-    assert (bureau.AMT_CREDIT_SUM_DEBT < 0).sum() == 1, "falta el sobrepago, que tampoco se toca"
+    sano = bureau.AMT_CREDIT_SUM > 0
+    assert (
+        (bureau.AMT_CREDIT_SUM_DEBT < 0) & sano
+    ).sum() == 1, "falta el sobrepago, que tampoco se toca"
+    # el denominador del ratio solo cuenta donde es positivo, y sin una fila de crédito negativo
+    # cuyo ratio crudo cruce el corte, excluir solo el cero pasa en verde: en bureau.csv no hay
+    # ninguna, así que el caso solo existe si el fixture lo trae
+    negativo = bureau.AMT_CREDIT_SUM < 0
+    assert (
+        negativo & (bureau.AMT_CREDIT_SUM_DEBT / bureau.AMT_CREDIT_SUM > ratio_max)
+    ).sum() == 1, "falta el crédito negativo, cuyo ratio no significa nada"
 
 
 def test_los_cortes_de_ventana_del_fixture_salen_de_params():
@@ -543,6 +559,19 @@ def test_el_denominador_cero_no_capa_nada(bureau):
     cliente6 = credito_de(limpio, 6)
     assert cliente6.AMT_CREDIT_SUM_DEBT.iloc[0] == 5_000.0
     assert cliente6.AMT_CREDIT_SUM.iloc[0] == 0.0
+
+
+def test_el_denominador_negativo_tampoco_capa_nada(bureau):
+    """Con el principal negativo el ratio no significa nada, aunque el cociente crudo cruce.
+
+    Es la fila que separa `where(credito > 0)` de `where(credito != 0)`: con deuda y crédito
+    negativos el cociente sale +5, y excluyendo solo el cero la deuda se caparía al crédito, o sea
+    que un sobrepago de 5.000 se reescribiría a 1.000 por un principal que ya es dato roto.
+    """
+    limpio = limpiar_bureau(bureau)
+    cliente13 = credito_de(limpio, 13)
+    assert cliente13.AMT_CREDIT_SUM_DEBT.iloc[0] == -5_000.0, "capada contra un principal negativo"
+    assert cliente13.AMT_CREDIT_SUM.iloc[0] == -1_000.0
 
 
 def test_las_ventanas_anulan_lo_que_cae_fuera_y_respetan_el_borde(bureau):
