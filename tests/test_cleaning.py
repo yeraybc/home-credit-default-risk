@@ -9,15 +9,23 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config import ruta
+from src.data.loader import TABLE_FILES, load_table
 from src.features.cleaning import (
     CAPS_BUREAU,
+    COL_BB_DPD,
+    COL_BB_IS_DPD,
+    COL_BB_IS_X,
     COL_MONEDA_EXTRANJERA,
     COLUMNAS_FIRMES,
     COLUMNAS_PROVISIONALES,
+    DTYPE_STATUS,
     FILAS_POR_CATEGORIA,
     FILAS_POR_NULO,
     IMPORTES_BUREAU,
     IMPORTES_CON_FOTO,
+    MESES_BB,
+    STATUS_DPD,
     SUFIJO_SIGNO,
     acotar_ventanas_bureau,
     aplicar_caps_bureau,
@@ -32,6 +40,7 @@ from src.features.cleaning import (
     limpiar_application,
     limpiar_application_entrenamiento,
     limpiar_bureau,
+    limpiar_bureau_balance,
     marcar_moneda_extranjera,
 )
 from src.features.params import valor
@@ -769,3 +778,330 @@ def test_cada_importe_con_foto_declara_quien_la_lee(bureau):
     limpio = limpiar_bureau(bureau)
     for col in IMPORTES_CON_FOTO:
         assert col + SUFIJO_SIGNO in limpio.columns
+
+
+# --- bureau_balance -----------------------------------------------------------
+# Es el caso opuesto a las dos de arriba: aquí la limpieza no retira nada, porque el EDA no
+# encontró ni un valor fuera de dominio. Lo que estos tests protegen es la decodificación, que
+# `C` y `X` no se lean como mora cero, y que el dominio roto pare en vez de colarse.
+
+
+@pytest.fixture
+def bb():
+    """Los ocho códigos, los dos bordes de la ventana y el crédito que no reporta ningún estado.
+
+    El crédito 2 trae los códigos con espacios y en minúscula, que es lo único que la
+    normalización tiene que arreglar, y el 3 es el que se queda sin ningún estado numérico: son
+    130.368 créditos reales de esta tabla y es donde "sin dato" se lee como "sin mora".
+
+    El 1 y el 2 traen además el mismo código en limpio y en sucio (`C` y ` c `, `X` y `x`), que es
+    lo que deja montar las dos ramas de la normalización sobre una categórica: por separado no
+    colisionan al limpiarse y juntos sí.
+    """
+    filas = [
+        # crédito 1: los dos bordes de la ventana, y el cierre y el sin información al lado
+        (1, 0, "C"),
+        (1, -1, "X"),
+        (1, -2, "0"),
+        (1, MESES_BB[0], "5"),
+        # crédito 2: los mismos códigos sucios, que es lo que la normalización arregla
+        (2, -3, " c "),
+        (2, -4, "x"),
+        (2, -5, "1"),
+        (2, -6, "4"),
+        # crédito 3: solo cierre y sin información, o sea ningún estado numérico
+        (3, -10, "C"),
+        (3, -11, "X"),
+        # crédito 4: los dos códigos de mora que faltaban
+        (4, -20, "2"),
+        (4, -21, "3"),
+    ]
+    return pd.DataFrame(filas, columns=["SK_ID_BUREAU", "MONTHS_BALANCE", "STATUS"])
+
+
+def test_el_fixture_de_bureau_balance_ejercita_cada_rama(bb):
+    """Guardián: si el fixture pierde un caso, los tests de abajo dejan de probar lo que dicen."""
+    codigos = bb.STATUS.str.strip().str.upper()
+    assert set(codigos) == set(STATUS_DPD), "los ocho códigos del dominio tienen que estar"
+    assert set(bb.MONTHS_BALANCE) >= set(MESES_BB), "faltan los bordes de la ventana"
+    assert bb.STATUS.ne(codigos).sum() >= 2, "nadie ejercita el strip ni el upper"
+    sin_numerico = bb.groupby("SK_ID_BUREAU").STATUS.apply(lambda s: s.isin(list("CX")).all())
+    assert sin_numerico.sum() == 1, "falta el crédito sin ningún estado numérico"
+
+
+def test_el_cierre_y_el_sin_informacion_no_son_mora_cero(bb):
+    """La regla de "sin dato no es sin mora", en su primera aparición y donde se rompe.
+
+    `C` está saldado y `X` es que el buró no informó: ninguno de los dos es un mes sin mora, así
+    que salen de la escala. Leerlos como 0 pondría a los 130.368 créditos sin ningún estado
+    numérico a severidad cero y a intensidad cero, que es exactamente lo que el EDA prohíbe.
+    """
+    limpio = limpiar_bureau_balance(bb)
+    fuera = limpio.STATUS.isin(["C", "X"])
+    # los dos lados tienen que existir, o los `.all()` de abajo son verdaderos por vacuidad
+    assert fuera.any() and (~fuera).any(), "el fixture no monta los dos lados: no se mide nada"
+    assert limpio.loc[fuera, COL_BB_DPD].isna().all()
+    assert limpio.loc[~fuera, COL_BB_DPD].notna().all()
+    assert limpio.loc[limpio.STATUS == "0", COL_BB_DPD].eq(0).all(), "el activo sin mora sí es 0"
+
+
+@pytest.mark.parametrize("codigo,severidad", sorted(STATUS_DPD.items()))
+def test_cada_codigo_decodifica_a_su_severidad(bb, codigo, severidad):
+    """Uno a uno, que es lo que caza una traducción desplazada y no un recuento global."""
+    limpio = limpiar_bureau_balance(bb)
+    dpd = limpio.loc[limpio.STATUS == codigo, COL_BB_DPD]
+    assert not dpd.empty, f"el fixture no trae ningún {codigo}: el test no mide nada"
+    assert dpd.isna().all() if np.isnan(severidad) else dpd.eq(severidad).all()
+
+
+def test_las_dos_banderas_marcan_lo_suyo_y_nada_mas(bb):
+    """`BB_IS_X` solo el sin información, y `BB_IS_DPD` la mora de 1 a 5, nunca el activo a 0."""
+    limpio = limpiar_bureau_balance(bb)
+    assert limpio.loc[limpio[COL_BB_IS_X] == 1, "STATUS"].eq("X").all()
+    assert limpio[COL_BB_IS_X].sum() == int(limpio.STATUS.eq("X").sum())
+    assert limpio.loc[limpio[COL_BB_IS_DPD] == 1, COL_BB_DPD].gt(0).all()
+    assert limpio.loc[limpio.STATUS == "0", COL_BB_IS_DPD].eq(0).all()
+
+
+def test_la_particion_de_estados_cierra(bb):
+    """El cierre, el sin información y los meses reportados suman la ventana entera.
+
+    Es el `assert` que el notebook 03 lleva, y el que cazó la traducción desplazada: con la
+    severidad leída del orden equivocado la suma se iba en 11,7 millones de filas.
+    """
+    limpio = limpiar_bureau_balance(bb)
+    nC = int(limpio.STATUS.eq("C").sum())
+    nX = int(limpio[COL_BB_IS_X].sum())
+    reportados = int(limpio[COL_BB_DPD].notna().sum())
+    assert nC + nX + reportados == len(limpio)
+
+
+@pytest.mark.parametrize("malo", ["Z", "", "6", None])
+def test_un_status_fuera_de_dominio_revienta(bb, malo):
+    """Se deja caer a NaN se leería igual que un `C`, o sea como "sin mora".
+
+    Es el pendiente abierto de `CREDIT_ACTIVE` en `bureau`, donde un estado desconocido descuadra
+    la partición sin error, y aquí se cierra por el otro lado. El nulo va en la lista porque la
+    tabla no trae ninguno: la ausencia se codifica como `X`, no como NaN.
+    """
+    roto = bb.copy()
+    roto.loc[0, "STATUS"] = malo
+    with pytest.raises(ValueError, match="STATUS fuera de dominio"):
+        limpiar_bureau_balance(roto)
+
+
+def test_el_dominio_entero_pasa(bb):
+    """La otra dirección del check de arriba: los ocho códigos válidos salen enteros y sin tocar."""
+    limpio = limpiar_bureau_balance(bb)
+    assert set(limpio.STATUS.dropna()) == set(STATUS_DPD)
+
+
+@pytest.mark.parametrize("malo", [MESES_BB[0] - 1, MESES_BB[1] + 1])
+def test_un_mes_fuera_de_ventana_revienta(bb, malo):
+    """El eje del panel no admite NaN: el nivel crédito deriva el inicio de la ventana de su fin.
+
+    Es la diferencia con `acotar_ventanas_bureau()`, donde la fecha rota es un dato entre otros
+    y la fila sobrevive sin él. Aquí anularla mediría mal la ventana sin que nada avise.
+    """
+    roto = bb.copy()
+    roto.loc[0, "MONTHS_BALANCE"] = malo
+    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio"):
+        limpiar_bureau_balance(roto)
+
+
+def test_los_bordes_de_la_ventana_pasan(bb):
+    """La otra dirección: -96 y 0 están dentro, y un `>` por un `>=` los perdería."""
+    limpio = limpiar_bureau_balance(bb)
+    assert set(limpio.MONTHS_BALANCE) >= set(MESES_BB)
+
+
+def como_categorica(frame):
+    """El frame con `STATUS` en `category`, que es como lo deja `load_table`."""
+    otro = frame.copy()
+    otro["STATUS"] = otro.STATUS.astype("category")
+    return otro
+
+
+@pytest.mark.parametrize(
+    "creditos,sucio,colision",
+    [
+        ([1], False, False),
+        ([2], True, False),
+        ([1, 2], True, True),
+    ],
+)
+def test_la_categorica_sucia_recorre_sus_dos_ramas(bb, creditos, sucio, colision):
+    """La normalización tiene dos caminos sobre una categórica y hay que pisar los dos.
+
+    Cuando los niveles limpios siguen siendo distintos entre sí se renombran en sitio, que es lo
+    barato; cuando dos colapsan al mismo (` c ` y `C`) no se puede, y cae al respaldo de `object`.
+    La rama de arriba solo hace algo si los niveles vienen sucios, y una categórica ya limpia no
+    la ejercita: sin estos tres casos sobrevivían quitarle el `upper`, quitarle el `strip` y
+    quitar entera la guarda del colapso, las tres con la suite en verde.
+
+    Los dos `assert` de arriba son el guardián de la rama: si el fixture deja de montarla, el
+    caso falla en vez de pasar midiendo otra cosa.
+    """
+    frame = bb[bb.SK_ID_BUREAU.isin(creditos)]
+    niveles = list(frame.STATUS.astype("category").cat.categories)
+    limpios = [n.strip().upper() for n in niveles]
+    assert (niveles != limpios) == sucio, "el fixture no monta esta rama"
+    assert (len(set(limpios)) != len(limpios)) == colision, "el fixture no monta esta rama"
+    pd.testing.assert_frame_equal(
+        limpiar_bureau_balance(como_categorica(frame)), limpiar_bureau_balance(frame)
+    )
+
+
+def test_el_respaldo_a_object_aguanta_el_nivel_que_todavia_no_existe():
+    """La colisión en la que el valor limpio no es ya un nivel, que es la que necesita el cast.
+
+    `bureau_balance.csv` no trae ni un código sucio, así que este caso solo puede existir en un
+    fixture, y sin él quitar el `astype(object)` del respaldo dejaba la suite entera en verde: en
+    las colisiones del fixture grande (` c ` contra `C`) el valor limpio ya era un nivel y pandas
+    lo recodifica sin protestar. Con ` c ` y `c`, que colapsan en una `C` que no está, la misma
+    línea revienta con TypeError. Es el cuarto mecanismo del fixture aguado.
+    """
+    frame = pd.DataFrame(
+        {"SK_ID_BUREAU": [9, 9], "MONTHS_BALANCE": [0, -1], "STATUS": [" c ", "c"]}
+    )
+    niveles = list(frame.STATUS.astype("category").cat.categories)
+    assert "C" not in niveles, "el fixture no monta el nivel que todavía no existe"
+    assert len({n.strip().upper() for n in niveles}) == 1, "y tienen que colisionar"
+    assert limpiar_bureau_balance(como_categorica(frame)).STATUS.eq("C").all()
+
+
+def test_da_igual_que_status_llegue_categorica_o_en_texto(bb):
+    """Los dos caminos de la normalización tienen que dar el mismo frame, tipos incluidos.
+
+    Este es el test que caza el fallo que la puerta encontró. La primera versión fijaba el dtype
+    con `astype(DTYPE_STATUS)`, y pandas da por iguales dos categóricas no ordenadas con el mismo
+    conjunto de niveles: el astype devolvía la de entrada tal cual, con el orden que trae
+    `load_table`, y leída la severidad por el código salía el 71,56% de las filas en mora en vez
+    del 1,26%. Con `STATUS` en texto no se veía, porque ahí el orden ya era el bueno.
+
+    Va aparte del test de las dos ramas y no es duplicado: aquel parte el fixture por créditos, y
+    el astype solo se equivoca cuando el lote trae **los ocho niveles**, que es cuando pandas da
+    los dos dtypes por iguales. Con cuatro niveles reordena bien y el fallo no aparece.
+    """
+    como_carga = bb.copy()
+    como_carga["STATUS"] = como_carga.STATUS.str.strip().str.upper().astype("category")
+    orden_del_lote = list(como_carga.STATUS.cat.categories)
+    assert orden_del_lote != list(DTYPE_STATUS.categories), "el orden del lote ya es el fijo"
+    pd.testing.assert_frame_equal(limpiar_bureau_balance(como_carga), limpiar_bureau_balance(bb))
+
+
+def test_el_orden_de_los_niveles_no_lo_pone_el_lote(bb):
+    """Patrón 12: el esquema de salida no puede depender de qué códigos traiga el frame."""
+    solo_cerrados = bb[bb.STATUS.str.strip().str.upper() == "C"]
+    assert not solo_cerrados.empty
+    for frame in (bb, solo_cerrados):
+        assert limpiar_bureau_balance(frame).STATUS.dtype == DTYPE_STATUS
+        assert list(limpiar_bureau_balance(frame).STATUS.cat.categories) == list(STATUS_DPD)
+
+
+def test_la_limpieza_de_bureau_balance_no_borra_ni_una_fila(bb):
+    """El nivel cliente cuadra su suma de meses contra las filas enlazadas: no se pierde ninguna."""
+    assert len(limpiar_bureau_balance(bb)) == len(bb)
+
+
+def test_la_limpieza_de_bureau_balance_es_idempotente(bb):
+    """Las tres derivadas salen de `STATUS`, que se normaliza pero no se destruye.
+
+    Es lo contrario de `fotografiar_signo()`, que sí lee una columna que sus vecinas anulan y por
+    eso necesita guarda. Aquí la segunda pasada recalcula lo mismo, y este test lo fija.
+    """
+    una = limpiar_bureau_balance(bb)
+    pd.testing.assert_frame_equal(limpiar_bureau_balance(una), una)
+
+
+def test_la_limpieza_de_bureau_balance_no_muta_el_frame_de_entrada(bb):
+    copia = bb.copy()
+    limpiar_bureau_balance(bb)
+    pd.testing.assert_frame_equal(bb, copia)
+
+
+def test_la_limpieza_de_bureau_balance_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_entera(bb):
+    """La premisa que permite que la capa 1 corra fuera del split: no cruza filas.
+
+    Con `assert_frame_equal` y tipos incluidos, que es lo que caza un dtype que dependa del lote:
+    sin los niveles fijos, la fila suelta salía con una categórica de un solo nivel.
+    """
+    entera = limpiar_bureau_balance(bb)
+    fila_a_fila = pd.concat([limpiar_bureau_balance(bb.iloc[[i]]) for i in range(len(bb))])
+    pd.testing.assert_frame_equal(entera, fila_a_fila)
+
+
+def test_el_frame_vacio_y_sin_tipos_sale_con_el_mismo_esquema(bb):
+    """Es lo que llega de la API: un cliente sin panel, y construido sin tipos.
+
+    El esquema de la salida no puede depender del lote, que es el patrón 12: las cuatro columnas
+    que la limpieza fija tienen que salir con el mismo dtype que sobre la tabla entera.
+    """
+    vacio = pd.DataFrame({c: [] for c in bb.columns}, dtype=object)
+    fijadas = ["MONTHS_BALANCE", "STATUS", COL_BB_DPD, COL_BB_IS_X, COL_BB_IS_DPD]
+    esperado = limpiar_bureau_balance(bb).dtypes[fijadas]
+    pd.testing.assert_series_equal(limpiar_bureau_balance(vacio).dtypes[fijadas], esperado)
+
+
+def test_la_limpieza_de_bureau_balance_no_revienta_si_faltan_columnas(bb):
+    """A la API puede llegar un frame parcial: quien exige el contrato es la frontera, no esto."""
+    sin_status = bb.drop(columns=["STATUS"])
+    assert COL_BB_DPD not in limpiar_bureau_balance(sin_status).columns
+    sin_meses = bb.drop(columns=["MONTHS_BALANCE"])
+    assert COL_BB_DPD in limpiar_bureau_balance(sin_meses).columns
+
+
+# --- la puerta del 3.1 contra el dato real ----------------------------------------------------
+
+sin_bureau_balance = pytest.mark.skipif(
+    not (ruta("raw_data") / TABLE_FILES["bureau_balance"]).exists(),
+    reason="data/raw no viaja con el repo",
+)
+
+# La puerta sobre `bureau_balance.csv` completo, que es la única población de este punto: la
+# limpieza es capa 1, no ve el TARGET y no necesita ni puente ni split, así que aquí no hay las
+# dos poblaciones del bloque 2.
+PUERTA_BB = {
+    "filas": 27_299_925,
+    "columnas": 3,
+    "créditos": 817_395,
+    "duplicados del par crédito-mes": 0,
+    "meses fuera de ventana": 0,
+    "códigos fuera de dominio": 0,
+    "C": 13_646_993,
+    "X": 5_810_482,
+    "0": 7_499_507,
+    "mora": 342_943,
+}
+
+# Los porcentajes que publica el EDA (5B.2), al lado de los conteos y no en vez de ellos: son la
+# cifra con la que se contrasta, y el conteo es lo que no se puede redondear a que cuadre.
+PARTICION_EDA = {"C": 49.99, "X": 21.28, "0": 27.47, "mora": 1.26}
+
+
+@pytest.fixture(scope="module")
+def bureau_balance_real():
+    return load_table("bureau_balance")
+
+
+@sin_bureau_balance
+def test_la_puerta_del_3_1_sobre_el_dato_real(bureau_balance_real):
+    limpio = limpiar_bureau_balance(bureau_balance_real)
+    medido = {
+        "filas": len(limpio),
+        "columnas": bureau_balance_real.shape[1],
+        "créditos": limpio.SK_ID_BUREAU.nunique(),
+        "duplicados del par crédito-mes": int(
+            limpio.duplicated(["SK_ID_BUREAU", "MONTHS_BALANCE"]).sum()
+        ),
+        "meses fuera de ventana": int((~limpio.MONTHS_BALANCE.between(*MESES_BB)).sum()),
+        "códigos fuera de dominio": int((~limpio.STATUS.isin(list(STATUS_DPD))).sum()),
+        "C": int(limpio.STATUS.eq("C").sum()),
+        "X": int(limpio[COL_BB_IS_X].sum()),
+        "0": int(limpio.STATUS.eq("0").sum()),
+        "mora": int(limpio[COL_BB_IS_DPD].sum()),
+    }
+    assert medido == PUERTA_BB
+    reparto = {k: round(100 * medido[k] / medido["filas"], 2) for k in PARTICION_EDA}
+    assert reparto == PARTICION_EDA
+    assert medido["C"] + medido["X"] + int(limpio[COL_BB_DPD].notna().sum()) == medido["filas"]
