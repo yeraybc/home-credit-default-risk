@@ -21,10 +21,11 @@ diferencias con el notebook, que allí medía y aquí construye:
    lo correcto. `BB_WORST` también sale NaN, pero eso ya lo daba el `max` del notebook.
 2. **Un hueco en la ventana revienta.** La contigüidad es lo que hace que `BB_MONTHS_OBS` sea la
    longitud de la ventana; sin ella la trayectoria del 3.3 parte por un punto medio que no lo es.
-   De paso caza el par crédito-mes duplicado, que `limpiar_bureau_balance()` no busca a propósito.
+   Cuenta los meses distintos, así que caza también el par crédito-mes duplicado, que
+   `limpiar_bureau_balance()` no busca a propósito, aunque tape un hueco.
 3. **El estado final se lee con `idxmax`** y no ordenando la tabla: el par crédito-mes es único,
-   así que el mes máximo es el último. Da lo mismo (comprobado sobre los 817.395) en 0,04 s en vez
-   de 3,75 s.
+   así que el mes máximo es el último. Da lo mismo (comprobado sobre los 817.395) y es unas cien
+   veces más rápido.
 4. **Las dos proporciones se guardan de 0 a 1** y el notebook las imprimía en porcentaje. No mueve
    ninguna decisión, porque los efectos de la receta son rank-biserial, pero un `BB_PCT_X` de 0,25
    es el 25% del notebook y no un desfase.
@@ -34,9 +35,11 @@ diferencias con el notebook, que allí medía y aquí construye:
 3.4 cruza con `bureau`, así que dejarlo al gusto del cargador sería el patrón 12 sobre la clave.
 Se castea el índice de 817.395 valores, nunca la columna de 27,3 millones.
 
-**Coste medido sobre la tabla entera:** 0,74 segundos de punta a punta con la tabla ya cargada (1,5
-en la primera llamada del proceso), de los que 0,57 son la agregación, 0,09 la limpieza y 0,04 el
-estado final. El pico de RSS sigue siendo el parseo del CSV y no esto.
+**Coste medido sobre la tabla entera:** unos 3 segundos de punta a punta con la tabla ya cargada, la
+mitad en la guarda del duplicado, que ordena los 27,3 millones de pares, y la otra mitad en la
+agregación; la limpieza y el estado final no pasan de 0,2. Entre ejecuciones los absolutos se mueven
+hasta el doble y el reparto no. El pico de RSS lo sube este paso a 2,9 GB, desde los 2,4 de la carga
+con `load_table`.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from src.features.cleaning import (
     COL_BB_DPD,
     COL_BB_IS_DPD,
     COL_BB_IS_X,
+    MESES_BB,
     limpiar_bureau_balance,
 )
 
@@ -103,10 +107,19 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
         _dpd_months=(COL_BB_IS_DPD, "sum"),
     )
     hueco = cred["BB_WINDOW_END"] - cred["BB_WINDOW_INI"] + 1 != cred["BB_MONTHS_OBS"]
-    if hueco.any():
+    # el duplicado aparte, porque puede tapar un hueco y dejar la ventana con el largo justo. El par
+    # va ordenado como un entero, único porque el mes ya está dentro de la ventana: la mitad de
+    # tiempo que un `nunique` por crédito y sin los 1,7 GB de pico que ese añadía
+    ancho = MESES_BB[1] - MESES_BB[0] + 1
+    par = b[CLAVE].to_numpy("int64") * ancho
+    par += b["MONTHS_BALANCE"].to_numpy("int64") - MESES_BB[0]
+    par.sort()
+    duplicados = par[1:][par[1:] == par[:-1]] // ancho
+    rota = hueco | cred.index.isin(duplicados)
+    if rota.any():
         raise ValueError(
-            f"{int(hueco.sum())} créditos con la ventana mensual rota: "
-            f"{cred.index[hueco][:10].tolist()}. La contigüidad es lo que hace que los meses "
+            f"{int(rota.sum())} créditos con la ventana mensual rota: "
+            f"{cred.index[rota][:10].tolist()}. La contigüidad es lo que hace que los meses "
             "observados sean la ventana, y la trayectoria parte por su punto medio, así que un "
             "hueco (o un par crédito-mes duplicado) la mediría mal sin que nada avise"
         )

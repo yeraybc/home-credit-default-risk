@@ -551,15 +551,15 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
 
     **El coste del paso grande, medido y no supuesto**, que es lo que el nivel crédito necesita
     para saber si la doble agregación cabe entera: sobre las 27.299.925 filas la limpieza tarda
-    0,2 segundos y deja el frame en 312 MB, frente a los 156 MB y 6,4 segundos de la carga, con
-    un pico de 3,9 GB de RSS que es del parseo del CSV y no de esto. `reduce_mem_usage` basta y
-    no hace falta tocar la carga. `BB_DPD` va en `float32` (104 MB) y no en `Int8` nullable (52
-    MB): los 52 MB de diferencia no se notan contra ese pico, el `max` por crédito tarda lo
-    mismo con los dos, y `Int8` sería la única columna nullable del proyecto.
+    0,2 segundos y deja el frame en 312 MB, frente a los 156 MB y 6,4 segundos de la carga. El
+    pico de RSS con `load_table` es de 2,4 GB al cargar y 2,6 al limpiar, así que
+    `reduce_mem_usage` basta y no hace falta tocar la carga. `BB_DPD` va en `float32` (104 MB) y
+    no en `Int8` nullable (52 MB): los 52 MB de diferencia no se notan contra ese pico, el `max`
+    por crédito tarda lo mismo con los dos, y `Int8` sería la única columna nullable del proyecto.
 
     Lo que **no** hace, para que no parezca olvido: no busca duplicados del par crédito-mes, que
-    la puerta mide una vez y la suma de meses del nivel cliente volvería a cazar, y pagarlo en
-    cada llamada sobre 27,3 millones de filas no sale a cuenta; y no mira `SK_ID_BUREAU`, que es
+    ya caza la guarda de ventana de `agregar_por_credito()`, y pagarlo dos veces sobre 27,3
+    millones de filas no sale a cuenta; y no mira `SK_ID_BUREAU`, que es
     del puente, el único que tiene `bureau` delante para saber si la clave ajena vale. **Tampoco
     le fija el tipo**, así que sale en `uint32` desde `load_table` y en `int64` desde un
     `read_csv` a pelo: es el patrón 12 sobre la clave, y quien decide es el nivel crédito, que la

@@ -263,6 +263,22 @@ def test_un_par_credito_mes_duplicado_revienta_por_la_misma_guarda(bb):
         agregar_por_credito(pd.concat([bb, bb.iloc[[0]]], ignore_index=True))
 
 
+def test_un_duplicado_que_tapa_un_hueco_revienta(bb):
+    """El caso que comparar la ventana con las filas deja pasar: el largo sale justo.
+
+    La tabla no trae ninguno, así que solo existe aquí, y por la API es un `concat` mal hecho.
+    """
+    credito = bb["SK_ID_BUREAU"].eq(4)
+    tapado = pd.concat(
+        [bb[~(credito & bb["MONTHS_BALANCE"].eq(-2))], bb[credito & bb["MONTHS_BALANCE"].eq(-3)]],
+        ignore_index=True,
+    )
+    meses = tapado.loc[tapado["SK_ID_BUREAU"].eq(4), "MONTHS_BALANCE"]
+    assert meses.max() - meses.min() + 1 == len(meses), "el largo tiene que salir justo"
+    with pytest.raises(ValueError, match="ventana mensual rota"):
+        agregar_por_credito(tapado)
+
+
 def test_la_ventana_contigua_de_un_solo_mes_no_revienta():
     """El otro lado de la guarda, en el borde de la ventana que el fixture no tiene."""
     assert agregar_por_credito(panel({7: (-96, ["0"])})).loc[7, "BB_MONTHS_OBS"] == 1
