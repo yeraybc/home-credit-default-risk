@@ -251,6 +251,14 @@ def test_una_columna_de_origen_ausente_revienta_con_su_nombre(bb, columna):
         agregar_por_credito(bb.drop(columns=[columna]))
 
 
+def test_una_clave_nula_revienta_en_vez_de_perder_sus_meses(bb):
+    """El `groupby` tira la fila sin clave. La tabla no trae ninguna: solo puede traerla la API."""
+    sin_clave = bb.astype({"SK_ID_BUREAU": float})
+    sin_clave.loc[0, "SK_ID_BUREAU"] = np.nan
+    with pytest.raises(ValueError, match="sin SK_ID_BUREAU"):
+        agregar_por_credito(sin_clave)
+
+
 def test_un_hueco_en_la_ventana_revienta_nombrando_el_credito(bb):
     con_hueco = bb[~(bb["SK_ID_BUREAU"].eq(4) & bb["MONTHS_BALANCE"].eq(-2))]
     with pytest.raises(ValueError, match="ventana mensual rota"):

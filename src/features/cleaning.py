@@ -537,9 +537,9 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
 
     **Las dos validaciones revientan en vez de dejar caer la fila.** Un código de `STATUS` que no
     esté en `STATUS_DPD` saldría como NaN y se leería igual que un `C`, o sea como "sin mora"; y
-    un `MONTHS_BALANCE` fuera de -96 a 0 es el eje del panel, del que el nivel crédito deriva el
-    inicio de la ventana a partir de su fin, así que anularlo mediría mal esa ventana sin que
-    nada avise. Es la diferencia con `acotar_ventanas_bureau()`, donde la fecha rota es un dato
+    un `MONTHS_BALANCE` fuera de -96 a 0, o con decimales que el `int8` truncaría, es el eje del
+    panel, del que el nivel crédito saca la ventana, así que anularlo la mediría mal sin que nada
+    avise. Es la diferencia con `acotar_ventanas_bureau()`, donde la fecha rota es un dato
     entre otros y la fila sobrevive sin él.
 
     Ninguna fila se borra, por lo mismo que en `limpiar_bureau()`, y además porque la suma de
@@ -572,7 +572,11 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
     bb = bb.copy()
     if "MONTHS_BALANCE" in bb.columns:
         meses = bb["MONTHS_BALANCE"]
-        _exigir_dominio(meses, ~meses.between(*MESES_BB), "MONTHS_BALANCE")
+        fuera = ~meses.between(*MESES_BB)
+        # en una columna entera no cabe un decimal, y mirarlo ahí costaría 0,09 s sobre la tabla
+        if not pd.api.types.is_integer_dtype(meses):
+            fuera |= meses.mod(1).ne(0)
+        _exigir_dominio(meses, fuera, "MONTHS_BALANCE")
         bb["MONTHS_BALANCE"] = meses.astype("int8")
     if "STATUS" in bb.columns:
         status = _normalizar_status(bb["STATUS"])

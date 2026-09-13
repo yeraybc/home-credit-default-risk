@@ -71,7 +71,7 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
 
     Llama a `limpiar_bureau_balance()` antes de agregar: es idempotente, así que un frame ya
     limpio no cambia, y uno crudo no puede saltarse el dominio a nivel fila ni agregar una letra
-    sin decodificar.
+    sin decodificar. Revienta con una clave nula, que el `groupby` tiraría en silencio.
 
     Las once columnas, con el nombre que tenían en el notebook al lado:
 
@@ -93,6 +93,12 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
     if faltan:
         raise ValueError(f"a bureau_balance le faltan columnas para agregar: {faltan}")
     b = limpiar_bureau_balance(bb)
+    sin_clave = b[CLAVE].isna()
+    if sin_clave.any():
+        raise ValueError(
+            f"{int(sin_clave.sum())} filas de bureau_balance sin {CLAVE}: el groupby las tiraría y "
+            "sus meses no llegarían a ningún crédito sin que nada avise"
+        )
     # el índice de quien llama puede venir repetido (un concat, la API); `idxmax` devuelve
     # etiquetas, así que sin esto el estado final leería la fila equivocada
     b.index = pd.RangeIndex(len(b))

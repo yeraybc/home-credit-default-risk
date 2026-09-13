@@ -898,7 +898,7 @@ def test_el_dominio_entero_pasa(bb):
 
 @pytest.mark.parametrize("malo", [MESES_BB[0] - 1, MESES_BB[1] + 1])
 def test_un_mes_fuera_de_ventana_revienta(bb, malo):
-    """El eje del panel no admite NaN: el nivel crédito deriva el inicio de la ventana de su fin.
+    """El eje del panel no admite NaN: el nivel crédito saca de él la ventana.
 
     Es la diferencia con `acotar_ventanas_bureau()`, donde la fecha rota es un dato entre otros
     y la fila sobrevive sin él. Aquí anularla mediría mal la ventana sin que nada avise.
@@ -913,6 +913,20 @@ def test_los_bordes_de_la_ventana_pasan(bb):
     """La otra dirección: -96 y 0 están dentro, y un `>` por un `>=` los perdería."""
     limpio = limpiar_bureau_balance(bb)
     assert set(limpio.MONTHS_BALANCE) >= set(MESES_BB)
+
+
+def test_un_mes_con_decimales_revienta(bb):
+    """Pasa el rango y el `int8` lo truncaría a un mes que no es. Solo puede traerlo la API."""
+    roto = bb.astype({"MONTHS_BALANCE": float})
+    roto.loc[0, "MONTHS_BALANCE"] = -1.5
+    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio"):
+        limpiar_bureau_balance(roto)
+
+
+def test_un_mes_en_float_sin_decimales_da_lo_mismo_que_en_entero(bb):
+    """La otra dirección: el float que llega de la API con meses enteros no revienta."""
+    en_float = bb.astype({"MONTHS_BALANCE": float})
+    pd.testing.assert_frame_equal(limpiar_bureau_balance(en_float), limpiar_bureau_balance(bb))
 
 
 def como_categorica(frame):
