@@ -14,29 +14,29 @@ Traslada la celda de los ejes derivados del notebook 03 (el `groupby("SK_ID_BURE
 la celda 30 cuando se escribió), con la ventana de la 34 y el estado final de la 39. Cuatro
 diferencias con el notebook, que allí medía y aquí construye:
 
-1. **`BB_WORST` y `BB_DPD_MONTHS` van a NaN sin ningún mes reportado**, no a 0. Son 130.368
-   créditos sobre la tabla entera, todo `C` y `X`, y leerlos como "sin mora" es la codificación
-   que diluye la señal rara. El nivel cliente los suma con `min_count=1`, así que el cliente con
-   algún crédito reportado sigue saliendo con su cuenta y solo el que los tiene todos ciegos
-   queda en NaN, que es lo correcto.
+1. **`BB_DPD_MONTHS` va a NaN sin ningún mes reportado**, no a 0. Son 130.368 créditos sobre la
+   tabla entera, todo `C` y `X`, y leerlos como "sin mora" es la codificación que diluye la señal
+   rara. El nivel cliente la suma con `min_count=1`, así que el cliente con algún crédito
+   reportado sigue saliendo con su cuenta y solo el que los tiene todos ciegos queda en NaN, que es
+   lo correcto. `BB_WORST` también sale NaN, pero eso ya lo daba el `max` del notebook.
 2. **Un hueco en la ventana revienta.** La contigüidad es lo que hace que `BB_MONTHS_OBS` sea la
    longitud de la ventana; sin ella la trayectoria del 3.3 parte por un punto medio que no lo es.
    De paso caza el par crédito-mes duplicado, que `limpiar_bureau_balance()` no busca a propósito.
 3. **El estado final se lee con `idxmax`** y no ordenando la tabla: el par crédito-mes es único,
-   así que el mes máximo es el último. Da lo mismo (comprobado sobre los 817.395) en 0,15 s en vez
-   de 3,56 s.
+   así que el mes máximo es el último. Da lo mismo (comprobado sobre los 817.395) en 0,04 s en vez
+   de 3,75 s.
 4. **Las dos proporciones se guardan de 0 a 1** y el notebook las imprimía en porcentaje. No mueve
-   ninguna decisión, porque los efectos de la receta son rank-biserial, pero un `BB_PCT_X` de
-   0,2229 es el 22,29% del EDA y no un desfase.
+   ninguna decisión, porque los efectos de la receta son rank-biserial, pero un `BB_PCT_X` de 0,25
+   es el 25% del notebook y no un desfase.
 
 **`SK_ID_BUREAU` sale en `int64`**, se cargue la tabla como se cargue (`uint32` desde
 `load_table`, `int64` desde un `read_csv` a pelo). Es el índice de esta salida y la clave que el
 3.4 cruza con `bureau`, así que dejarlo al gusto del cargador sería el patrón 12 sobre la clave.
 Se castea el índice de 817.395 valores, nunca la columna de 27,3 millones.
 
-**Coste medido sobre la tabla entera:** 4,1 segundos de punta a punta, de los que 0,7 son la
-agregación y 0,15 el estado final; el resto es la copia de las 27,3 millones de filas que hace la
-limpieza. El pico de RSS sigue siendo el parseo del CSV y no esto.
+**Coste medido sobre la tabla entera:** 0,74 segundos de punta a punta con la tabla ya cargada (1,5
+en la primera llamada del proceso), de los que 0,57 son la agregación, 0,09 la limpieza y 0,04 el
+estado final. El pico de RSS sigue siendo el parseo del CSV y no esto.
 """
 
 from __future__ import annotations
@@ -115,6 +115,8 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
     # en int8 si no introduce ningún NaN, y el esquema de un crédito no puede depender de con
     # quién le agreguen
     cred["BB_DPD_MONTHS"] = cred.pop("_dpd_months").astype(float).where(reportado)
+    # redundante hoy, porque el `max` de un crédito todo ciego ya es NaN, y a propósito: sostiene
+    # la regla si la severidad deja de agregarse con `max`
     cred["BB_WORST"] = cred["BB_WORST"].where(reportado)
     # sin `replace` del cero: el numerador ya es NaN donde el denominador es 0, que son los mismos
     # créditos, y NaN entre 0 es NaN

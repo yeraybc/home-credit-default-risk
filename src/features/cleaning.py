@@ -566,8 +566,8 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
     agrupa, y el puente, que la cruza con `bureau`. Las cinco columnas que esta función sí fija no
     dependen del lote.
 
-    **Todavía no tiene llamante fuera de `tests/`**, igual que `unir_bureau()` al cerrar el 2.2:
-    la engancha el nivel crédito, que es quien agrega este frame por `SK_ID_BUREAU`.
+    **Su llamante es `agregar_por_credito()`**, que la pasa por dentro antes de agregar este frame
+    por `SK_ID_BUREAU`.
     """
     bb = bb.copy()
     if "MONTHS_BALANCE" in bb.columns:
