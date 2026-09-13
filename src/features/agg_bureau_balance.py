@@ -21,8 +21,8 @@ diferencias con el notebook, que allí medía y aquí construye:
    lo correcto. `BB_WORST` también sale NaN, pero eso ya lo daba el `max` del notebook.
 2. **Un hueco en la ventana revienta.** La contigüidad es lo que hace que `BB_MONTHS_OBS` sea la
    longitud de la ventana; sin ella la trayectoria del 3.3 parte por un punto medio que no lo es.
-   Cuenta los meses distintos, así que caza también el par crédito-mes duplicado, que
-   `limpiar_bureau_balance()` no busca a propósito, aunque tape un hueco.
+   Caza también el par crédito-mes duplicado, que `limpiar_bureau_balance()` no busca a propósito,
+   aunque tape un hueco.
 3. **El estado final se lee con `idxmax`** y no ordenando la tabla: el par crédito-mes es único,
    así que el mes máximo es el último. Da lo mismo (comprobado sobre los 817.395) y es unas cien
    veces más rápido.
