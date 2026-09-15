@@ -1,8 +1,8 @@
 """Agregación de bureau_balance, capa 1 del pipeline de features.
 
 Primer paso de la **doble agregación** de la tabla: de crédito-mes a crédito. El segundo, de
-crédito a cliente, necesita el puente `SK_ID_BUREAU` a `SK_ID_CURR` que da `bureau` y llega en el
-3.4 y el 3.5.
+crédito a cliente, cruza ese paso con el puente `SK_ID_BUREAU` a `SK_ID_CURR` que da `bureau`
+(`puente_credito_cliente()`) y llega en el 3.5.
 
 Es capa 1 por lo mismo que `agg_bureau.py`: no estima nada, no mira al TARGET y **el agregado de
 un crédito solo depende de sus propias filas**. Por eso se calcula sobre los 817.395 créditos de
@@ -197,3 +197,34 @@ def trayectoria_por_credito(b: pd.DataFrame, g: pd.api.typing.DataFrameGroupBy) 
         pd.Series(clase, index=mitades.index).where(evaluable).astype(TRAYECTORIAS)
     )
     return mitades
+
+
+def puente_credito_cliente(bureau: pd.DataFrame) -> pd.Series:
+    """El `SK_ID_CURR` de cada crédito de `bureau`, indexado por `SK_ID_BUREAU` en `DTYPE_CLAVE`.
+
+    Sobre `bureau` entero y sin limpiar: la limpieza no borra filas ni toca las claves. No sabe
+    nada de los créditos huérfanos del panel, que tira el join del paso cliente.
+
+    Revienta con una clave nula y con un `SK_ID_BUREAU` repetido, aunque sea con el mismo cliente:
+    es PK hoy, y si dejara de serlo el join abriría créditos en silencio. `SK_ID_CURR` se queda
+    con el tipo del cargador, como en `agregar_bureau()`.
+    """
+    faltan = [c for c in (CLAVE, "SK_ID_CURR") if c not in bureau.columns]
+    if faltan:
+        raise ValueError(f"a bureau le faltan columnas para el puente: {faltan}")
+    nulas = bureau[[CLAVE, "SK_ID_CURR"]].isna().sum()
+    if nulas.any():
+        raise ValueError(
+            f"claves nulas en bureau: {nulas[nulas > 0].to_dict()}. Un crédito sin cliente no "
+            "llega a ninguno, y el groupby del paso cliente lo tiraría sin avisar"
+        )
+    repetidos = bureau[CLAVE].duplicated()
+    if repetidos.any():
+        raise ValueError(
+            f"{int(repetidos.sum())} {CLAVE} repetidos en bureau: "
+            f"{bureau.loc[repetidos, CLAVE][:10].tolist()}. El join con el paso crédito "
+            "duplicaría esos créditos sin que nada avise"
+        )
+    puente = bureau.set_index(CLAVE)["SK_ID_CURR"]
+    puente.index = puente.index.astype(DTYPE_CLAVE)
+    return puente

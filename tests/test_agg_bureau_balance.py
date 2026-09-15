@@ -12,8 +12,14 @@ from pandas.testing import assert_frame_equal
 
 from src.config import ruta
 from src.data.loader import TABLE_FILES, load_table
-from src.features.agg_bureau_balance import COLUMNAS_ORIGEN, TRAYECTORIAS, agregar_por_credito
-from src.features.cleaning import DTYPE_STATUS, limpiar_bureau_balance
+from src.features.agg_bureau_balance import (
+    COLUMNAS_ORIGEN,
+    TRAYECTORIAS,
+    agregar_por_credito,
+    puente_credito_cliente,
+)
+from src.features.cleaning import DTYPE_STATUS, limpiar_bureau, limpiar_bureau_balance
+from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Un crédito por caso de borde, con los meses en orden de más antiguo a más reciente. El agregado
 # que se espera de cada uno está calculado a mano en `ESPERADO`.
@@ -398,6 +404,86 @@ def test_la_ventana_contigua_de_un_solo_mes_no_revienta():
     assert agregar_por_credito(panel({7: (-96, ["0"])})).loc[7, "BB_MONTHS_OBS"] == 1
 
 
+# --- 3.4, el puente credito a cliente -----------------------------------------------------------
+
+
+@pytest.fixture
+def bureau():
+    """Un bureau sintético mínimo: solo las dos columnas que el puente necesita."""
+    return pd.DataFrame({"SK_ID_BUREAU": [1, 2, 3, 4], "SK_ID_CURR": [100, 100, 200, 300]})
+
+
+def test_el_puente_es_el_esperado_a_mano(bureau):
+    puente = puente_credito_cliente(bureau)
+    assert puente.to_dict() == {1: 100, 2: 100, 3: 200, 4: 300}
+    assert puente.index.dtype == "int64"
+    assert puente.index.name == "SK_ID_BUREAU"
+    assert puente.name == "SK_ID_CURR"
+
+
+def test_el_tipo_del_indice_coincide_con_el_del_paso_credito(bureau, agregado):
+    """Es lo que permite `cred.join(puente)` sin cruzar dos tipos en el 3.5."""
+    assert puente_credito_cliente(bureau).index.dtype == agregado.index.dtype
+
+
+@pytest.mark.parametrize("dtype", ["uint32", "int64", "float64"])
+def test_el_indice_del_puente_sale_en_int64_venga_como_venga_la_clave(bureau, dtype):
+    puente = puente_credito_cliente(bureau.astype({"SK_ID_BUREAU": dtype}))
+    assert puente.index.dtype == "int64"
+    assert puente.to_dict() == {1: 100, 2: 100, 3: 200, 4: 300}
+
+
+def test_un_bureau_vacio_da_un_puente_vacio_en_int64():
+    vacio = pd.DataFrame(columns=["SK_ID_BUREAU", "SK_ID_CURR"])
+    puente = puente_credito_cliente(vacio)
+    assert puente.empty
+    assert puente.index.dtype == "int64"
+
+
+def test_el_puente_no_muta_el_frame_de_entrada(bureau):
+    copia = bureau.copy()
+    puente_credito_cliente(bureau)
+    assert_frame_equal(bureau, copia)
+
+
+def test_el_puente_del_crudo_es_igual_al_del_limpio(bureau):
+    """La limpieza no borra filas ni toca las claves, y por eso el puente no la llama."""
+    assert puente_credito_cliente(bureau).equals(puente_credito_cliente(limpiar_bureau(bureau)))
+
+
+@pytest.mark.parametrize("columna", ["SK_ID_BUREAU", "SK_ID_CURR"])
+def test_una_columna_ausente_revienta_con_su_nombre(bureau, columna):
+    with pytest.raises(ValueError, match=columna):
+        puente_credito_cliente(bureau.drop(columns=[columna]))
+
+
+def test_una_sk_id_bureau_nula_revienta(bureau):
+    con_nula = bureau.astype({"SK_ID_BUREAU": float})
+    con_nula.loc[0, "SK_ID_BUREAU"] = np.nan
+    with pytest.raises(ValueError, match="SK_ID_BUREAU"):
+        puente_credito_cliente(con_nula)
+
+
+def test_una_sk_id_curr_nula_revienta(bureau):
+    con_nula = bureau.astype({"SK_ID_CURR": float})
+    con_nula.loc[0, "SK_ID_CURR"] = np.nan
+    with pytest.raises(ValueError, match="SK_ID_CURR"):
+        puente_credito_cliente(con_nula)
+
+
+def test_un_sk_id_bureau_repetido_revienta_aunque_sea_el_mismo_cliente(bureau):
+    repetido = pd.concat([bureau, bureau.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="repetidos"):
+        puente_credito_cliente(repetido)
+
+
+def test_un_sk_id_bureau_repetido_con_otro_cliente_revienta(bureau):
+    otro_cliente = pd.DataFrame({"SK_ID_BUREAU": [1], "SK_ID_CURR": [999]})
+    repetido = pd.concat([bureau, otro_cliente], ignore_index=True)
+    with pytest.raises(ValueError, match="repetidos"):
+        puente_credito_cliente(repetido)
+
+
 # --- la puerta del 3.2 contra el dato real ----------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -478,9 +564,9 @@ def dato_real():
     cred = agregar_por_credito(bb)
     bureau = load_table("bureau", usecols=["SK_ID_BUREAU", "SK_ID_CURR"])
     train = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
-    # el puente de producción es el 3.4; aquí solo hace falta el TARGET de los créditos enlazables
-    enlazados = bureau.merge(train, on="SK_ID_CURR")
-    target = pd.Series(enlazados.TARGET.to_numpy(), index=enlazados.SK_ID_BUREAU.astype("int64"))
+    puente = puente_credito_cliente(bureau)
+    # el TARGET solo existe para los créditos cuyo cliente está en train, con panel o sin él
+    target = puente.map(train.set_index("SK_ID_CURR")["TARGET"]).dropna()
     # 300 créditos al azar más los casos que el azar puede no traer, que es lo que decide si el
     # fila a fila caza algo: el ciego, el que es todo X, el de más meses en mora, el de la ventana
     # más larga y el estable más largo, que es la clase más rara de la trayectoria
@@ -498,6 +584,9 @@ def dato_real():
         "enlazables a train (EDA)": cred[cred.index.isin(target.index)],
         "target": target,
         "muestra": bb[bb.SK_ID_BUREAU.isin(muestra)],
+        "bb": bb,
+        "puente": puente,
+        "train_curr": train["SK_ID_CURR"],
     }
 
 
@@ -589,3 +678,93 @@ def test_la_trayectoria_reproduce_las_tasas_del_eda(dato_real):
     target = dato_real["target"].reindex(c.index)
     tasas = target.groupby(c["BB_CREDIT_TRAJECTORY"], observed=True).mean().mul(100).round(2)
     assert tasas.to_dict() == TASA_TRAYECTORIA_EDA
+
+
+# --- la puerta del 3.4 contra el dato real ------------------------------------------------------
+
+sin_split = pytest.mark.skipif(
+    not (ruta("processed_data") / NOMBRE_FICHERO).exists(),
+    reason="el split no viaja con el repo",
+)
+
+# El mismo desfase que ya declara el bloque 2 entre la tabla cruda del EDA (los 307.511 clientes
+# de train) y la población de modelado que deja el split (307.492): mueve las tres últimas cifras,
+# porque son las únicas que dependen de la lista de clientes.
+PUERTA_PUENTE = {
+    "crudo": {
+        "creditos con panel": 774_354,
+        "huerfanos": 43_041,
+        "filas huerfanas": 3_120_184,
+        "filas con padre": 24_179_741,
+        "filas con cliente fuera": 9_478_129,
+        "filas analizables": 14_701_612,
+        "creditos enlazables": 523_515,
+        "clientes con panel": 92_231,
+    },
+    "modelado": {
+        "creditos con panel": 774_354,
+        "huerfanos": 43_041,
+        "filas huerfanas": 3_120_184,
+        "filas con padre": 24_179_741,
+        "filas con cliente fuera": 9_479_158,
+        "filas analizables": 14_700_583,
+        "creditos enlazables": 523_473,
+        "clientes con panel": 92_220,
+    },
+}
+
+
+@sin_dato_real
+@sin_split
+@pytest.mark.parametrize("poblacion", sorted(PUERTA_PUENTE))
+def test_la_puerta_del_3_4_sobre_el_dato_real(dato_real, poblacion):
+    cred, puente, bb = dato_real["tabla entera (pipeline)"], dato_real["puente"], dato_real["bb"]
+    con_panel = puente.index.isin(cred.index)
+    huerfano = ~cred.index.isin(puente.index)
+    filas_huerfanas = int(bb["SK_ID_BUREAU"].astype("int64").isin(cred.index[huerfano]).sum())
+    enlazado = cred.join(puente, how="inner")
+    clientes = (
+        dato_real["train_curr"] if poblacion == "crudo" else cargar_split()["SK_ID_CURR"]
+    )
+    dentro = enlazado["SK_ID_CURR"].isin(clientes)
+    medido = {
+        "creditos con panel": int(con_panel.sum()),
+        "huerfanos": int(huerfano.sum()),
+        "filas huerfanas": filas_huerfanas,
+        "filas con padre": int(enlazado["BB_MONTHS_OBS"].sum()),
+        "filas con cliente fuera": int(enlazado.loc[~dentro, "BB_MONTHS_OBS"].sum()),
+        "filas analizables": int(enlazado.loc[dentro, "BB_MONTHS_OBS"].sum()),
+        "creditos enlazables": int(dentro.sum()),
+        "clientes con panel": enlazado.loc[dentro, "SK_ID_CURR"].nunique(),
+    }
+    assert medido == PUERTA_PUENTE[poblacion]
+
+
+# El perfil de los huérfanos frente a los créditos con padre, medido sobre las filas de bb, no
+# sobre los créditos: es lo que deja claro que lo que se pierde al enlazar es historia antigua,
+# cerrada y limpia.
+PERFIL_HUERFANOS = {
+    "huerfanos": {"meses (mediana)": 97.0, "% C": 67.03, "% X": 22.29, "% DPD": 0.93},
+    "con padre": {"meses (mediana)": 25.0, "% C": 47.79, "% X": 21.15, "% DPD": 1.30},
+}
+
+
+@sin_dato_real
+def test_el_perfil_de_los_huerfanos_sobre_el_dato_real(dato_real):
+    cred, puente = dato_real["tabla entera (pipeline)"], dato_real["puente"]
+    b = limpiar_bureau_balance(dato_real["bb"])
+    huerfano_credito = ~cred.index.isin(puente.index)
+    fila_huerfana = b["SK_ID_BUREAU"].astype("int64").isin(cred.index[huerfano_credito])
+    grupos = {
+        "huerfanos": (huerfano_credito, fila_huerfana),
+        "con padre": (~huerfano_credito, ~fila_huerfana),
+    }
+    for nombre, (m_cred, m_fila) in grupos.items():
+        s = b.loc[m_fila, "STATUS"].astype(str)
+        medido = {
+            "meses (mediana)": cred.loc[m_cred, "BB_MONTHS_OBS"].median(),
+            "% C": round(s.eq("C").mean() * 100, 2),
+            "% X": round(s.eq("X").mean() * 100, 2),
+            "% DPD": round(s.isin(list("12345")).mean() * 100, 2),
+        }
+        assert medido == PERFIL_HUERFANOS[nombre]
