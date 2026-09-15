@@ -357,6 +357,14 @@ def test_el_suelo_del_denominador_es_dominio_con_su_contraste_declarado():
     )
 
 
+def test_la_ventana_minima_de_la_trayectoria_es_dominio_con_su_contraste_declarado():
+    """La consume la capa 1 del 3.3, así que un `medido` la dejaría sin construir hasta el split."""
+    p = parametro("bb_min_meses_trayectoria")
+    assert p.procedencia == "dominio"
+    assert valor("bb_min_meses_trayectoria") == 6
+    assert "bb_min_meses_trayectoria" in con_contraste_pendiente()
+
+
 def test_el_cap_de_la_antiguedad_del_coche_es_estimado():
     """64 era exactamente el p99, así que el criterio de negocio no sostenía el valor."""
     assert parametro("app_cap_p99_own_car_age").procedencia == "estimado"

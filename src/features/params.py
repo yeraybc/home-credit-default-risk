@@ -389,11 +389,19 @@ PARAMS: dict[str, Parametro] = {
         "corte de la cola del conteo de créditos con histórico",
         "notebook 03 celda 59",
     ),
+    # Dominio y no medido, desde el 3.3, que es quien lo consume: el EDA no lo eligió contra la
+    # tasa de default, es que con menos de seis meses cada mitad se queda en uno o dos y la
+    # comparación entre ellas no dice nada de trayectoria.
     "bb_min_meses_trayectoria": Parametro(
         6,
-        "medido",
+        "dominio",
         "ventana mínima para partir el histórico en dos mitades y leer la trayectoria",
         "notebook 03 celda 37",
+        contraste_pendiente=(
+            "comprobar sobre el split que el orden de la trayectoria a nivel cliente (sin mora, "
+            "mejora, empeora y estable) no depende de la ventana mínima, o sea que la señal no "
+            "depende de este valor. Lo ejecuta el 3.9"
+        ),
     ),
     # previous_application: cortes medidos
     "prev_count_cola": Parametro(

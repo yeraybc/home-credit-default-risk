@@ -1,4 +1,4 @@
-"""Tests de la agregación de bureau_balance a nivel crédito (punto 3.2).
+"""Tests de la agregación de bureau_balance a nivel crédito (puntos 3.2 y 3.3).
 
 Todos sobre un panel sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `bureau_balance.csv`, `bureau.csv` y `application_train.csv` y
@@ -12,7 +12,7 @@ from pandas.testing import assert_frame_equal
 
 from src.config import ruta
 from src.data.loader import TABLE_FILES, load_table
-from src.features.agg_bureau_balance import COLUMNAS_ORIGEN, agregar_por_credito
+from src.features.agg_bureau_balance import COLUMNAS_ORIGEN, TRAYECTORIAS, agregar_por_credito
 from src.features.cleaning import DTYPE_STATUS, limpiar_bureau_balance
 
 # Un crédito por caso de borde, con los meses en orden de más antiguo a más reciente. El agregado
@@ -32,38 +32,106 @@ PANEL = {
     5: (-3, ["0", "5"]),
     # 6: con meses reportados y ninguna mora, la referencia que exige el 0 donde el ciego lleva NaN
     6: (-2, ["X", "0", "0"]),
+    # Del 8 en adelante, la trayectoria: todos con la ventana mínima. El 4 hace de borde que no
+    # entra, con 5 meses y las dos mitades reportadas, y el 7 lo usa un test de la guarda.
+    # 8: sin mora con la ventana justa de 6, el borde que sí entra
+    8: (-5, ["0", "0", "X", "0", "0", "C"]),
+    # 9: la única mora en el mes central de una ventana impar, que va a la mitad antigua; si fuera
+    # a la reciente saldría empeora
+    9: (-6, ["0", "0", "0", "1", "0", "0", "0"]),
+    # 10: mejora por severidad sin salir de mora, censurado y en el borde antiguo del panel, donde
+    # `ini + fin` ya no cabe en el int8 del mes y un punto medio sumado se desbordaría
+    10: (-95, ["3", "3", "3", "1", "1", "1"]),
+    # 11: empeora
+    11: (-5, ["0", "0", "0", "0", "1", "2"]),
+    # 12: estable, con el mismo peor estado en las dos mitades
+    12: (-7, ["1", "0", "0", "0", "0", "0", "1", "X"]),
+    # 13: la reciente toda C, que el notebook leía como 0 y clasificaba de mejora
+    13: (-5, ["1", "0", "0", "C", "C", "C"]),
+    # 14: la antigua toda X, que el notebook clasificaba de empeora
+    14: (-5, ["X", "X", "X", "0", "1", "0"]),
 }
 
+# Los seis primeros no llegan a la ventana mínima, así que su trayectoria es NaN aunque sus mitades
+# tengan valor
 ESPERADO = {
     1: {
         "BB_MONTHS_OBS": 3, "BB_MONTHS_REPORTED": 0, "BB_WORST": np.nan, "BB_PCT_X": 1 / 3,
         "BB_WINDOW_INI": -2, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": np.nan, "BB_PCT_DPD": np.nan,
         "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": np.nan, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": np.nan, "BB_WORST_RECENT_HALF": np.nan, "BB_CREDIT_TRAJECTORY": np.nan,
     },
     2: {
         "BB_MONTHS_OBS": 2, "BB_MONTHS_REPORTED": 0, "BB_WORST": np.nan, "BB_PCT_X": 1.0,
         "BB_WINDOW_INI": -6, "BB_WINDOW_END": -5, "BB_DPD_MONTHS": np.nan, "BB_PCT_DPD": np.nan,
         "BB_LAST_STATUS": "X", "BB_LAST_DPD_MONTH": np.nan, "BB_CENSORED": 1,
+        "BB_WORST_OLD_HALF": np.nan, "BB_WORST_RECENT_HALF": np.nan, "BB_CREDIT_TRAJECTORY": np.nan,
     },
     3: {
         "BB_MONTHS_OBS": 1, "BB_MONTHS_REPORTED": 1, "BB_WORST": 1.0, "BB_PCT_X": 0.0,
         "BB_WINDOW_INI": 0, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 1.0,
         "BB_LAST_STATUS": "1", "BB_LAST_DPD_MONTH": 0.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 1.0, "BB_WORST_RECENT_HALF": np.nan, "BB_CREDIT_TRAJECTORY": np.nan,
     },
     4: {
         "BB_MONTHS_OBS": 5, "BB_MONTHS_REPORTED": 4, "BB_WORST": 2.0, "BB_PCT_X": 0.0,
         "BB_WINDOW_INI": -4, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 2.0, "BB_PCT_DPD": 0.5,
         "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": -2.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 2.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": np.nan,
     },
     5: {
         "BB_MONTHS_OBS": 2, "BB_MONTHS_REPORTED": 2, "BB_WORST": 5.0, "BB_PCT_X": 0.0,
         "BB_WINDOW_INI": -3, "BB_WINDOW_END": -2, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 0.5,
         "BB_LAST_STATUS": "5", "BB_LAST_DPD_MONTH": -2.0, "BB_CENSORED": 1,
+        "BB_WORST_OLD_HALF": 0.0, "BB_WORST_RECENT_HALF": 5.0, "BB_CREDIT_TRAJECTORY": np.nan,
     },
     6: {
         "BB_MONTHS_OBS": 3, "BB_MONTHS_REPORTED": 2, "BB_WORST": 0.0, "BB_PCT_X": 1 / 3,
         "BB_WINDOW_INI": -2, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 0.0, "BB_PCT_DPD": 0.0,
         "BB_LAST_STATUS": "0", "BB_LAST_DPD_MONTH": np.nan, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 0.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": np.nan,
+    },
+    8: {
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 4, "BB_WORST": 0.0, "BB_PCT_X": 1 / 6,
+        "BB_WINDOW_INI": -5, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 0.0, "BB_PCT_DPD": 0.0,
+        "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": np.nan, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 0.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": "sin mora",
+    },
+    9: {
+        "BB_MONTHS_OBS": 7, "BB_MONTHS_REPORTED": 7, "BB_WORST": 1.0, "BB_PCT_X": 0.0,
+        "BB_WINDOW_INI": -6, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 1 / 7,
+        "BB_LAST_STATUS": "0", "BB_LAST_DPD_MONTH": -3.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 1.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": "mejora",
+    },
+    10: {
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 6, "BB_WORST": 3.0, "BB_PCT_X": 0.0,
+        "BB_WINDOW_INI": -95, "BB_WINDOW_END": -90, "BB_DPD_MONTHS": 6.0, "BB_PCT_DPD": 1.0,
+        "BB_LAST_STATUS": "1", "BB_LAST_DPD_MONTH": -90.0, "BB_CENSORED": 1,
+        "BB_WORST_OLD_HALF": 3.0, "BB_WORST_RECENT_HALF": 1.0, "BB_CREDIT_TRAJECTORY": "mejora",
+    },
+    11: {
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 6, "BB_WORST": 2.0, "BB_PCT_X": 0.0,
+        "BB_WINDOW_INI": -5, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 2.0, "BB_PCT_DPD": 1 / 3,
+        "BB_LAST_STATUS": "2", "BB_LAST_DPD_MONTH": 0.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 0.0, "BB_WORST_RECENT_HALF": 2.0, "BB_CREDIT_TRAJECTORY": "empeora",
+    },
+    12: {
+        "BB_MONTHS_OBS": 8, "BB_MONTHS_REPORTED": 7, "BB_WORST": 1.0, "BB_PCT_X": 1 / 8,
+        "BB_WINDOW_INI": -7, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 2.0, "BB_PCT_DPD": 2 / 7,
+        "BB_LAST_STATUS": "X", "BB_LAST_DPD_MONTH": -1.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 1.0, "BB_WORST_RECENT_HALF": 1.0, "BB_CREDIT_TRAJECTORY": "estable",
+    },
+    13: {
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 3, "BB_WORST": 1.0, "BB_PCT_X": 0.0,
+        "BB_WINDOW_INI": -5, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 1 / 3,
+        "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": -5.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": 1.0, "BB_WORST_RECENT_HALF": np.nan, "BB_CREDIT_TRAJECTORY": np.nan,
+    },
+    14: {
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 3, "BB_WORST": 1.0, "BB_PCT_X": 0.5,
+        "BB_WINDOW_INI": -5, "BB_WINDOW_END": 0, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 1 / 3,
+        "BB_LAST_STATUS": "0", "BB_LAST_DPD_MONTH": -1.0, "BB_CENSORED": 0,
+        "BB_WORST_OLD_HALF": np.nan, "BB_WORST_RECENT_HALF": 1.0, "BB_CREDIT_TRAJECTORY": np.nan,
     },
 }
 
@@ -122,6 +190,25 @@ def test_el_fixture_ejercita_cada_rama(agregado):
     # la recencia tiene que poder distinguirse del primer impago en algún crédito
     ultimo_no_es_primero = agregado.loc[4, "BB_LAST_DPD_MONTH"] > ESPERADO[4]["BB_WINDOW_INI"]
     assert ultimo_no_es_primero, "falta el crédito con mora en meses no consecutivos"
+    # la trayectoria
+    trayectoria = agregado["BB_CREDIT_TRAJECTORY"]
+    assert set(trayectoria.dropna()) == set(TRAYECTORIAS.categories), "falta alguna clase"
+    ant, rec = agregado["BB_WORST_OLD_HALF"], agregado["BB_WORST_RECENT_HALF"]
+    larga = agregado["BB_MONTHS_OBS"].ge(6)
+    assert (larga & ant.isna() & rec.notna()).any(), "falta el de la mitad antigua ciega"
+    assert (larga & rec.isna() & ant.notna()).any(), "falta el de la mitad reciente ciega"
+    corta_evaluable = agregado["BB_MONTHS_OBS"].eq(5) & ant.notna() & rec.notna()
+    assert corta_evaluable.any(), "falta la ventana de 5 con las dos mitades, el borde que no entra"
+    justa = agregado["BB_MONTHS_OBS"].eq(6) & trayectoria.notna()
+    assert justa.any(), "falta la ventana de 6 clasificada, el borde que sí entra"
+    assert (trayectoria.eq("mejora") & rec.gt(0)).any(), "falta la mejora que sigue en mora"
+    impar = agregado["BB_MONTHS_OBS"].mod(2).eq(1) & larga
+    medio = (agregado["BB_WINDOW_INI"] + agregado["BB_WINDOW_END"]) // 2
+    mora_en_el_medio = impar & agregado["BB_LAST_DPD_MONTH"].eq(medio) & agregado["BB_WORST"].gt(0)
+    assert mora_en_el_medio.any(), "falta la ventana impar con la mora en el mes central"
+    extremos = agregado["BB_WINDOW_INI"].astype(int) + agregado["BB_WINDOW_END"].astype(int)
+    desborda = extremos.lt(-128) & trayectoria.notna()
+    assert desborda.any(), "falta el clasificado con ini + fin fuera del int8, el que desborda"
 
 
 def test_cada_columna_de_la_salida_varia_entre_creditos(agregado):
@@ -180,6 +267,13 @@ def test_sin_mes_reportado_la_severidad_y_la_intensidad_son_nan_y_no_cero(agrega
     assert agregado.loc[6, "BB_DPD_MONTHS"] == 0
 
 
+def test_la_mitad_ciega_no_se_lee_como_sin_mora_y_deja_la_trayectoria_en_nan(agregado):
+    """La ceguera se concentra en sin mora y mejora, así que con un 0 esas dos se inflan."""
+    ciega = agregado["BB_WORST_OLD_HALF"].isna() | agregado["BB_WORST_RECENT_HALF"].isna()
+    corta = agregado["BB_MONTHS_OBS"].lt(6)
+    assert agregado["BB_CREDIT_TRAJECTORY"].isna().equals(ciega | corta)
+
+
 def test_la_particion_de_estados_cuadra_con_la_ventana(bb, agregado):
     """Los meses cerrados, los ausentes y los reportados suman la ventana entera."""
     limpio = limpiar_bureau_balance(bb)
@@ -221,6 +315,14 @@ def test_el_estado_final_conserva_los_ocho_niveles_aunque_el_lote_traiga_tres(ag
     assert list(agregado["BB_LAST_STATUS"].cat.categories) == list(DTYPE_STATUS.categories)
 
 
+def test_la_trayectoria_conserva_sus_cuatro_niveles_ordenados_aunque_el_lote_traiga_uno(bb):
+    """El orden es la prioridad del peor recorrido, que el nivel cliente lee con un max."""
+    solo = agregar_por_credito(bb[bb["SK_ID_BUREAU"].eq(11)])["BB_CREDIT_TRAJECTORY"]
+    assert solo.dtype == TRAYECTORIAS
+    assert solo.cat.ordered
+    assert list(solo.cat.categories) == ["sin mora", "mejora", "empeora", "estable"]
+
+
 def test_la_salida_tiene_el_esquema_declarado(agregado):
     """En absoluto y no comparando dos lotes entre sí.
 
@@ -239,6 +341,9 @@ def test_la_salida_tiene_el_esquema_declarado(agregado):
         "BB_LAST_STATUS": "category",
         "BB_LAST_DPD_MONTH": "float64",
         "BB_CENSORED": "int8",
+        "BB_WORST_OLD_HALF": "float32",
+        "BB_WORST_RECENT_HALF": "float32",
+        "BB_CREDIT_TRAJECTORY": "category",
     }
 
 
@@ -340,28 +445,57 @@ ULTIMO_ESTADO = {
     "tabla entera (pipeline)": {"C": 449_603, "X": 203_003, "0": 157_328, "5": 1_258},
 }
 
+# La puerta del 3.3. La trayectoria solo clasifica con las dos mitades reportadas, así que el
+# contraste sin restringir es el del notebook, que leía la mitad ciega como 0; se recalcula aquí
+# para que la diferencia quede medida y no supuesta.
+PUERTA_TRAYECTORIA = {
+    "enlazables a train (EDA)": {
+        "ventana de 6 meses o más": 470_762,
+        "con alguna mitad ciega": 274_388,
+        "clases": {"sin mora": 157_225, "mejora": 13_664, "empeora": 16_380, "estable": 9_105},
+        "sin restringir": {
+            "sin mora": 404_631, "mejora": 39_931, "empeora": 17_095, "estable": 9_105
+        },
+    },
+    "tabla entera (pipeline)": {
+        "ventana de 6 meses o más": 751_038,
+        "con alguna mitad ciega": 462_491,
+        "clases": {"sin mora": 230_623, "mejora": 21_465, "empeora": 23_217, "estable": 13_242},
+        "sin restringir": {
+            "sin mora": 649_963, "mejora": 63_528, "empeora": 24_305, "estable": 13_242
+        },
+    },
+}
+
+# el orden del EDA, con las tasas de default de cada clase sobre los enlazables
+TASA_TRAYECTORIA_EDA = {"sin mora": 8.14, "mejora": 9.57, "empeora": 11.98, "estable": 12.40}
+
 
 @pytest.fixture(scope="module")
 def dato_real():
     bb = load_table("bureau_balance")
     cred = agregar_por_credito(bb)
     bureau = load_table("bureau", usecols=["SK_ID_BUREAU", "SK_ID_CURR"])
-    train = load_table("application_train", usecols=["SK_ID_CURR"]).SK_ID_CURR
-    # el puente de producción es el 3.4; aquí solo hace falta la lista de créditos enlazables
-    enlazables = bureau.SK_ID_BUREAU[bureau.SK_ID_CURR.isin(set(train))]
-    # 300 créditos al azar más los cuatro casos que el azar puede no traer, que es lo que decide
-    # si el fila a fila caza algo: el ciego, el que es todo X, el de más meses en mora y el de la
-    # ventana más larga
+    train = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    # el puente de producción es el 3.4; aquí solo hace falta el TARGET de los créditos enlazables
+    enlazados = bureau.merge(train, on="SK_ID_CURR")
+    target = pd.Series(enlazados.TARGET.to_numpy(), index=enlazados.SK_ID_BUREAU.astype("int64"))
+    # 300 créditos al azar más los casos que el azar puede no traer, que es lo que decide si el
+    # fila a fila caza algo: el ciego, el que es todo X, el de más meses en mora, el de la ventana
+    # más larga y el estable más largo, que es la clase más rara de la trayectoria
+    estables = cred["BB_CREDIT_TRAJECTORY"].eq("estable")
     muestra = {
         *np.random.default_rng(0).choice(cred.index, 300, replace=False).tolist(),
         int(cred.index[cred["BB_MONTHS_REPORTED"].eq(0)][0]),
         int(cred.index[cred["BB_PCT_X"].eq(1.0)][0]),
         int(cred["BB_DPD_MONTHS"].idxmax()),
         int(cred["BB_MONTHS_OBS"].idxmax()),
+        int(cred.loc[estables, "BB_MONTHS_OBS"].idxmax()),
     }
     return {
         "tabla entera (pipeline)": cred,
-        "enlazables a train (EDA)": cred[cred.index.isin(set(enlazables))],
+        "enlazables a train (EDA)": cred[cred.index.isin(target.index)],
+        "target": target,
         "muestra": bb[bb.SK_ID_BUREAU.isin(muestra)],
     }
 
@@ -418,3 +552,39 @@ def test_la_severidad_y_la_intensidad_son_nan_en_los_130368_ciegos(dato_real):
     assert int(ciego.sum()) == 130_368
     assert c["BB_WORST"].isna().equals(ciego)
     assert c["BB_DPD_MONTHS"].isna().equals(ciego)
+
+
+# --- la puerta del 3.3 contra el dato real ----------------------------------------------------
+
+
+@sin_dato_real
+@pytest.mark.parametrize("poblacion", sorted(PUERTA_TRAYECTORIA))
+def test_la_puerta_del_3_3_sobre_el_dato_real(dato_real, poblacion):
+    c = dato_real[poblacion]
+    larga = c["BB_MONTHS_OBS"].ge(6)
+    trayectoria = c["BB_CREDIT_TRAJECTORY"]
+    # el notebook: la mitad ciega cuenta como 0 y todo crédito largo recibe clase
+    ant = c.loc[larga, "BB_WORST_OLD_HALF"].fillna(0)
+    rec = c.loc[larga, "BB_WORST_RECENT_HALF"].fillna(0)
+    notebook = np.select(
+        [(ant == 0) & (rec == 0), rec > ant, rec < ant],
+        ["sin mora", "empeora", "mejora"],
+        "estable",
+    )
+    medido = {
+        "ventana de 6 meses o más": int(larga.sum()),
+        "con alguna mitad ciega": int((larga & trayectoria.isna()).sum()),
+        "clases": {k: int(v) for k, v in trayectoria.value_counts().items()},
+        "sin restringir": {k: int(v) for k, v in pd.Series(notebook).value_counts().items()},
+    }
+    # las clases se cuentan sobre todos los créditos, así que un corto clasificado ya la descuadra
+    assert medido == PUERTA_TRAYECTORIA[poblacion]
+
+
+@sin_dato_real
+def test_la_trayectoria_reproduce_las_tasas_del_eda(dato_real):
+    """Con la jerarquía en el orden del EDA, y la persistencia por encima del deterioro."""
+    c = dato_real["enlazables a train (EDA)"]
+    target = dato_real["target"].reindex(c.index)
+    tasas = target.groupby(c["BB_CREDIT_TRAJECTORY"], observed=True).mean().mul(100).round(2)
+    assert tasas.to_dict() == TASA_TRAYECTORIA_EDA

@@ -11,8 +11,8 @@ pura y no transformer. Las cifras del EDA y las de aquí no coinciden y las dos 
 que `bureau_t` frente a `bureau`; quien recorta la población es el puente, un paso más arriba.
 
 Traslada la celda de los ejes derivados del notebook 03 (el `groupby("SK_ID_BUREAU").agg(...)` de
-la celda 30 cuando se escribió), con la ventana de la 34 y el estado final de la 39. Cuatro
-diferencias con el notebook, que allí medía y aquí construye:
+la celda 30 cuando se escribió), con la ventana de la 34, la trayectoria por mitades de la 37 y el
+estado final de la 39. Cinco diferencias con el notebook, que allí medía y aquí construye:
 
 1. **`BB_DPD_MONTHS` va a NaN sin ningún mes reportado**, no a 0. Son 130.368 créditos sobre la
    tabla entera, todo `C` y `X`, y leerlos como "sin mora" es la codificación que diluye la señal
@@ -29,6 +29,12 @@ diferencias con el notebook, que allí medía y aquí construye:
 4. **Las dos proporciones se guardan de 0 a 1** y el notebook las imprimía en porcentaje. No mueve
    ninguna decisión, porque los efectos de la receta son rank-biserial, pero un `BB_PCT_X` de 0,25
    es el 25% del notebook y no un desfase.
+5. **La trayectoria no clasifica la mitad ciega.** El notebook leía la mitad sin ningún mes
+   reportado como un 0 y la clasificaba igual, y la ceguera se concentra en sin mora y mejora
+   (el 61,14% y el 65,78% en los enlazables a train), que son los créditos que se cierran antes.
+   Aquí el peor estado de esa mitad es NaN y la trayectoria también, y no mueve la clase de ningún
+   crédito con las dos mitades reportadas. Sobre la tabla entera clasifica 288.547 de los 751.038
+   con ventana de 6 meses o más: sin mora 230.623, mejora 21.465, empeora 23.217 y estable 13.242.
 
 **`SK_ID_BUREAU` sale en `int64`**, se cargue la tabla como se cargue (`uint32` desde
 `load_table`, `int64` desde un `read_csv` a pelo). Es el índice de esta salida y la clave que el
@@ -39,11 +45,13 @@ Se castea el índice de 817.395 valores, nunca la columna de 27,3 millones.
 mitad en la guarda del duplicado, que ordena los 27,3 millones de pares, y la otra mitad en la
 agregación; la limpieza y el estado final no pasan de 0,2. Entre ejecuciones los absolutos se mueven
 hasta el doble y el reparto no. El pico de RSS lo sube este paso a 2,9 GB, desde los 2,4 de la carga
-con `load_table`.
+con `load_table`. La trayectoria añade 0,4 segundos y medio GB de pico, hasta 3,5, medido en proceso
+limpio contra la misma función sin ella (1,6 frente a 2,0 segundos esa vez).
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.features.cleaning import (
@@ -53,6 +61,7 @@ from src.features.cleaning import (
     MESES_BB,
     limpiar_bureau_balance,
 )
+from src.features.params import valor
 
 CLAVE = "SK_ID_BUREAU"
 
@@ -64,6 +73,9 @@ DTYPE_CLAVE = "int64"
 # Las tres columnas de la tabla. La agregación es la frontera que produce los ejes del crédito,
 # así que exige su esquema: una ausente en silencio saldría como "sin dato" en todo lo que la lee.
 COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
+
+# ordenada por prioridad del peor recorrido, que es lo que el nivel cliente del 3.6 toma con un max
+TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
 
 def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
@@ -121,6 +133,7 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
     par += b["MONTHS_BALANCE"].to_numpy("int64") - MESES_BB[0]
     par.sort()
     duplicados = par[1:][par[1:] == par[:-1]] // ancho
+    del par  # 218 MB vivos durante la trayectoria: sin soltarlos el pico pasa de 3,5 a 3,8 GB
     rota = hueco | cred.index.isin(duplicados)
     if rota.any():
         raise ValueError(
@@ -145,5 +158,42 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
     en_mora = b.loc[b[COL_BB_IS_DPD].eq(1)].groupby(CLAVE)["MONTHS_BALANCE"].max()
     cred["BB_LAST_DPD_MONTH"] = en_mora.reindex(cred.index).astype(float)
     cred["BB_CENSORED"] = (cred["BB_WINDOW_END"] < 0).astype("int8")
+    cred = cred.join(trayectoria_por_credito(b, g))
     cred.index = cred.index.astype(DTYPE_CLAVE)
     return cred
+
+
+def trayectoria_por_credito(b: pd.DataFrame, g: pd.api.typing.DataFrameGroupBy) -> pd.DataFrame:
+    """La trayectoria por mitades de cada crédito, sobre el frame limpio y la ventana ya guardada.
+
+    Solo la llama `agregar_por_credito()`, después de la guarda: parte la ventana por su punto
+    medio, y sin contigüidad ese punto no lo es. Tres columnas:
+
+    - `BB_WORST_OLD_HALF` y `BB_WORST_RECENT_HALF` (`w_ant`, `w_rec`), el peor estado de cada
+      mitad, NaN en la mitad sin ningún mes reportado.
+    - `BB_CREDIT_TRAJECTORY` (`trayectoria`), sin mora, mejora, empeora o estable, NaN si la
+      ventana no llega a `bb_min_meses_trayectoria` o si alguna mitad es ciega.
+    """
+    mes = b["MONTHS_BALANCE"].to_numpy()
+    ini = g["MONTHS_BALANCE"].transform("min").to_numpy()
+    fin = g["MONTHS_BALANCE"].transform("max").to_numpy()
+    # `mes > (ini + fin) / 2` sin salir del int8: las dos distancias caben en 0 a 96. Con ventana
+    # impar el mes central queda en la antigua, como en el notebook
+    reciente = mes - ini > fin - mes
+    dpd = b[COL_BB_DPD]
+    mitades = pd.DataFrame(
+        {"BB_WORST_OLD_HALF": dpd.where(~reciente), "BB_WORST_RECENT_HALF": dpd.where(reciente)}
+    )
+    mitades = mitades.groupby(b[CLAVE], sort=True).max()
+    ant, rec = mitades["BB_WORST_OLD_HALF"], mitades["BB_WORST_RECENT_HALF"]
+    evaluable = (g.size() >= valor("bb_min_meses_trayectoria")) & ant.notna() & rec.notna()
+    # como el notebook, mejora es por severidad: un 3 que pasa a 1 mejora aunque siga en mora
+    clase = np.select(
+        [(ant == 0) & (rec == 0), rec > ant, rec < ant],
+        ["sin mora", "empeora", "mejora"],
+        "estable",
+    )
+    mitades["BB_CREDIT_TRAJECTORY"] = (
+        pd.Series(clase, index=mitades.index).where(evaluable).astype(TRAYECTORIAS)
+    )
+    return mitades
