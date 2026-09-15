@@ -205,9 +205,11 @@ def puente_credito_cliente(bureau: pd.DataFrame) -> pd.Series:
     Sobre `bureau` entero y sin limpiar: la limpieza no borra filas ni toca las claves. No sabe
     nada de los créditos huérfanos del panel, que tira el join del paso cliente.
 
-    Revienta con una clave nula y con un `SK_ID_BUREAU` repetido, aunque sea con el mismo cliente:
-    es PK hoy, y si dejara de serlo el join abriría créditos en silencio. `SK_ID_CURR` se queda
-    con el tipo del cargador, como en `agregar_bureau()`.
+    Revienta con una clave nula, con un `SK_ID_BUREAU` repetido (aunque sea con el mismo cliente,
+    es PK hoy, y si dejara de serlo el join abriría créditos en silencio) y con una clave con
+    decimales: un `1.5` truncado por el cast cruzaría con el crédito `1`, el mismo caso que el mes
+    de `limpiar_bureau_balance()`. `SK_ID_CURR` se queda con el tipo del cargador, como en
+    `agregar_bureau()`.
     """
     faltan = [c for c in (CLAVE, "SK_ID_CURR") if c not in bureau.columns]
     if faltan:
@@ -217,6 +219,11 @@ def puente_credito_cliente(bureau: pd.DataFrame) -> pd.Series:
         raise ValueError(
             f"claves nulas en bureau: {nulas[nulas > 0].to_dict()}. Un crédito sin cliente no "
             "llega a ninguno, y el groupby del paso cliente lo tiraría sin avisar"
+        )
+    if not pd.api.types.is_integer_dtype(bureau[CLAVE]) and bureau[CLAVE].mod(1).ne(0).any():
+        raise ValueError(
+            f"{CLAVE} con decimales: el cast a {DTYPE_CLAVE} los truncaría y cruzaría créditos "
+            "distintos sin que nada avise"
         )
     repetidos = bureau[CLAVE].duplicated()
     if repetidos.any():

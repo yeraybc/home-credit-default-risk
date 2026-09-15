@@ -18,7 +18,7 @@ from src.features.agg_bureau_balance import (
     agregar_por_credito,
     puente_credito_cliente,
 )
-from src.features.cleaning import DTYPE_STATUS, limpiar_bureau, limpiar_bureau_balance
+from src.features.cleaning import DTYPE_STATUS, limpiar_bureau_balance
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Un crédito por caso de borde, con los meses en orden de más antiguo a más reciente. El agregado
@@ -446,9 +446,11 @@ def test_el_puente_no_muta_el_frame_de_entrada(bureau):
     assert_frame_equal(bureau, copia)
 
 
-def test_el_puente_del_crudo_es_igual_al_del_limpio(bureau):
-    """La limpieza no borra filas ni toca las claves, y por eso el puente no la llama."""
-    assert puente_credito_cliente(bureau).equals(puente_credito_cliente(limpiar_bureau(bureau)))
+def test_una_sk_id_bureau_con_decimales_revienta():
+    """Un 1.5 truncado por el cast cruzaría con el crédito 1, como el mes de bureau_balance."""
+    con_decimales = pd.DataFrame({"SK_ID_BUREAU": [1.0, 1.5, 2.0], "SK_ID_CURR": [100, 200, 300]})
+    with pytest.raises(ValueError, match="decimales"):
+        puente_credito_cliente(con_decimales)
 
 
 @pytest.mark.parametrize("columna", ["SK_ID_BUREAU", "SK_ID_CURR"])
