@@ -742,9 +742,9 @@ def test_la_puerta_del_3_4_sobre_el_dato_real(dato_real, poblacion):
     assert medido == PUERTA_PUENTE[poblacion]
 
 
-# El perfil de los huérfanos frente a los créditos con padre, medido sobre las filas de bb, no
-# sobre los créditos: es lo que deja claro que lo que se pierde al enlazar es historia antigua,
-# cerrada y limpia.
+# El perfil de los huérfanos frente a los créditos con padre: la mediana de meses es por crédito
+# (BB_MONTHS_OBS) y las tres proporciones son por fila de bb. Es lo que deja claro que lo que se
+# pierde al enlazar es historia antigua, cerrada y limpia.
 PERFIL_HUERFANOS = {
     "huerfanos": {"meses (mediana)": 97.0, "% C": 67.03, "% X": 22.29, "% DPD": 0.93},
     "con padre": {"meses (mediana)": 25.0, "% C": 47.79, "% X": 21.15, "% DPD": 1.30},
