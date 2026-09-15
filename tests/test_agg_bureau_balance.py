@@ -202,11 +202,12 @@ def test_el_fixture_ejercita_cada_rama(agregado):
     justa = agregado["BB_MONTHS_OBS"].eq(6) & trayectoria.notna()
     assert justa.any(), "falta la ventana de 6 clasificada, el borde que sí entra"
     assert (trayectoria.eq("mejora") & rec.gt(0)).any(), "falta la mejora que sigue en mora"
+    # la ventana sale en int8, así que la suma de sus extremos va en un tipo ancho
+    extremos = agregado["BB_WINDOW_INI"].astype(int) + agregado["BB_WINDOW_END"].astype(int)
     impar = agregado["BB_MONTHS_OBS"].mod(2).eq(1) & larga
-    medio = (agregado["BB_WINDOW_INI"] + agregado["BB_WINDOW_END"]) // 2
+    medio = extremos // 2
     mora_en_el_medio = impar & agregado["BB_LAST_DPD_MONTH"].eq(medio) & agregado["BB_WORST"].gt(0)
     assert mora_en_el_medio.any(), "falta la ventana impar con la mora en el mes central"
-    extremos = agregado["BB_WINDOW_INI"].astype(int) + agregado["BB_WINDOW_END"].astype(int)
     desborda = extremos.lt(-128) & trayectoria.notna()
     assert desborda.any(), "falta el clasificado con ini + fin fuera del int8, el que desborda"
 
