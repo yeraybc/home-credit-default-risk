@@ -1002,7 +1002,7 @@ def test_la_union_no_rellena_y_marca_la_presencia(clientes, por_cliente):
     sin_historico = unido[unido["HAS_BUREAU_BALANCE"].eq(0)]
     assert sin_historico[por_cliente.columns].isna().all().all()
     # y el cliente con histórico y sin mora conserva su 0, que el relleno no puede inventar
-    assert unido.loc[unido["SK_ID_CURR"].eq(300), "BB_CREDITS_WITH_DPD_COUNT"].iloc[0] == 2
+    assert unido.loc[unido["SK_ID_CURR"].eq(400), "BB_CREDITS_WITH_DPD_COUNT"].iloc[0] == 0
 
 
 def test_la_union_no_altera_filas_ni_orden(clientes, por_cliente):
