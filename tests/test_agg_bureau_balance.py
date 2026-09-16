@@ -53,7 +53,7 @@ PANEL = {
     5: (-3, ["0", "5"]),
     # 6: con meses reportados y ninguna mora, la referencia que exige el 0 donde el ciego lleva NaN
     6: (-2, ["X", "0", "0"]),
-    # Del 8 en adelante, la trayectoria: todos con la ventana mínima. El 4 hace de borde que no
+    # Del 8 al 15, la trayectoria: todos con la ventana mínima. El 4 hace de borde que no
     # entra, con 5 meses y las dos mitades reportadas, y el 7 lo usa un test de la guarda.
     # 8: sin mora con la ventana justa de 6, el borde que sí entra
     8: (-5, ["0", "0", "X", "0", "0", "C"]),
@@ -75,10 +75,12 @@ PANEL = {
     # 15: sin mora, censurado y cerrado; en el cliente 500 deja la peor trayectoria en medio y no al
     # final, que es lo que separa el max de un last
     15: (-11, ["0", "0", "0", "0", "0", "C"]),
+    # 16: fallido que después se cierra, lo que separa el fallido por severidad del último estado
+    16: (-3, ["5", "C", "C"]),
 }
 
-# Los seis primeros no llegan a la ventana mínima, así que su trayectoria es NaN aunque sus mitades
-# tengan valor
+# Los seis primeros y el 16 no llegan a la ventana mínima, así que su trayectoria es NaN aunque sus
+# mitades tengan valor
 ESPERADO = {
     1: {
         "BB_MONTHS_OBS": 3, "BB_MONTHS_REPORTED": 0, "BB_WORST": np.nan, "BB_PCT_X": 1 / 3,
@@ -163,6 +165,12 @@ ESPERADO = {
         "BB_WINDOW_INI": -11, "BB_WINDOW_END": -6, "BB_DPD_MONTHS": 0.0, "BB_PCT_DPD": 0.0,
         "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": np.nan, "BB_CENSORED": 1,
         "BB_WORST_OLD_HALF": 0.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": "sin mora",
+    },
+    16: {
+        "BB_MONTHS_OBS": 3, "BB_MONTHS_REPORTED": 1, "BB_WORST": 5.0, "BB_PCT_X": 0.0,
+        "BB_WINDOW_INI": -3, "BB_WINDOW_END": -1, "BB_DPD_MONTHS": 1.0, "BB_PCT_DPD": 1.0,
+        "BB_LAST_STATUS": "C", "BB_LAST_DPD_MONTH": -3.0, "BB_CENSORED": 1,
+        "BB_WORST_OLD_HALF": 5.0, "BB_WORST_RECENT_HALF": np.nan, "BB_CREDIT_TRAJECTORY": np.nan,
     },
 }
 
@@ -536,6 +544,7 @@ CLIENTES = {
     700: [12],  # estable, la única persistente
     800: [7],  # en bureau y sin histórico mensual: no sale del agregado
     900: [8],  # sin mora y todo cerrado, con las tres banderas de trayectoria a 0 y no a NaN
+    1000: [16],  # fallido que no sale en 5: con el último estado en vez de la severidad no marca
 }
 HUERFANOS = (13, 14)
 
@@ -629,6 +638,17 @@ ESPERADO_CLIENTE = {
         "BB_PERSISTENT_DPD_FLAG": 0.0, "BB_WORSENING_DPD_FLAG": 0.0,
         "BB_RECOVERED_DPD_FLAG": 0.0,
     },
+    1000: {
+        "BB_N_CREDITS_WBAL": 1, "BB_MONTHS_TOTAL": 3, "BB_MONTHS_REPORTED": 1,
+        "BB_STATUS_WORST": 5.0, "BB_ANY_DPD_FLAG": 1, "BB_RECENT_DPD_FLAG": 1,
+        "BB_WRITEOFF_FLAG": 1, "BB_MONTHS_SINCE_LAST_DPD": -3.0, "BB_CENSORED_RATIO": 1.0,
+        "BB_MONTHS_SINCE_LAST_DPD_REL": -2.0, "BB_EXITS_IN_DPD_FLAG": 0,
+        "BB_ALL_CLOSED_FLAG": 1, "BB_TRAJECTORY": np.nan,
+        "BB_CREDITS_WITH_DPD_COUNT": 1.0, "BB_DPD_MONTHS_COUNT": 1.0,
+        "BB_PCT_MONTHS_DPD": np.nan, "BB_RECENT_DPD_FLAG_REL": 1, "BB_MANY_CREDITS_FLAG": 0,
+        "BB_PERSISTENT_DPD_FLAG": np.nan, "BB_WORSENING_DPD_FLAG": np.nan,
+        "BB_RECOVERED_DPD_FLAG": np.nan,
+    },
 }
 
 @pytest.fixture
@@ -695,6 +715,9 @@ def test_el_fixture_de_clientes_ejercita_cada_rama(por_cliente, agregado, bb, pu
     assert por_cliente["BB_WRITEOFF_FLAG"].eq(1).any(), "falta el fallido"
     grave = por_cliente["BB_STATUS_WORST"].between(3, 4) & por_cliente["BB_WRITEOFF_FLAG"].eq(0)
     assert grave.any(), "falta el grave que no es fallido, sin el cual `== 5` y `>= 4` dan lo mismo"
+    assert (credito["BB_WORST"].eq(5) & credito["BB_LAST_STATUS"].ne("5")).any(), (
+        "falta el fallido que no acaba en 5, sin el cual leerlo del último estado da lo mismo"
+    )
     assert total.max() >= 3, "falta el cliente de tres créditos, donde las sumas dejan de ser pares"
     con_mora = por_cliente["BB_CREDITS_WITH_DPD_COUNT"]
     assert (con_mora.gt(0) & con_mora.lt(por_cliente["BB_N_CREDITS_WBAL"]) & ~ciegos.gt(0)).any(), (
@@ -1351,6 +1374,7 @@ PUERTA_CLIENTE = {
         "cobertura parcial": 434,
         "suma de BB_MONTHS_TOTAL": 24_179_741,
         "con mora": 48_522,
+        "fallidos": 2_986,
         "sin mes reportado": 3_769,
         "% sin mes reportado": 2.80,
         "con algun mes reportado": 130_773,
@@ -1362,6 +1386,7 @@ PUERTA_CLIENTE = {
         "cobertura parcial": 203,
         "suma de BB_MONTHS_TOTAL": 14_701_612,
         "con mora": 31_052,
+        "fallidos": 2_206,
         "sin mes reportado": 2_375,
         "% sin mes reportado": 2.58,
         "con algun mes reportado": 89_856,
@@ -1373,6 +1398,7 @@ PUERTA_CLIENTE = {
         "cobertura parcial": 203,
         "suma de BB_MONTHS_TOTAL": 14_700_583,
         "con mora": 31_048,
+        "fallidos": 2_206,
         "sin mes reportado": 2_375,
         "% sin mes reportado": 2.58,
         "con algun mes reportado": 89_845,
@@ -1408,6 +1434,7 @@ def test_la_puerta_del_3_5_sobre_el_dato_real(dato_real, cliente_real, poblacion
         "cobertura parcial": int((~completa).sum()),
         "suma de BB_MONTHS_TOTAL": int(a["BB_MONTHS_TOTAL"].sum()),
         "con mora": int(a["BB_ANY_DPD_FLAG"].sum()),
+        "fallidos": int(a["BB_WRITEOFF_FLAG"].sum()),
         "sin mes reportado": int(sin_rep.sum()),
         "% sin mes reportado": round(sin_rep.mean() * 100, 2),
         "con algun mes reportado": int((~sin_rep).sum()),
