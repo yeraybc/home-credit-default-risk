@@ -2,7 +2,8 @@
 
 La **doble agregación** de la tabla: de crédito-mes a crédito (`agregar_por_credito()`) y de
 crédito a cliente (`agregar_bureau_balance()`), que cruza el primero con el puente `SK_ID_BUREAU`
-a `SK_ID_CURR` que da `bureau` (`puente_credito_cliente()`).
+a `SK_ID_CURR` que da `bureau` (`puente_credito_cliente()`). La unión a la lista de clientes
+(`unir_bureau_balance()`) añade además `BB_OVERDUE_UNION`, la mora de las dos tablas.
 
 Es capa 1 por lo mismo que `agg_bureau.py`: no estima nada, no mira al TARGET y **el agregado de
 un crédito solo depende de sus propias filas**. Por eso se calcula sobre los 817.395 créditos de
