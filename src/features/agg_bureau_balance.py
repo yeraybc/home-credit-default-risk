@@ -75,7 +75,9 @@ DTYPE_CLAVE = "int64"
 # así que exige su esquema: una ausente en silencio saldría como "sin dato" en todo lo que la lee.
 COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
 
-# ordenada por prioridad del peor recorrido, que es lo que el nivel cliente toma con un max
+# ordenada por prioridad del peor recorrido, que es lo que el nivel cliente toma con un max. Estable
+# por encima de empeora salió de las tasas del EDA sobre train completo y no del dominio: lo remide
+# el 3.9 sobre train
 TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
 # Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y
