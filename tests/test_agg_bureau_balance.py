@@ -979,6 +979,7 @@ UNION_MORA = {
     # ellos, leer la reciente, el fallido o la salida en mora en vez de la genérica pasaba en CI
     600: (0, 1.0),  # sin mora reciente ni fallido
     700: (0, 1.0),  # sin salir en mora
+    1000: (0, 1.0),  # sin denominador suficiente, que separa la genérica de la proporción
     800: (1, 1.0),  # sin panel, solo bureau
     850: (0, 0.0),  # sin panel y sin mora: 0 y no NaN
     999: (np.nan, np.nan),  # sin historial de bureau: NaN, la capa 1 no rellena
@@ -998,7 +999,7 @@ def clientes():
 
 def test_la_union_no_rellena_y_marca_la_presencia(clientes, por_cliente):
     unido = unir_bureau_balance(clientes, por_cliente)
-    assert unido["HAS_BUREAU_BALANCE"].tolist() == [1, 1, 1, 1, 1, 1, 0, 0, 0]
+    assert unido["HAS_BUREAU_BALANCE"].tolist() == [1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
     sin_historico = unido[unido["HAS_BUREAU_BALANCE"].eq(0)]
     assert sin_historico[por_cliente.columns].isna().all().all()
     # y el cliente con histórico y sin mora conserva su 0, que el relleno no puede inventar
@@ -1033,8 +1034,9 @@ def test_el_fixture_de_la_union_ejercita_cada_rama(clientes, por_cliente):
     """Guardián: cada combinación de fuentes que la unión distingue tiene su cliente.
 
     Y un cliente de solo mensual con cada bandera de mora vecina apagada, que es lo que separa la
-    genérica de ellas. La relativa no tiene ninguno, porque en el panel toda mora cae dentro de los
-    seis meses del fin de ventana: esa sustitución solo la caza la puerta sobre el dato real.
+    genérica de ellas, y otro sin denominador suficiente, que la separa de leer la mora de la
+    proporción de meses. La relativa no tiene ninguno, porque en el panel toda mora cae dentro de
+    los seis meses del fin de ventana: esa sustitución solo la caza la puerta sobre el dato real.
     """
     unido = unir_bureau_balance(clientes, por_cliente)
     bureau, mensual = unido["BUREAU_OVERDUE_UNION"], unido["BB_ANY_DPD_FLAG"]
@@ -1047,6 +1049,9 @@ def test_el_fixture_de_la_union_ejercita_cada_rama(clientes, por_cliente):
             f"solo mensual sin {vecina}": bureau.eq(0) & mensual.eq(1) & unido[vecina].eq(0)
             for vecina in ("BB_RECENT_DPD_FLAG", "BB_WRITEOFF_FLAG", "BB_EXITS_IN_DPD_FLAG")
         },
+        "solo mensual sin denominador suficiente": (
+            bureau.eq(0) & mensual.eq(1) & unido["BB_PCT_MONTHS_DPD"].isna()
+        ),
         "ninguna con panel": con_panel & bureau.eq(0) & mensual.eq(0),
         "solo bureau sin panel": ~con_panel & bureau.eq(1),
         "sin mora y sin panel": ~con_panel & bureau.eq(0),
