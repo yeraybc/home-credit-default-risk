@@ -74,17 +74,38 @@ DTYPE_CLAVE = "int64"
 # así que exige su esquema: una ausente en silencio saldría como "sin dato" en todo lo que la lee.
 COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
 
-# ordenada por prioridad del peor recorrido, que es lo que el nivel cliente del 3.6 toma con un max
+# ordenada por prioridad del peor recorrido, que es lo que el nivel cliente toma con un max
 TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
 # Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y
-# cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva los dos
-# `medido` del de cliente, que revientan en `valor()` hasta que el 3.8 los refija.
+# cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva los tres
+# `medido` del de cliente, que revientan en `valor()` hasta que el 3.8 y el 3.9 los refijan.
 CORTES = tuple(
     sorted({c for cortes in CORTES_POR_FEATURE["bureau_balance"].values() for c in cortes})
 )
 CORTES_CREDITO: tuple[str, ...] = ("bb_min_meses_trayectoria",)
-CORTES_CLIENTE: tuple[str, ...] = ("bb_min_meses_reportados", "bb_mora_reciente_meses")
+CORTES_CLIENTE: tuple[str, ...] = (
+    "bb_many_credits_corte",
+    "bb_min_meses_reportados",
+    "bb_mora_reciente_meses",
+)
+
+# Lo que el nivel cliente añade sin estar en la receta, con su motivo.
+COLUMNAS_SIN_RECETA: dict[str, str] = {
+    "BB_MONTHS_REPORTED": (
+        "denominador de BB_PCT_MONTHS_DPD y de su mínimo, no explicativa, como BUREAU_LOAN_COUNT"
+    ),
+    "BB_TRAJECTORY": (
+        "el peor recorrido del cliente, que la receta solo tiene por sus tres banderas"
+    ),
+}
+
+# las tres banderas de la trayectoria de cliente y la clase que marca cada una
+BANDERAS_TRAYECTORIA = {
+    "BB_PERSISTENT_DPD_FLAG": "estable",
+    "BB_WORSENING_DPD_FLAG": "empeora",
+    "BB_RECOVERED_DPD_FLAG": "mejora",
+}
 
 
 def _cortes(cortes: dict[str, float] | None, usa: tuple[str, ...]) -> dict[str, float]:
@@ -125,7 +146,7 @@ def agregar_por_credito(bb: pd.DataFrame, cortes: dict[str, float] | None = None
     ningún NaN, y la categórica conserva sus ocho niveles con un frame vacío.
 
     `cortes` solo alcanza a `bb_min_meses_trayectoria`, que es el único que este nivel consume, y
-    es lo que deja al 3.9 ejecutar su contraste sin tocar la agregación. Los dos `medido` del nivel
+    es lo que deja al 3.9 ejecutar su contraste sin tocar la agregación. Los tres `medido` del nivel
     cliente no se resuelven aquí, así que este paso corre sin haberlos refijado.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in bb.columns]
@@ -283,7 +304,7 @@ def agregar_bureau_balance(
     estructural que vale en cualquier submuestra); los provisionales sí, incluidas las dos
     versiones absolutas de la recencia, que la capa 2b tiene que poder remedir.
 
-    Tres diferencias con el notebook, que allí medía y aquí construye:
+    Cuatro diferencias con el notebook, que allí medía y aquí construye:
 
     1. **La severidad y los dos conteos de mora van a NaN** en el cliente cuyos créditos son todos
        ciegos (2.375 de los 92.231 clientes de train, el 2,58%, y 3.769 sobre la tabla entera).
@@ -296,10 +317,19 @@ def agregar_bureau_balance(
        el efecto de la excepción es nulo. Qué se hace con esos clientes es de la capa 2.
     3. **`BB_PCT_MONTHS_DPD` se guarda de 0 a 1** y el notebook la imprimía en porcentaje, como las
        dos proporciones del paso crédito.
+    4. **Las tres banderas de trayectoria van a NaN sin trayectoria evaluable**, y el notebook las
+       dejaba en False. Se midieron sobre los 66.663 clientes evaluables de train, y fuera de ellos
+       un 0 mezclaría "no evaluable" con "no persistente".
+
+    Las derivadas de las celdas 58, 59, 61 y 62: `BB_MONTHS_SINCE_LAST_DPD_REL` (la recencia sobre
+    el fin de ventana de cada crédito) y `BB_RECENT_DPD_FLAG_REL` cortada sobre ella,
+    `BB_EXITS_IN_DPD_FLAG` y `BB_ALL_CLOSED_FLAG` (el último estado de cada crédito),
+    `BB_TRAJECTORY` con sus tres banderas, y `BB_MANY_CREDITS_FLAG`. Los descartes provisionales
+    se construyen, que la capa 2b los remide.
 
     `cortes` sustituye a los de `params.py` y se reenvía entero al paso crédito, que es el punto de
-    entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. Los dos que consume este nivel
-    son `medido` y revientan en `valor()` hasta que el 3.8 los refija sobre train.
+    entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. Los tres que consume este nivel
+    son `medido` y revientan en `valor()` hasta que el 3.8 y el 3.9 los refijan sobre train.
     """
     c = _cortes(cortes, CORTES_CLIENTE)
     cred = agregar_por_credito(bb, cortes)
@@ -310,12 +340,17 @@ def agregar_bureau_balance(
     # False en el ciego, que es lo correcto para la bandera: no hay evidencia de mora. Para los
     # conteos hace falta la versión con NaN, o el cliente todo ciego saldría con mora cero
     mora = cf["BB_DPD_MONTHS"] > 0
+    ultimo = cf["BB_LAST_STATUS"]
     f = cf.assign(
         _has_dpd=mora,
         _writeoff=cf["BB_WORST"].eq(5),
         # NaN >= corte ya da False: el crédito sin ningún impago no tiene mora reciente
         _recent_dpd=cf["BB_LAST_DPD_MONTH"] >= -c["bb_mora_reciente_meses"],
         _dpd_credits=mora.astype(float).where(reportado),
+        # meses del último impago al fin de la ventana del crédito, no a la solicitud
+        _rel=cf["BB_LAST_DPD_MONTH"] - cf["BB_WINDOW_END"],
+        _exits=ultimo.isin(["1", "2", "3", "4", "5"]),
+        _closed=ultimo.eq("C"),
     )
     g = f.groupby("SK_ID_CURR")
     agregado = g.agg(
@@ -328,6 +363,11 @@ def agregar_bureau_balance(
         BB_WRITEOFF_FLAG=("_writeoff", "max"),
         BB_MONTHS_SINCE_LAST_DPD=("BB_LAST_DPD_MONTH", "max"),
         BB_CENSORED_RATIO=("BB_CENSORED", "mean"),
+        BB_MONTHS_SINCE_LAST_DPD_REL=("_rel", "max"),
+        BB_EXITS_IN_DPD_FLAG=("_exits", "max"),
+        BB_ALL_CLOSED_FLAG=("_closed", "min"),
+        # la categórica va ordenada por prioridad del peor recorrido, así que el max es el peor
+        BB_TRAJECTORY=("BB_CREDIT_TRAJECTORY", "max"),
     )
     # las sumas aparte, porque la agregación nombrada no acepta min_count sin un lambda por cliente
     sumas = g[["_dpd_credits", "BB_DPD_MONTHS"]].sum(min_count=1)
@@ -339,8 +379,17 @@ def agregar_bureau_balance(
     agregado["BB_PCT_MONTHS_DPD"] = agregado["BB_DPD_MONTHS_COUNT"] / agregado[
         "BB_MONTHS_REPORTED"
     ].where(suficiente)
+    agregado["BB_RECENT_DPD_FLAG_REL"] = (
+        agregado["BB_MONTHS_SINCE_LAST_DPD_REL"] >= -c["bb_mora_reciente_meses"]
+    )
+    agregado["BB_MANY_CREDITS_FLAG"] = agregado["BB_N_CREDITS_WBAL"] >= c["bb_many_credits_corte"]
     banderas = agregado.select_dtypes("bool").columns
     agregado[banderas] = agregado[banderas].astype("int8")
+    trayectoria = agregado["BB_TRAJECTORY"]
+    # NaN y no 0 sin trayectoria evaluable: no evaluable no es no persistente. En float siempre,
+    # para que el esquema no dependa de si el lote trae algún cliente sin trayectoria
+    for nombre, clase in BANDERAS_TRAYECTORIA.items():
+        agregado[nombre] = trayectoria.eq(clase).astype(float).where(trayectoria.notna())
     return agregado
 
 

@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from src.config import RAIZ, cargar_config
-from src.features.agg_bureau import COLUMNAS_SIN_RECETA
+from src.features import agg_bureau, agg_bureau_balance
 from src.features.params import (
     CORTES_POR_FEATURE,
     PARAMS,
@@ -271,7 +271,10 @@ def test_los_umbrales_metodologicos_coinciden_con_las_recetas_del_eda():
 
 TABLAS = ["bureau", "bureau_balance", "previous_application"]
 # lo que cada agregación añade sin receta, con su motivo declarado en su módulo
-SIN_RECETA = {"bureau": set(COLUMNAS_SIN_RECETA)}
+SIN_RECETA = {
+    "bureau": set(agg_bureau.COLUMNAS_SIN_RECETA),
+    "bureau_balance": set(agg_bureau_balance.COLUMNAS_SIN_RECETA),
+}
 
 
 def _receta(tabla):
