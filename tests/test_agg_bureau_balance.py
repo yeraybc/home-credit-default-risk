@@ -12,13 +12,18 @@ from pandas.testing import assert_frame_equal
 
 from src.config import ruta
 from src.data.loader import TABLE_FILES, load_table
+from src.features import agg_bureau_balance
 from src.features.agg_bureau_balance import (
     COLUMNAS_ORIGEN,
+    CORTES_CLIENTE,
     TRAYECTORIAS,
+    agregar_bureau_balance,
     agregar_por_credito,
     puente_credito_cliente,
+    unir_bureau_balance,
 )
 from src.features.cleaning import DTYPE_STATUS, limpiar_bureau_balance
+from src.features.params import parametro
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Un crédito por caso de borde, con los meses en orden de más antiguo a más reciente. El agregado
@@ -46,8 +51,9 @@ PANEL = {
     # a la reciente saldría empeora
     9: (-6, ["0", "0", "0", "1", "0", "0", "0"]),
     # 10: mejora por severidad sin salir de mora, censurado y en el borde antiguo del panel, donde
-    # `ini + fin` ya no cabe en el int8 del mes y un punto medio sumado se desbordaría
-    10: (-95, ["3", "3", "3", "1", "1", "1"]),
+    # `ini + fin` ya no cabe en el int8 del mes y un punto medio sumado se desbordaría. El 4 es
+    # además el único estado grave que no es el fallido, que es lo que separa `== 5` de `>= 4`
+    10: (-95, ["4", "4", "4", "1", "1", "1"]),
     # 11: empeora
     11: (-5, ["0", "0", "0", "0", "1", "2"]),
     # 12: estable, con el mismo peor estado en las dos mitades
@@ -110,10 +116,10 @@ ESPERADO = {
         "BB_WORST_OLD_HALF": 1.0, "BB_WORST_RECENT_HALF": 0.0, "BB_CREDIT_TRAJECTORY": "mejora",
     },
     10: {
-        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 6, "BB_WORST": 3.0, "BB_PCT_X": 0.0,
+        "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 6, "BB_WORST": 4.0, "BB_PCT_X": 0.0,
         "BB_WINDOW_INI": -95, "BB_WINDOW_END": -90, "BB_DPD_MONTHS": 6.0, "BB_PCT_DPD": 1.0,
         "BB_LAST_STATUS": "1", "BB_LAST_DPD_MONTH": -90.0, "BB_CENSORED": 1,
-        "BB_WORST_OLD_HALF": 3.0, "BB_WORST_RECENT_HALF": 1.0, "BB_CREDIT_TRAJECTORY": "mejora",
+        "BB_WORST_OLD_HALF": 4.0, "BB_WORST_RECENT_HALF": 1.0, "BB_CREDIT_TRAJECTORY": "mejora",
     },
     11: {
         "BB_MONTHS_OBS": 6, "BB_MONTHS_REPORTED": 6, "BB_WORST": 2.0, "BB_PCT_X": 0.0,
@@ -404,22 +410,6 @@ def test_la_ventana_contigua_de_un_solo_mes_no_revienta():
     assert agregar_por_credito(panel({7: (-96, ["0"])})).loc[7, "BB_MONTHS_OBS"] == 1
 
 
-# --- los cortes del paso credito ---
-
-
-def test_la_ventana_de_la_trayectoria_se_puede_variar_por_el_argumento(bb):
-    """Lo que el 3.9 necesita para su contraste, y que `valor()` por dentro no dejaba hacer."""
-    corto = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 2})
-    largo = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 90})
-    assert corto["BB_CREDIT_TRAJECTORY"].notna().sum() > largo["BB_CREDIT_TRAJECTORY"].notna().sum()
-    assert largo["BB_CREDIT_TRAJECTORY"].isna().all()
-
-
-def test_un_corte_desconocido_revienta_con_su_nombre(bb):
-    with pytest.raises(KeyError, match="bb_min_meses_trayectori"):
-        agregar_por_credito(bb, {"bb_min_meses_trayectori": 6})
-
-
 # --- 3.4, el puente credito a cliente -----------------------------------------------------------
 
 
@@ -500,6 +490,360 @@ def test_un_sk_id_bureau_repetido_con_otro_cliente_revienta(bureau):
     repetido = pd.concat([bureau, otro_cliente], ignore_index=True)
     with pytest.raises(ValueError, match="repetidos"):
         puente_credito_cliente(repetido)
+
+
+# --- 3.5, la agregación a nivel cliente -------------------------------------------------------
+
+# Los cortes salen del registro y no de literales, como en `test_agg_bureau`: los dos son `medido`
+# y `valor()` los bloquea hasta que el 3.8 los refija sobre train, así que aquí se pasan con su
+# referencia del EDA, que es lo que la puerta reproduce.
+REFERENCIA = {n: parametro(n).valor_referencia for n in CORTES_CLIENTE}
+
+# El reparto de los créditos del panel entre clientes, uno por caso de borde del nivel cliente.
+# Los que no aparecen son los huérfanos, que están en el panel y no en bureau; el 7 es lo
+# contrario, un crédito de bureau sin histórico mensual.
+CLIENTES = {
+    100: [1],  # todos sus créditos ciegos: severidad y conteos a NaN, banderas a 0
+    200: [2, 3],  # uno ciego y otro reportado: el que separa min_count=1 de "ningún mes reportado"
+    300: [4, 5],  # dos créditos con mora, que es lo que un max taparía, más el fallido
+    400: [6],  # reportado sin mora: conteos a 0, que es lo que el NaN no puede comerse
+    500: [8, 9, 11],  # tres créditos, y uno reportado sin mora junto a dos con ella
+    600: [10],  # mora antigua: la genérica marca y la reciente no
+    800: [7],  # en bureau y sin histórico mensual: no sale del agregado
+}
+HUERFANOS = (12, 13, 14)
+
+ESPERADO_CLIENTE = {
+    100: {
+        "BB_N_CREDITS_WBAL": 1, "BB_MONTHS_TOTAL": 3, "BB_MONTHS_REPORTED": 0,
+        "BB_STATUS_WORST": np.nan, "BB_ANY_DPD_FLAG": 0, "BB_RECENT_DPD_FLAG": 0,
+        "BB_WRITEOFF_FLAG": 0, "BB_MONTHS_SINCE_LAST_DPD": np.nan, "BB_CENSORED_RATIO": 0.0,
+        "BB_CREDITS_WITH_DPD_COUNT": np.nan, "BB_DPD_MONTHS_COUNT": np.nan,
+        "BB_PCT_MONTHS_DPD": np.nan,
+    },
+    200: {
+        "BB_N_CREDITS_WBAL": 2, "BB_MONTHS_TOTAL": 3, "BB_MONTHS_REPORTED": 1,
+        "BB_STATUS_WORST": 1.0, "BB_ANY_DPD_FLAG": 1, "BB_RECENT_DPD_FLAG": 1,
+        "BB_WRITEOFF_FLAG": 0, "BB_MONTHS_SINCE_LAST_DPD": 0.0, "BB_CENSORED_RATIO": 0.5,
+        "BB_CREDITS_WITH_DPD_COUNT": 1.0, "BB_DPD_MONTHS_COUNT": 1.0,
+        "BB_PCT_MONTHS_DPD": np.nan,
+    },
+    300: {
+        "BB_N_CREDITS_WBAL": 2, "BB_MONTHS_TOTAL": 7, "BB_MONTHS_REPORTED": 6,
+        "BB_STATUS_WORST": 5.0, "BB_ANY_DPD_FLAG": 1, "BB_RECENT_DPD_FLAG": 1,
+        "BB_WRITEOFF_FLAG": 1, "BB_MONTHS_SINCE_LAST_DPD": -2.0, "BB_CENSORED_RATIO": 0.5,
+        "BB_CREDITS_WITH_DPD_COUNT": 2.0, "BB_DPD_MONTHS_COUNT": 3.0,
+        "BB_PCT_MONTHS_DPD": 0.5,
+    },
+    400: {
+        "BB_N_CREDITS_WBAL": 1, "BB_MONTHS_TOTAL": 3, "BB_MONTHS_REPORTED": 2,
+        "BB_STATUS_WORST": 0.0, "BB_ANY_DPD_FLAG": 0, "BB_RECENT_DPD_FLAG": 0,
+        "BB_WRITEOFF_FLAG": 0, "BB_MONTHS_SINCE_LAST_DPD": np.nan, "BB_CENSORED_RATIO": 0.0,
+        "BB_CREDITS_WITH_DPD_COUNT": 0.0, "BB_DPD_MONTHS_COUNT": 0.0,
+        "BB_PCT_MONTHS_DPD": np.nan,
+    },
+    500: {
+        "BB_N_CREDITS_WBAL": 3, "BB_MONTHS_TOTAL": 19, "BB_MONTHS_REPORTED": 17,
+        "BB_STATUS_WORST": 2.0, "BB_ANY_DPD_FLAG": 1, "BB_RECENT_DPD_FLAG": 1,
+        "BB_WRITEOFF_FLAG": 0, "BB_MONTHS_SINCE_LAST_DPD": 0.0, "BB_CENSORED_RATIO": 0.0,
+        "BB_CREDITS_WITH_DPD_COUNT": 2.0, "BB_DPD_MONTHS_COUNT": 3.0,
+        "BB_PCT_MONTHS_DPD": 3 / 17,
+    },
+    600: {
+        "BB_N_CREDITS_WBAL": 1, "BB_MONTHS_TOTAL": 6, "BB_MONTHS_REPORTED": 6,
+        "BB_STATUS_WORST": 4.0, "BB_ANY_DPD_FLAG": 1, "BB_RECENT_DPD_FLAG": 0,
+        "BB_WRITEOFF_FLAG": 0, "BB_MONTHS_SINCE_LAST_DPD": -90.0, "BB_CENSORED_RATIO": 1.0,
+        "BB_CREDITS_WITH_DPD_COUNT": 1.0, "BB_DPD_MONTHS_COUNT": 6.0,
+        "BB_PCT_MONTHS_DPD": 1.0,
+    },
+}
+
+
+@pytest.fixture
+def bureau_cliente():
+    """El `bureau` que reparte los créditos del panel entre clientes, sin el huérfano."""
+    return pd.DataFrame(
+        [
+            {"SK_ID_BUREAU": credito, "SK_ID_CURR": cliente}
+            for cliente, creditos in CLIENTES.items()
+            for credito in creditos
+        ]
+    )
+
+
+@pytest.fixture
+def puente(bureau_cliente):
+    return puente_credito_cliente(bureau_cliente)
+
+
+@pytest.fixture
+def por_cliente(bb, puente):
+    return agregar_bureau_balance(bb, puente, REFERENCIA)
+
+
+@pytest.mark.parametrize("cliente", sorted(ESPERADO_CLIENTE))
+def test_el_agregado_de_cada_cliente_es_el_calculado_a_mano(por_cliente, cliente):
+    fila = por_cliente.loc[cliente]
+    for columna, esperado in ESPERADO_CLIENTE[cliente].items():
+        obtenido = fila[columna]
+        if pd.isna(esperado):
+            assert pd.isna(obtenido), columna
+        else:
+            assert obtenido == pytest.approx(esperado), columna
+
+
+def test_el_fixture_de_clientes_ejercita_cada_rama(por_cliente, agregado, bb, puente):
+    """Guardián: si el reparto pierde un caso, los tests de arriba dejan de cazarlo.
+
+    Los tres primeros miran el nivel crédito porque el agregado de cliente no deja ver de cuántos
+    créditos sale: un cliente de un crédito reportado y otro que mezcla uno ciego con uno
+    reportado son indistinguibles desde sus doce columnas.
+    """
+    minimo = REFERENCIA["bb_min_meses_reportados"]
+    credito = agregado.loc[agregado.index.isin(puente.index)]
+    de_cada = credito["BB_MONTHS_REPORTED"].groupby(credito.index.map(puente))
+    ciegos, total = de_cada.agg(lambda s: s.eq(0).sum()), de_cada.size()
+    assert ciegos.eq(total).any(), "falta el cliente con todos sus créditos ciegos"
+    assert (ciegos.gt(0) & ciegos.lt(total)).any(), (
+        "falta el cliente que mezcla un crédito ciego con uno reportado, que es el que separa "
+        "min_count=1 de contar los meses reportados"
+    )
+    suma, maximo = de_cada.sum(), de_cada.max()
+    assert (suma.ge(minimo) & maximo.lt(minimo)).any(), (
+        "falta el cliente cuyo denominador solo llega al mínimo sumando sus créditos"
+    )
+    assert (
+        por_cliente["BB_DPD_MONTHS_COUNT"].eq(0) & por_cliente["BB_MONTHS_REPORTED"].gt(0)
+    ).any(), "falta el reportado sin mora, que exige 0 donde el ciego lleva NaN"
+    assert por_cliente["BB_CREDITS_WITH_DPD_COUNT"].gt(1).any(), (
+        "falta el cliente de dos créditos con mora, sin el cual el sum pasa por el max"
+    )
+    antigua = por_cliente["BB_ANY_DPD_FLAG"].eq(1) & por_cliente["BB_RECENT_DPD_FLAG"].eq(0)
+    assert antigua.any(), "falta el cliente de mora antigua, que separa las dos banderas"
+    assert por_cliente["BB_WRITEOFF_FLAG"].eq(1).any(), "falta el fallido"
+    grave = por_cliente["BB_STATUS_WORST"].between(3, 4) & por_cliente["BB_WRITEOFF_FLAG"].eq(0)
+    assert grave.any(), "falta el grave que no es fallido, sin el cual `== 5` y `>= 4` dan lo mismo"
+    assert total.max() >= 3, "falta el cliente de tres créditos, donde las sumas dejan de ser pares"
+    con_mora = por_cliente["BB_CREDITS_WITH_DPD_COUNT"]
+    assert (con_mora.gt(0) & con_mora.lt(por_cliente["BB_N_CREDITS_WBAL"]) & ~ciegos.gt(0)).any(), (
+        "falta el cliente que mezcla créditos con mora y sin ella, los dos reportados"
+    )
+    ultimos = credito["BB_LAST_DPD_MONTH"].groupby(credito.index.map(puente))
+    assert (ultimos.max() != ultimos.min()).any(), (
+        "falta el cliente con impagos en meses distintos, sin el cual la recencia da igual con min"
+    )
+    for ratio in ("BB_CENSORED_RATIO", "BB_PCT_MONTHS_DPD"):
+        valores = por_cliente[ratio].dropna()
+        assert valores.between(0, 1).all() and valores.gt(0).any(), ratio
+    justo = por_cliente["BB_MONTHS_REPORTED"].eq(minimo)
+    assert (justo & por_cliente["BB_PCT_MONTHS_DPD"].notna()).any(), "falta el denominador justo"
+    assert por_cliente["BB_PCT_MONTHS_DPD"].isna().any(), "falta el denominador corto"
+    assert len(HUERFANOS) > 1, "con un solo huérfano, tirar solo el primero pasaría en verde"
+    assert set(HUERFANOS) <= set(bb["SK_ID_BUREAU"]) - set(puente.index), (
+        "los huérfanos tienen que estar en el panel y no en bureau"
+    )
+
+
+def test_cada_columna_de_la_salida_varia_entre_clientes(por_cliente):
+    """Una columna constante por construcción pasa cualquier test sin medir nada."""
+    constantes = [c for c in por_cliente.columns if por_cliente[c].nunique(dropna=False) < 2]
+    assert not constantes
+
+
+def test_la_salida_de_cliente_tiene_el_esquema_declarado(por_cliente):
+    assert list(por_cliente.columns) == list(ESPERADO_CLIENTE[100])
+    assert por_cliente.index.name == "SK_ID_CURR"
+    conteos = ["BB_N_CREDITS_WBAL", "BB_MONTHS_TOTAL", "BB_MONTHS_REPORTED"]
+    assert (por_cliente[conteos].dtypes == "int64").all()
+    banderas = ["BB_ANY_DPD_FLAG", "BB_RECENT_DPD_FLAG", "BB_WRITEOFF_FLAG"]
+    assert (por_cliente[banderas].dtypes == "int8").all()
+
+
+# --- la premisa de la capa 1, un nivel más arriba ---------------------------------------------
+
+
+def test_cada_cliente_agregado_solo_da_lo_mismo_que_acompanado(bb, puente, por_cliente):
+    """Lo que autoriza a agregar fuera del split: ningún estadístico cruza clientes."""
+    for cliente in ESPERADO_CLIENTE:
+        creditos = puente.index[puente.eq(cliente)]
+        solo = bb[bb["SK_ID_BUREAU"].isin(creditos)]
+        assert_frame_equal(
+            agregar_bureau_balance(solo, puente[puente.eq(cliente)], REFERENCIA),
+            por_cliente.loc[[cliente]],
+        )
+
+
+def test_el_orden_de_las_filas_no_cambia_el_agregado_de_cliente(bb, puente, por_cliente):
+    revuelto = bb.sample(frac=1, random_state=0)
+    assert_frame_equal(agregar_bureau_balance(revuelto, puente, REFERENCIA), por_cliente)
+
+
+def test_el_nivel_cliente_no_muta_el_frame_de_entrada(bb, puente):
+    copia, copia_puente = bb.copy(), puente.copy()
+    agregar_bureau_balance(bb, puente, REFERENCIA)
+    assert_frame_equal(bb, copia)
+    pd.testing.assert_series_equal(puente, copia_puente)
+
+
+# --- la regla de NaN a nivel cliente ----------------------------------------------------------
+
+
+def test_el_cliente_de_creditos_todos_ciegos_va_a_nan_y_no_a_cero(por_cliente):
+    """Sin dato no es sin mora: con 0, el cliente sin ningún estado reportado saldría limpio."""
+    ciego = por_cliente["BB_MONTHS_REPORTED"].eq(0)
+    for columna in ("BB_STATUS_WORST", "BB_DPD_MONTHS_COUNT", "BB_CREDITS_WITH_DPD_COUNT"):
+        assert por_cliente[columna].isna().equals(ciego), columna
+
+
+def test_las_banderas_del_cliente_ciego_se_quedan_en_cero(por_cliente):
+    """La única excepción declarada a la regla, y la que el EDA midió: +2,74 frente a +2,76pp."""
+    ciego = por_cliente["BB_MONTHS_REPORTED"].eq(0)
+    assert ciego.any(), "sin ningún cliente ciego el `.all()` de abajo es verdadero por vacuidad"
+    banderas = ["BB_ANY_DPD_FLAG", "BB_RECENT_DPD_FLAG", "BB_WRITEOFF_FLAG"]
+    assert (por_cliente.loc[ciego, banderas] == 0).all().all()
+
+
+def test_la_proporcion_sin_denominador_suficiente_es_nan(bb, puente):
+    """El extremo del ratio es ruido de reporte: con un mes reportado vale 1 sin decir nada."""
+    for minimo in (1, 6, 12):
+        cortes = {**REFERENCIA, "bb_min_meses_reportados": minimo}
+        agregado = agregar_bureau_balance(bb, puente, cortes)
+        corto = agregado["BB_MONTHS_REPORTED"].lt(minimo)
+        assert agregado["BB_PCT_MONTHS_DPD"].isna().equals(corto), minimo
+
+
+def test_la_mora_reciente_se_corta_sobre_el_ultimo_impago(bb, puente):
+    """Y el cliente sin ningún impago no la enciende, que es lo que el NaN podría colar."""
+    for meses in (3, 6, 12, 96):
+        cortes = {**REFERENCIA, "bb_mora_reciente_meses": meses}
+        agregado = agregar_bureau_balance(bb, puente, cortes)
+        esperado = agregado["BB_MONTHS_SINCE_LAST_DPD"].ge(-meses).astype("int8")
+        assert agregado["BB_RECENT_DPD_FLAG"].equals(esperado), meses
+        # con la ventana entera, la reciente y la genérica dicen lo mismo
+        if meses == 96:
+            assert agregado["BB_RECENT_DPD_FLAG"].equals(agregado["BB_ANY_DPD_FLAG"])
+
+
+# --- el puente, desde el nivel cliente --------------------------------------------------------
+
+
+def test_el_credito_huerfano_no_llega_a_ningun_cliente(por_cliente, bb, puente):
+    """Los créditos sin padre en bureau los tira el join interno, no el paso crédito."""
+    con_padre = bb["SK_ID_BUREAU"].isin(puente.index).groupby(bb["SK_ID_BUREAU"]).first()
+    esperados = len(PANEL) - len(HUERFANOS)
+    assert por_cliente["BB_N_CREDITS_WBAL"].sum() == int(con_padre.sum()) == esperados
+
+
+def test_el_cliente_sin_historico_mensual_no_sale_del_agregado(por_cliente):
+    assert 800 not in por_cliente.index
+
+
+def test_la_suma_de_meses_iguala_las_filas_enlazadas(por_cliente, bb, puente):
+    """El assert del multi-tabla: la doble agregación no pierde ni duplica un mes.
+
+    Quien impide que dos defectos de signo contrario lo dejen cuadrando no es este conteo sino
+    el `validate` del join, que prueba el test de abajo: un crédito perdido y otro duplicado a la
+    vez revientan antes de que la suma llegue a verlos.
+    """
+    enlazadas = bb["SK_ID_BUREAU"].isin(puente.index).sum()
+    assert por_cliente["BB_MONTHS_TOTAL"].sum() == enlazadas
+
+
+def test_un_credito_perdido_y_otro_duplicado_no_se_compensan(bb, puente):
+    """La guarda por conteo que dos defectos dejan cuadrando, el pariente del patrón 8."""
+    compensado = pd.concat([puente.drop(puente.index[0]), puente.iloc[[1]]])
+    compensado.index.name = puente.index.name
+    with pytest.raises(pd.errors.MergeError):
+        agregar_bureau_balance(bb, compensado, REFERENCIA)
+
+
+def test_un_puente_con_el_credito_repetido_revienta_en_vez_de_duplicarlo(bb, puente):
+    """`puente_credito_cliente()` ya lo impide, pero el join no puede fiarse de quién le llama."""
+    repetido = pd.concat([puente, puente.iloc[[0]]])
+    with pytest.raises(pd.errors.MergeError):
+        agregar_bureau_balance(bb, repetido, REFERENCIA)
+
+
+# --- los cortes, por los dos lados ------------------------------------------------------------
+
+
+def test_sin_cortes_revienta_mientras_los_medidos_esten_sin_fijar(bb, puente):
+    with pytest.raises(ValueError, match="sin fijar"):
+        agregar_bureau_balance(bb, puente)
+
+
+def test_un_corte_desconocido_revienta_con_su_nombre(bb, puente):
+    with pytest.raises(KeyError, match="bb_min_meses_reportado"):
+        agregar_bureau_balance(bb, puente, {**REFERENCIA, "bb_min_meses_reportado": 6})
+
+
+def test_la_ventana_de_la_trayectoria_se_puede_variar_por_el_argumento(bb):
+    """Lo que el 3.9 necesita para su contraste, y que `valor()` por dentro no dejaba hacer."""
+    corto = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 2})
+    largo = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 90})
+    assert corto["BB_CREDIT_TRAJECTORY"].notna().sum() > largo["BB_CREDIT_TRAJECTORY"].notna().sum()
+    assert largo["BB_CREDIT_TRAJECTORY"].isna().all()
+
+
+def test_el_nivel_cliente_reenvia_los_cortes_al_de_credito(bb, puente, monkeypatch):
+    """Con un espía y no por su efecto: la trayectoria no sube a cliente hasta el 3.6, así que
+    un reenvío perdido no se vería en la salida y el punto de entrada del 3.9 quedaría roto."""
+    recibidos = {}
+    original = agg_bureau_balance.agregar_por_credito
+
+    def espia(frame, cortes=None):
+        recibidos["cortes"] = cortes
+        return original(frame, cortes)
+
+    monkeypatch.setattr(agg_bureau_balance, "agregar_por_credito", espia)
+    cortes = {**REFERENCIA, "bb_min_meses_trayectoria": 2}
+    agg_bureau_balance.agregar_bureau_balance(bb, puente, cortes)
+    assert recibidos["cortes"] == cortes
+
+
+def test_el_nivel_credito_corre_sin_haber_fijado_los_cortes_del_de_cliente(bb):
+    """Solo resuelve el suyo, de dominio; si resolviera los cuatro reventaría en `valor()`."""
+    assert len(agregar_por_credito(bb)) == len(PANEL)
+
+
+# --- la unión a la lista de clientes ----------------------------------------------------------
+
+
+@pytest.fixture
+def clientes():
+    """Dos con histórico, uno sin él y uno que ni siquiera está en bureau."""
+    return pd.DataFrame({"SK_ID_CURR": [100, 300, 800, 999], "OTRA": [1, 2, 3, 4]})
+
+
+def test_la_union_no_rellena_y_marca_la_presencia(clientes, por_cliente):
+    unido = unir_bureau_balance(clientes, por_cliente)
+    assert unido["HAS_BUREAU_BALANCE"].tolist() == [1, 1, 0, 0]
+    sin_historico = unido[unido["HAS_BUREAU_BALANCE"].eq(0)]
+    assert sin_historico[por_cliente.columns].isna().all().all()
+    # y el cliente con histórico y sin mora conserva su 0, que el relleno no puede inventar
+    assert unido.loc[unido["SK_ID_CURR"].eq(300), "BB_CREDITS_WITH_DPD_COUNT"].iloc[0] == 2
+
+
+def test_la_union_no_altera_filas_ni_orden(clientes, por_cliente):
+    unido = unir_bureau_balance(clientes, por_cliente)
+    assert len(unido) == len(clientes)
+    assert unido["SK_ID_CURR"].tolist() == clientes["SK_ID_CURR"].tolist()
+    assert unido["OTRA"].tolist() == clientes["OTRA"].tolist()
+
+
+def test_la_union_revienta_con_un_agregado_de_clientes_repetidos(clientes, por_cliente):
+    """El left join contra una clave duplicada infla la matriz sin dar error."""
+    repetido = pd.concat([por_cliente, por_cliente.loc[[100]]])
+    with pytest.raises(pd.errors.MergeError):
+        unir_bureau_balance(clientes, repetido)
+
+
+def test_un_panel_vacio_da_un_agregado_vacio_con_el_mismo_esquema(por_cliente, puente):
+    """El frame sin tipos de la API, que es el patrón 12 un nivel más arriba."""
+    for vacio in (panel().iloc[:0], pd.DataFrame(columns=list(COLUMNAS_ORIGEN))):
+        agregado = agregar_bureau_balance(vacio, puente.iloc[:0], REFERENCIA)
+        assert agregado.empty
+        assert_frame_equal(agregado.dtypes.to_frame(), por_cliente.dtypes.to_frame())
 
 
 # --- la puerta del 3.2 contra el dato real ----------------------------------------------------
@@ -786,3 +1130,102 @@ def test_el_perfil_de_los_huerfanos_sobre_el_dato_real(dato_real):
             "% DPD": round(s.isin(list("12345")).mean() * 100, 2),
         }
         assert medido == PERFIL_HUERFANOS[nombre]
+
+
+# --- la puerta del 3.5 contra el dato real ----------------------------------------------------
+
+# Las tres poblaciones. La agregación se calcula sobre la tabla entera y se reindexa a la lista de
+# clientes que toque, así que la cifra depende de esa lista: las del EDA están sobre los 307.511 de
+# la tabla cruda y la población de modelado son los 307.492 que deja la limpieza, el mismo desfase
+# que el bloque 0 declara con el 8,0729% frente al 8,0734%.
+PUERTA_CLIENTE = {
+    "tabla entera (pipeline)": {
+        "clientes con historico": 134_542,
+        "cobertura completa": 134_108,
+        "cobertura parcial": 434,
+        "suma de BB_MONTHS_TOTAL": 24_179_741,
+        "con mora": 48_522,
+        "sin mes reportado": 3_769,
+        "% sin mes reportado": 2.80,
+        "con algun mes reportado": 130_773,
+        "con denominador suficiente": 122_845,
+    },
+    "train del EDA (307.511)": {
+        "clientes con historico": 92_231,
+        "cobertura completa": 92_028,
+        "cobertura parcial": 203,
+        "suma de BB_MONTHS_TOTAL": 14_701_612,
+        "con mora": 31_052,
+        "sin mes reportado": 2_375,
+        "% sin mes reportado": 2.58,
+        "con algun mes reportado": 89_856,
+        "con denominador suficiente": 83_971,
+    },
+    "modelado (307.492)": {
+        "clientes con historico": 92_220,
+        "cobertura completa": 92_017,
+        "cobertura parcial": 203,
+        "suma de BB_MONTHS_TOTAL": 14_700_583,
+        "con mora": 31_048,
+        "sin mes reportado": 2_375,
+        "% sin mes reportado": 2.58,
+        "con algun mes reportado": 89_845,
+        "con denominador suficiente": 83_960,
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def cliente_real(dato_real):
+    """El agregado a nivel cliente sobre la tabla entera, con los cortes de referencia del EDA."""
+    return agregar_bureau_balance(dato_real["bb"], dato_real["puente"], REFERENCIA)
+
+
+@sin_dato_real
+@sin_split
+@pytest.mark.parametrize("poblacion", sorted(PUERTA_CLIENTE))
+def test_la_puerta_del_3_5_sobre_el_dato_real(dato_real, cliente_real, poblacion):
+    clientes = {
+        "tabla entera (pipeline)": cliente_real.index,
+        "train del EDA (307.511)": dato_real["train_curr"],
+        "modelado (307.492)": cargar_split()["SK_ID_CURR"],
+    }[poblacion]
+    a = cliente_real[cliente_real.index.isin(clientes)]
+    # la cobertura es del cliente y no del crédito: o el buró reporta su historial entero o ninguno
+    puente = dato_real["puente"]
+    con_panel = puente[puente.index.isin(dato_real["tabla entera (pipeline)"].index)].value_counts()
+    completa = con_panel.reindex(a.index).eq(puente.value_counts().reindex(a.index))
+    sin_rep = a["BB_MONTHS_REPORTED"].eq(0)
+    medido = {
+        "clientes con historico": len(a),
+        "cobertura completa": int(completa.sum()),
+        "cobertura parcial": int((~completa).sum()),
+        "suma de BB_MONTHS_TOTAL": int(a["BB_MONTHS_TOTAL"].sum()),
+        "con mora": int(a["BB_ANY_DPD_FLAG"].sum()),
+        "sin mes reportado": int(sin_rep.sum()),
+        "% sin mes reportado": round(sin_rep.mean() * 100, 2),
+        "con algun mes reportado": int((~sin_rep).sum()),
+        "con denominador suficiente": int(a["BB_PCT_MONTHS_DPD"].notna().sum()),
+    }
+    assert medido == PUERTA_CLIENTE[poblacion]
+
+
+@sin_dato_real
+def test_la_doble_agregacion_no_pierde_ni_duplica_un_mes(dato_real, cliente_real):
+    """El assert del multi-tabla sobre el dato: la suma iguala las filas con padre en bureau."""
+    enlazadas = dato_real["bb"]["SK_ID_BUREAU"].isin(dato_real["puente"].index).sum()
+    assert int(cliente_real["BB_MONTHS_TOTAL"].sum()) == int(enlazadas)
+
+
+@sin_dato_real
+def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_real, cliente_real):
+    """La premisa de la capa 1 a nivel cliente, donde el fixture sintético no llega."""
+    bb, puente = dato_real["bb"], dato_real["puente"]
+    clientes = puente.reindex(dato_real["muestra"]["SK_ID_BUREAU"].unique()).dropna().unique()
+    for cliente in clientes:
+        creditos = puente.index[puente.eq(cliente)]
+        solo = bb[bb["SK_ID_BUREAU"].astype("int64").isin(creditos)]
+        assert_frame_equal(
+            agregar_bureau_balance(solo, puente[puente.eq(cliente)], REFERENCIA),
+            cliente_real.loc[[cliente]],
+        )

@@ -1,8 +1,8 @@
 """Agregación de bureau_balance, capa 1 del pipeline de features.
 
-Primer paso de la **doble agregación** de la tabla: de crédito-mes a crédito. El segundo, de
-crédito a cliente, cruza ese paso con el puente `SK_ID_BUREAU` a `SK_ID_CURR` que da `bureau`
-(`puente_credito_cliente()`) y llega en el 3.5.
+La **doble agregación** de la tabla: de crédito-mes a crédito (`agregar_por_credito()`) y de
+crédito a cliente (`agregar_bureau_balance()`), que cruza el primero con el puente `SK_ID_BUREAU`
+a `SK_ID_CURR` que da `bureau` (`puente_credito_cliente()`).
 
 Es capa 1 por lo mismo que `agg_bureau.py`: no estima nada, no mira al TARGET y **el agregado de
 un crédito solo depende de sus propias filas**. Por eso se calcula sobre los 817.395 créditos de
@@ -84,6 +84,7 @@ CORTES = tuple(
     sorted({c for cortes in CORTES_POR_FEATURE["bureau_balance"].values() for c in cortes})
 )
 CORTES_CREDITO: tuple[str, ...] = ("bb_min_meses_trayectoria",)
+CORTES_CLIENTE: tuple[str, ...] = ("bb_min_meses_reportados", "bb_mora_reciente_meses")
 
 
 def _cortes(cortes: dict[str, float] | None, usa: tuple[str, ...]) -> dict[str, float]:
@@ -265,3 +266,92 @@ def puente_credito_cliente(bureau: pd.DataFrame) -> pd.Series:
     puente.index = puente.index.astype(DTYPE_CLAVE)
     return puente
 
+
+def agregar_bureau_balance(
+    bb: pd.DataFrame, puente: pd.Series, cortes: dict[str, float] | None = None
+) -> pd.DataFrame:
+    """Una fila por cliente con histórico mensual, indexada por `SK_ID_CURR`.
+
+    Segundo paso de la doble agregación. Agrega la tabla entera a nivel crédito y la cruza con el
+    puente, así que los créditos huérfanos (43.041, sin padre en `bureau`) se caen en ese join y
+    los clientes que quedan son los que `bureau` conoce. Es capa 1 por lo mismo que el paso
+    crédito: el agregado de un cliente solo depende de sus propias filas.
+
+    Las once columnas del `groupby("SK_ID_CURR")` del notebook 03 (la celda 51 cuando se escribió)
+    más `BB_PCT_MONTHS_DPD`. **`BB_MONTHS_MAX` no se construye**, que es el único descarte
+    `firmeza: firme` de la receta (Pearson -0,7451 con `BUREAU_DAYS_CREDIT_MIN`, redundancia
+    estructural que vale en cualquier submuestra); los provisionales sí, incluidas las dos
+    versiones absolutas de la recencia, que la capa 2b tiene que poder remedir.
+
+    Tres diferencias con el notebook, que allí medía y aquí construye:
+
+    1. **La severidad y los dos conteos de mora van a NaN** en el cliente cuyos créditos son todos
+       ciegos (2.375 de los 92.231 clientes de train, el 2,58%, y 3.769 sobre la tabla entera).
+       Sale del `max`, que ignora los NaN, y del `min_count=1`, no de un `.loc` posterior como en
+       el notebook: es la misma cuenta con una fuente de verdad menos. El cliente con algún
+       crédito reportado conserva la suya.
+    2. **Las tres banderas se quedan en 0 en esos mismos clientes**, y es la única excepción
+       declarada a "sin dato no es sin mora". Es lo que midió el EDA, que dejó el matiz escrito: la
+       bandera genérica rinde +2,74pp con ellos dentro y +2,76pp sobre los que reportan, o sea que
+       el efecto de la excepción es nulo. Qué se hace con esos clientes es de la capa 2.
+    3. **`BB_PCT_MONTHS_DPD` se guarda de 0 a 1** y el notebook la imprimía en porcentaje, como las
+       dos proporciones del paso crédito.
+
+    `cortes` sustituye a los de `params.py` y se reenvía entero al paso crédito, que es el punto de
+    entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. Los dos que consume este nivel
+    son `medido` y revientan en `valor()` hasta que el 3.8 los refija sobre train.
+    """
+    c = _cortes(cortes, CORTES_CLIENTE)
+    cred = agregar_por_credito(bb, cortes)
+    # `1:1` y no contar filas: las dos claves son únicas, así que un puente con un `SK_ID_BUREAU`
+    # repetido abriría créditos en silencio, que es el fallo del left join contra clave repetida
+    cf = cred.join(puente, how="inner", validate="1:1")
+    reportado = cf["BB_DPD_MONTHS"].notna()
+    # False en el ciego, que es lo correcto para la bandera: no hay evidencia de mora. Para los
+    # conteos hace falta la versión con NaN, o el cliente todo ciego saldría con mora cero
+    mora = cf["BB_DPD_MONTHS"] > 0
+    f = cf.assign(
+        _has_dpd=mora,
+        _writeoff=cf["BB_WORST"].eq(5),
+        # NaN >= corte ya da False: el crédito sin ningún impago no tiene mora reciente
+        _recent_dpd=cf["BB_LAST_DPD_MONTH"] >= -c["bb_mora_reciente_meses"],
+        _dpd_credits=mora.astype(float).where(reportado),
+    )
+    g = f.groupby("SK_ID_CURR")
+    agregado = g.agg(
+        BB_N_CREDITS_WBAL=("BB_MONTHS_OBS", "size"),
+        BB_MONTHS_TOTAL=("BB_MONTHS_OBS", "sum"),
+        BB_MONTHS_REPORTED=("BB_MONTHS_REPORTED", "sum"),
+        BB_STATUS_WORST=("BB_WORST", "max"),
+        BB_ANY_DPD_FLAG=("_has_dpd", "max"),
+        BB_RECENT_DPD_FLAG=("_recent_dpd", "max"),
+        BB_WRITEOFF_FLAG=("_writeoff", "max"),
+        BB_MONTHS_SINCE_LAST_DPD=("BB_LAST_DPD_MONTH", "max"),
+        BB_CENSORED_RATIO=("BB_CENSORED", "mean"),
+    )
+    # las sumas aparte, porque la agregación nombrada no acepta min_count sin un lambda por cliente
+    sumas = g[["_dpd_credits", "BB_DPD_MONTHS"]].sum(min_count=1)
+    agregado["BB_CREDITS_WITH_DPD_COUNT"] = sumas["_dpd_credits"]
+    agregado["BB_DPD_MONTHS_COUNT"] = sumas["BB_DPD_MONTHS"]
+    # el denominador informativo: el extremo del ratio es ruido de reporte, y con un solo mes
+    # reportado vale 1 sin querer decir nada. Sin `replace` del cero, que ya es NaN por el mínimo
+    suficiente = agregado["BB_MONTHS_REPORTED"] >= c["bb_min_meses_reportados"]
+    agregado["BB_PCT_MONTHS_DPD"] = agregado["BB_DPD_MONTHS_COUNT"] / agregado[
+        "BB_MONTHS_REPORTED"
+    ].where(suficiente)
+    banderas = agregado.select_dtypes("bool").columns
+    agregado[banderas] = agregado[banderas].astype("int8")
+    return agregado
+
+
+def unir_bureau_balance(clientes: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
+    """Left join del agregado a una lista de clientes, con `HAS_BUREAU_BALANCE`.
+
+    No rellena, igual que `unir_bureau()`: el cliente sin histórico mensual queda con NaN en todo.
+    Su grupo no discrimina (8,14% frente a 8,04%, p=0,35), así que `HAS_BUREAU_BALANCE` es control
+    de composición y no predictor, pero un 0 en los conteos lo mezclaría con quien tiene histórico
+    y ninguna mora. Qué se hace con ese NaN es de la capa 2.
+    """
+    unido = clientes.join(agregado, on="SK_ID_CURR", validate="m:1")
+    unido["HAS_BUREAU_BALANCE"] = unido["BB_N_CREDITS_WBAL"].notna().astype("int8")
+    return unido

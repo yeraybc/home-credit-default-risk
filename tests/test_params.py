@@ -151,6 +151,9 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     11.17, 10.93, 3.45, 2.49,             # lo que dan las dos rejillas finas que no se adoptan
     9.35, 5.77, 2.62, 2.47, 1.91,         # la ventana: tasas extremas, delta a 90, 180 y 730 dias
     2.33, 1.94,                           # la cola del conteo con 18 y con 17 creditos
+    # bureau_balance, las primeras que el bloque 3 pone delante de agg_bureau_balance.py
+    8.14, 8.04, 0.35,                     # HAS_BUREAU_BALANCE: las dos tasas y su p
+    2.74, 2.76,                           # BB_ANY_DPD_FLAG con los ciegos dentro y sin ellos
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
