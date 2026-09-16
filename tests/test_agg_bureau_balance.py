@@ -1,4 +1,4 @@
-"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.6).
+"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.7).
 
 Todos sobre un panel sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `bureau_balance.csv`, `bureau.csv` y `application_train.csv` y
@@ -9,9 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
+from scipy.stats.contingency import association
 
 from src.config import ruta
 from src.data.loader import TABLE_FILES, load_table
+from src.features.agg_bureau import CORTES as CORTES_BUREAU
+from src.features.agg_bureau import agregar_bureau, unir_bureau
 from src.features.agg_bureau_balance import (
     BANDERAS_TRAYECTORIA,
     COLUMNAS_ORIGEN,
@@ -23,7 +26,12 @@ from src.features.agg_bureau_balance import (
     puente_credito_cliente,
     unir_bureau_balance,
 )
-from src.features.cleaning import DTYPE_STATUS, limpiar_bureau_balance
+from src.features.cleaning import (
+    DTYPE_STATUS,
+    SUFIJO_SIGNO,
+    limpiar_bureau,
+    limpiar_bureau_balance,
+)
 from src.features.params import parametro
 from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -756,18 +764,19 @@ def test_la_salida_de_cliente_tiene_el_esquema_declarado(por_cliente):
     assert por_cliente["BB_TRAJECTORY"].dtype == TRAYECTORIAS
 
 
-def test_la_salida_cumple_el_contrato_con_la_receta(por_cliente):
-    """Las columnas son las de la receta menos el descarte firme, más las declaradas sin receta.
+def test_la_salida_cumple_el_contrato_con_la_receta(por_cliente, clientes):
+    """Lo que añade la unión es la receta menos el descarte firme, más las declaradas sin receta.
 
-    `HAS_BUREAU_BALANCE` la pone `unir_bureau_balance()`, y las dos uniones de mora cruzan con
-    `bureau` y son del 3.7.
+    `BUREAU_OVERDUE_UNION` es la referencia de `bureau` y llega ya en la lista de clientes.
     """
     receta = cargar_receta("bureau_balance")["features"]
     nombres = {f["nombre"] for f in receta}
     firmes = {f["nombre"] for f in receta if f["firmeza"] == "firme"}
     assert firmes == {"BB_MONTHS_MAX"}
-    fuera = {"HAS_BUREAU_BALANCE", "BB_OVERDUE_UNION", "BUREAU_OVERDUE_UNION"}
-    assert set(por_cliente.columns) == (nombres - firmes - fuera) | set(COLUMNAS_SIN_RECETA)
+    referencia = {f["nombre"] for f in receta if f["decision"] == "referencia"}
+    assert referencia == {"BUREAU_OVERDUE_UNION"} and referencia <= set(clientes.columns)
+    anadidas = set(unir_bureau_balance(clientes, por_cliente).columns) - set(clientes.columns)
+    assert anadidas == (nombres - firmes - referencia) | set(COLUMNAS_SIN_RECETA)
     assert not set(COLUMNAS_SIN_RECETA) & nombres, "una columna sin receta que sí está en ella"
     for motivo in COLUMNAS_SIN_RECETA.values():
         assert motivo.strip()
@@ -935,15 +944,38 @@ def test_el_nivel_credito_corre_sin_haber_fijado_los_cortes_del_de_cliente(bb):
 # --- la unión a la lista de clientes ----------------------------------------------------------
 
 
+# La lista de clientes tal como sale de `unir_bureau()`, con la mora de bureau de cada uno y lo que
+# la unión con la mensual tiene que dar. El 850 es un cliente de bureau cuyos créditos no tienen
+# panel, como el 800 pero sin mora, para que "toma el valor de bureau" no pase por un 1 constante.
+UNION_MORA = {
+    100: (1, 1.0),  # todo ciego, con su BB_ANY_DPD_FLAG a 0: la mora de bureau no se apaga
+    200: (1, 1.0),  # ambas fuentes
+    300: (0, 1.0),  # solo la mensual
+    400: (0, 0.0),  # con panel y ninguna
+    # solo la mensual otra vez, con banderas de mora apagadas que el 300 lleva encendidas: sin
+    # ellos, leer la reciente, el fallido o la salida en mora en vez de la genérica pasaba en CI
+    600: (0, 1.0),  # sin mora reciente ni fallido
+    700: (0, 1.0),  # sin salir en mora
+    800: (1, 1.0),  # sin panel, solo bureau
+    850: (0, 0.0),  # sin panel y sin mora: 0 y no NaN
+    999: (np.nan, np.nan),  # sin historial de bureau: NaN, la capa 1 no rellena
+}
+
+
 @pytest.fixture
 def clientes():
-    """Dos con histórico, uno sin él y uno que ni siquiera está en bureau."""
-    return pd.DataFrame({"SK_ID_CURR": [100, 300, 800, 999], "OTRA": [1, 2, 3, 4]})
+    return pd.DataFrame(
+        {
+            "SK_ID_CURR": list(UNION_MORA),
+            "BUREAU_OVERDUE_UNION": [b for b, _ in UNION_MORA.values()],
+            "OTRA": range(len(UNION_MORA)),
+        }
+    )
 
 
 def test_la_union_no_rellena_y_marca_la_presencia(clientes, por_cliente):
     unido = unir_bureau_balance(clientes, por_cliente)
-    assert unido["HAS_BUREAU_BALANCE"].tolist() == [1, 1, 0, 0]
+    assert unido["HAS_BUREAU_BALANCE"].tolist() == [1, 1, 1, 1, 1, 1, 0, 0, 0]
     sin_historico = unido[unido["HAS_BUREAU_BALANCE"].eq(0)]
     assert sin_historico[por_cliente.columns].isna().all().all()
     # y el cliente con histórico y sin mora conserva su 0, que el relleno no puede inventar
@@ -962,6 +994,53 @@ def test_la_union_revienta_con_un_agregado_de_clientes_repetidos(clientes, por_c
     repetido = pd.concat([por_cliente, por_cliente.loc[[100]]])
     with pytest.raises(pd.errors.MergeError):
         unir_bureau_balance(clientes, repetido)
+
+
+# --- 3.7, la mora de las dos fuentes -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("cliente", sorted(UNION_MORA))
+def test_la_union_de_mora_es_la_calculada_a_mano(clientes, por_cliente, cliente):
+    unido = unir_bureau_balance(clientes, por_cliente).set_index("SK_ID_CURR")
+    obtenido, esperado = unido.loc[cliente, "BB_OVERDUE_UNION"], UNION_MORA[cliente][1]
+    assert (pd.isna(obtenido) and pd.isna(esperado)) or obtenido == esperado
+
+
+def test_el_fixture_de_la_union_ejercita_cada_rama(clientes, por_cliente):
+    """Guardián: cada combinación de fuentes que la unión distingue tiene su cliente.
+
+    Y un cliente de solo mensual con cada bandera de mora vecina apagada, que es lo que separa la
+    genérica de ellas. La relativa no tiene ninguno, porque en el panel toda mora cae dentro de los
+    seis meses del fin de ventana: esa sustitución solo la caza la puerta sobre el dato real.
+    """
+    unido = unir_bureau_balance(clientes, por_cliente)
+    bureau, mensual = unido["BUREAU_OVERDUE_UNION"], unido["BB_ANY_DPD_FLAG"]
+    con_panel = unido["HAS_BUREAU_BALANCE"].eq(1)
+    ciego = unido["BB_MONTHS_REPORTED"].eq(0)
+    ramas = {
+        "ciego con mora de bureau": ciego & bureau.eq(1),
+        "ambas": bureau.eq(1) & mensual.eq(1),
+        **{
+            f"solo mensual sin {vecina}": bureau.eq(0) & mensual.eq(1) & unido[vecina].eq(0)
+            for vecina in ("BB_RECENT_DPD_FLAG", "BB_WRITEOFF_FLAG", "BB_EXITS_IN_DPD_FLAG")
+        },
+        "ninguna con panel": con_panel & bureau.eq(0) & mensual.eq(0),
+        "solo bureau sin panel": ~con_panel & bureau.eq(1),
+        "sin mora y sin panel": ~con_panel & bureau.eq(0),
+        "sin historial de bureau": bureau.isna(),
+    }
+    assert {rama: bool(m.any()) for rama, m in ramas.items()} == dict.fromkeys(ramas, True)
+
+
+def test_la_union_sin_la_mora_de_bureau_revienta_con_su_nombre(clientes, por_cliente):
+    """Sin ella el cliente con mora solo en bureau saldría sin marcar y nada avisaría."""
+    with pytest.raises(ValueError, match="BUREAU_OVERDUE_UNION"):
+        unir_bureau_balance(clientes.drop(columns="BUREAU_OVERDUE_UNION"), por_cliente)
+
+
+def test_la_union_de_mora_va_en_float_aunque_el_lote_no_traiga_nan(clientes, por_cliente):
+    con_bureau = clientes[clientes["BUREAU_OVERDUE_UNION"].notna()]
+    assert unir_bureau_balance(con_bureau, por_cliente)["BB_OVERDUE_UNION"].dtype == "float64"
 
 
 def test_un_panel_vacio_da_un_agregado_vacio_con_el_mismo_esquema(por_cliente, puente):
@@ -1442,3 +1521,117 @@ def test_la_trayectoria_de_cliente_reproduce_las_tasas_del_eda(dato_real, client
     target = dato_real["target_cliente"].reindex(a.index)
     tasas = target.groupby(a["BB_TRAJECTORY"], observed=True).mean().mul(100).round(2)
     assert tasas.to_dict() == TASA_TRAYECTORIA_CLIENTE_EDA
+
+
+# --- la puerta del 3.7 contra el dato real ----------------------------------------------------
+
+# Sobre los clientes con historial de bureau, que es la población de medición de la unión, y la
+# asociación entre las dos fuentes sobre los que tienen panel, como la celda 60 del notebook. La del
+# EDA sale idéntica, y la de modelado pierde 7 marcados de la unión y 6 de bureau.
+PUERTA_UNION = {
+    "train del EDA (307.511)": {
+        "con historial de bureau": 263_491,
+        "sin historial de bureau": 44_020,
+        "BB_OVERDUE_UNION": 88_419,
+        "BUREAU_OVERDUE_UNION": 72_419,
+        "V de Cramer": 0.3945,
+        "Jaccard": 0.3889,
+        "solo mensual": 16_000,
+        "solo bureau": 7_653,
+    },
+    "modelado (307.492)": {
+        "con historial de bureau": 263_475,
+        "sin historial de bureau": 44_017,
+        "BB_OVERDUE_UNION": 88_412,
+        "BUREAU_OVERDUE_UNION": 72_413,
+        "V de Cramer": 0.3945,
+        "Jaccard": 0.3889,
+        "solo mensual": 15_999,
+        "solo bureau": 7_653,
+    },
+}
+
+# Crédito a crédito sobre los 523.515 enlazables a train: n y tasa de default de cada grupo. Solo
+# tiene la población del EDA, porque mide el dato con el TARGET y no una salida de la agregación.
+CONCORDANCIA_CREDITO = {
+    "creditos": 523_515,
+    "% acuerdo": 85.59,
+    "ninguna": (435_381, 7.86),
+    "solo bureau": (20_172, 10.26),
+    "solo mensual": (55_281, 10.09),
+    "ambas": (12_681, 11.41),
+}
+
+
+@pytest.fixture(scope="module")
+def bureau_real():
+    """`bureau` entero y su agregado, con los cortes `medido` en su referencia del EDA.
+
+    La cola del conteo no tiene referencia y no toca la mora, así que va con los 18 del 2.3.
+    """
+    bureau = load_table("bureau")
+    medidos = [n for n in CORTES_BUREAU if parametro(n).procedencia == "medido"]
+    cortes = {**{n: parametro(n).valor_referencia for n in medidos}, "bureau_count_cola": 18}
+    return bureau, agregar_bureau(bureau, cortes)
+
+
+@sin_dato_real
+@sin_split
+@pytest.mark.parametrize("poblacion", sorted(PUERTA_UNION))
+def test_la_puerta_del_3_7_sobre_el_dato_real(dato_real, cliente_real, bureau_real, poblacion):
+    ids = {
+        "train del EDA (307.511)": dato_real["train_curr"],
+        "modelado (307.492)": cargar_split()["SK_ID_CURR"],
+    }[poblacion]
+    base = unir_bureau(pd.DataFrame({"SK_ID_CURR": ids.to_numpy()}), bureau_real[1])
+    unido = unir_bureau_balance(base, cliente_real)
+    con = unido[unido["HAS_BUREAU_HISTORY"].eq(1)]
+    assert unido["BB_OVERDUE_UNION"].isna().equals(unido["HAS_BUREAU_HISTORY"].eq(0))
+    con_panel = unido[unido["HAS_BUREAU_BALANCE"].eq(1)]
+    mensual, bureau = con_panel["BB_ANY_DPD_FLAG"].eq(1), con_panel["BUREAU_OVERDUE_UNION"].eq(1)
+    medido = {
+        "con historial de bureau": len(con),
+        "sin historial de bureau": len(unido) - len(con),
+        "BB_OVERDUE_UNION": int(con["BB_OVERDUE_UNION"].sum()),
+        "BUREAU_OVERDUE_UNION": int(con["BUREAU_OVERDUE_UNION"].sum()),
+        "V de Cramer": round(
+            association(pd.crosstab(mensual, bureau), method="cramer", correction=True), 4
+        ),
+        "Jaccard": round(int((mensual & bureau).sum()) / int((mensual | bureau).sum()), 4),
+        "solo mensual": int((mensual & ~bureau).sum()),
+        "solo bureau": int((bureau & ~mensual).sum()),
+    }
+    assert medido == PUERTA_UNION[poblacion]
+
+
+@sin_dato_real
+def test_la_concordancia_credito_a_credito_reproduce_la_del_eda(dato_real, bureau_real):
+    """Ninguna fuente domina, que es lo que justifica la unión.
+
+    Repite aquí la mora de tres condiciones de `agregar_bureau()`, porque el pipeline no la deja a
+    nivel crédito; la lee del signo de la foto, como ella.
+    """
+    b = limpiar_bureau(bureau_real[0])
+    mora = (
+        b["AMT_CREDIT_MAX_OVERDUE" + SUFIJO_SIGNO].gt(0)
+        | b["AMT_CREDIT_SUM_OVERDUE" + SUFIJO_SIGNO].gt(0)
+        | b["CREDIT_DAY_OVERDUE"].gt(0)
+    ).set_axis(b["SK_ID_BUREAU"].astype("int64"))
+    cred = dato_real["enlazables a train (EDA)"]
+    de_bureau = mora.reindex(cred.index)
+    assert de_bureau.notna().all(), "un crédito enlazable sin su fila en bureau"
+    de_bureau = de_bureau.astype(bool)
+    mensual = cred["BB_DPD_MONTHS"].gt(0)
+    target = dato_real["target"].reindex(cred.index)
+    grupos = {
+        "ninguna": ~de_bureau & ~mensual,
+        "solo bureau": de_bureau & ~mensual,
+        "solo mensual": ~de_bureau & mensual,
+        "ambas": de_bureau & mensual,
+    }
+    medido = {
+        "creditos": len(cred),
+        "% acuerdo": round(de_bureau.eq(mensual).mean() * 100, 2),
+        **{k: (int(m.sum()), round(target[m].mean() * 100, 2)) for k, m in grupos.items()},
+    }
+    assert medido == CONCORDANCIA_CREDITO

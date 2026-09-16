@@ -394,13 +394,29 @@ def agregar_bureau_balance(
 
 
 def unir_bureau_balance(clientes: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
-    """Left join del agregado a una lista de clientes, con `HAS_BUREAU_BALANCE`.
+    """Left join del agregado a una lista de clientes, con su presencia y la unión de mora.
 
     No rellena, igual que `unir_bureau()`: el cliente sin histórico mensual queda con NaN en todo.
     Su grupo no discrimina (8,14% frente a 8,04%, p=0,35), así que `HAS_BUREAU_BALANCE` es control
     de composición y no predictor, pero un 0 en los conteos lo mezclaría con quien tiene histórico
     y ninguna mora. Qué se hace con ese NaN es de la capa 2.
+
+    `BB_OVERDUE_UNION` es la mora del cliente en cualquiera de las dos fuentes, y la única feature
+    que cruza las dos tablas: por eso va aquí y no en el agregado, que no conoce al cliente con
+    historial de `bureau` y sin panel, y ese toma el valor de `bureau`. Exige que `clientes` ya
+    venga de `unir_bureau()`. Es NaN sin historial de `bureau`, donde el notebook ponía 0 y no
+    medía; el cliente ciego aporta su `BB_ANY_DPD_FLAG` a 0, la excepción del paso cliente.
     """
+    if "BUREAU_OVERDUE_UNION" not in clientes.columns:
+        raise ValueError(
+            "a clientes le falta BUREAU_OVERDUE_UNION: BB_OVERDUE_UNION la une con la mensual, así "
+            "que unir_bureau() va antes, o la mora que solo ve bureau saldría sin marcar"
+        )
     unido = clientes.join(agregado, on="SK_ID_CURR", validate="m:1")
     unido["HAS_BUREAU_BALANCE"] = unido["BB_N_CREDITS_WBAL"].notna().astype("int8")
+    # todo cliente con panel tiene bureau si la lista sale del mismo bureau que dio el puente, así
+    # que el NaN de la unión es el de bureau. En float siempre, para no depender del lote
+    mora_bureau = unido["BUREAU_OVERDUE_UNION"]
+    mora = mora_bureau.gt(0) | unido["BB_ANY_DPD_FLAG"].gt(0)
+    unido["BB_OVERDUE_UNION"] = mora.astype(float).where(mora_bureau.notna())
     return unido
