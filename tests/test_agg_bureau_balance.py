@@ -404,6 +404,22 @@ def test_la_ventana_contigua_de_un_solo_mes_no_revienta():
     assert agregar_por_credito(panel({7: (-96, ["0"])})).loc[7, "BB_MONTHS_OBS"] == 1
 
 
+# --- los cortes del paso credito ---
+
+
+def test_la_ventana_de_la_trayectoria_se_puede_variar_por_el_argumento(bb):
+    """Lo que el 3.9 necesita para su contraste, y que `valor()` por dentro no dejaba hacer."""
+    corto = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 2})
+    largo = agregar_por_credito(bb, {"bb_min_meses_trayectoria": 90})
+    assert corto["BB_CREDIT_TRAJECTORY"].notna().sum() > largo["BB_CREDIT_TRAJECTORY"].notna().sum()
+    assert largo["BB_CREDIT_TRAJECTORY"].isna().all()
+
+
+def test_un_corte_desconocido_revienta_con_su_nombre(bb):
+    with pytest.raises(KeyError, match="bb_min_meses_trayectori"):
+        agregar_por_credito(bb, {"bb_min_meses_trayectori": 6})
+
+
 # --- 3.4, el puente credito a cliente -----------------------------------------------------------
 
 

@@ -61,7 +61,7 @@ from src.features.cleaning import (
     MESES_BB,
     limpiar_bureau_balance,
 )
-from src.features.params import valor
+from src.features.params import CORTES_POR_FEATURE, valor
 
 CLAVE = "SK_ID_BUREAU"
 
@@ -77,8 +77,30 @@ COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
 # ordenada por prioridad del peor recorrido, que es lo que el nivel cliente del 3.6 toma con un max
 TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
+# Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y
+# cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva los dos
+# `medido` del de cliente, que revientan en `valor()` hasta que el 3.8 los refija.
+CORTES = tuple(
+    sorted({c for cortes in CORTES_POR_FEATURE["bureau_balance"].values() for c in cortes})
+)
+CORTES_CREDITO: tuple[str, ...] = ("bb_min_meses_trayectoria",)
 
-def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
+
+def _cortes(cortes: dict[str, float] | None, usa: tuple[str, ...]) -> dict[str, float]:
+    """Los cortes que consume un nivel: lo que traiga `cortes` y el resto con `valor()`.
+
+    La guarda mira contra los de la tabla entera y no contra los del nivel, para que
+    `agregar_bureau_balance()` pueda reenviar el dict completo al nivel crédito; sin ella un
+    nombre mal escrito dejaría el contraste corriendo con el valor de `params.py` sin avisar.
+    """
+    cortes = cortes or {}
+    desconocidos = set(cortes) - set(CORTES)
+    if desconocidos:
+        raise KeyError(f"cortes que ninguna feature de bureau_balance usa: {sorted(desconocidos)}")
+    return {n: cortes[n] if n in cortes else valor(n) for n in usa}
+
+
+def agregar_por_credito(bb: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por crédito con histórico, indexada por `SK_ID_BUREAU`.
 
     Llama a `limpiar_bureau_balance()` antes de agregar: es idempotente, así que un frame ya
@@ -100,6 +122,10 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
 
     El esquema no depende del lote: los tres float se fuerzan a float aunque el lote no traiga
     ningún NaN, y la categórica conserva sus ocho niveles con un frame vacío.
+
+    `cortes` solo alcanza a `bb_min_meses_trayectoria`, que es el único que este nivel consume, y
+    es lo que deja al 3.9 ejecutar su contraste sin tocar la agregación. Los dos `medido` del nivel
+    cliente no se resuelven aquí, así que este paso corre sin haberlos refijado.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in bb.columns]
     if faltan:
@@ -158,12 +184,14 @@ def agregar_por_credito(bb: pd.DataFrame) -> pd.DataFrame:
     en_mora = b.loc[b[COL_BB_IS_DPD].eq(1)].groupby(CLAVE)["MONTHS_BALANCE"].max()
     cred["BB_LAST_DPD_MONTH"] = en_mora.reindex(cred.index).astype(float)
     cred["BB_CENSORED"] = (cred["BB_WINDOW_END"] < 0).astype("int8")
-    cred = cred.join(trayectoria_por_credito(b, g))
+    cred = cred.join(trayectoria_por_credito(b, g, cortes))
     cred.index = cred.index.astype(DTYPE_CLAVE)
     return cred
 
 
-def trayectoria_por_credito(b: pd.DataFrame, g: pd.api.typing.DataFrameGroupBy) -> pd.DataFrame:
+def trayectoria_por_credito(
+    b: pd.DataFrame, g: pd.api.typing.DataFrameGroupBy, cortes: dict[str, float] | None = None
+) -> pd.DataFrame:
     """La trayectoria por mitades de cada crédito, sobre el frame limpio y la ventana ya guardada.
 
     Solo la llama `agregar_por_credito()`, después de la guarda: parte la ventana por su punto
@@ -186,7 +214,8 @@ def trayectoria_por_credito(b: pd.DataFrame, g: pd.api.typing.DataFrameGroupBy) 
     )
     mitades = mitades.groupby(b[CLAVE], sort=True).max()
     ant, rec = mitades["BB_WORST_OLD_HALF"], mitades["BB_WORST_RECENT_HALF"]
-    evaluable = (g.size() >= valor("bb_min_meses_trayectoria")) & ant.notna() & rec.notna()
+    minimo = _cortes(cortes, CORTES_CREDITO)["bb_min_meses_trayectoria"]
+    evaluable = (g.size() >= minimo) & ant.notna() & rec.notna()
     # como el notebook, mejora es por severidad: un 3 que pasa a 1 mejora aunque siga en mora
     clase = np.select(
         [(ant == 0) & (rec == 0), rec > ant, rec < ant],
@@ -235,3 +264,4 @@ def puente_credito_cliente(bureau: pd.DataFrame) -> pd.Series:
     puente = bureau.set_index(CLAVE)["SK_ID_CURR"]
     puente.index = puente.index.astype(DTYPE_CLAVE)
     return puente
+
