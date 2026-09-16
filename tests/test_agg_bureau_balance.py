@@ -669,7 +669,7 @@ def test_el_fixture_de_clientes_ejercita_cada_rama(por_cliente, agregado, bb, pu
 
     Los tres primeros miran el nivel crédito porque el agregado de cliente no deja ver de cuántos
     créditos sale: un cliente de un crédito reportado y otro que mezcla uno ciego con uno
-    reportado son indistinguibles desde sus doce columnas.
+    reportado son indistinguibles desde sus columnas.
     """
     minimo = CORTES_FIXTURE["bb_min_meses_reportados"]
     credito = agregado.loc[agregado.index.isin(puente.index)]
