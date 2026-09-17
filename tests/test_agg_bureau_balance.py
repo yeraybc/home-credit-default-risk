@@ -1,4 +1,4 @@
-"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.8).
+"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.9).
 
 Todos sobre un panel sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `bureau_balance.csv`, `bureau.csv` y `application_train.csv` y
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, norm
 from scipy.stats.contingency import association
 
 from src.config import ruta
@@ -27,6 +27,7 @@ from src.features.agg_bureau_balance import (
     puente_credito_cliente,
     unir_bureau_balance,
 )
+from src.features.build_features import ajustar_cola_bb
 from src.features.cleaning import (
     DTYPE_STATUS,
     SUFIJO_SIGNO,
@@ -523,8 +524,8 @@ def test_un_sk_id_bureau_repetido_con_otro_cliente_revienta(bureau):
 # --- 3.5, la agregación a nivel cliente -------------------------------------------------------
 
 # Los cortes salen del registro y no de literales, como en `test_agg_bureau`: la cola del conteo es
-# `medido` y `valor()` la bloquea hasta que el 3.9 la refija sobre train, así que aquí se pasan los
-# tres con su referencia del EDA, que es lo que la puerta reproduce.
+# `medido` y `valor()` la bloquea hasta que `ajustar_cola_bb()` la refija sobre train, así que
+# aquí se pasan los tres con su referencia del EDA, que es lo que la puerta reproduce.
 REFERENCIA = {n: parametro(n).valor_referencia for n in CORTES_CLIENTE}
 # el fixture no llega a los 22 créditos de la cola, así que la bajo a 3: cae justo en el 500, que
 # es el borde que separa `>=` de `>`
@@ -890,6 +891,41 @@ def test_la_cola_del_conteo_se_corta_sobre_los_creditos_con_historico(bb, puente
         )
         esperado = agregado["BB_N_CREDITS_WBAL"].ge(corte).astype("int8")
         assert agregado["BB_MANY_CREDITS_FLAG"].equals(esperado), corte
+
+
+# --- 3.9, el refijado de la cola sobre train ----------------------------------------------------
+
+# Con un crédito la tasa es del 50% y con dos también, así que el 2 no cruza y el 3 sí (el 500, 100%
+# frente a 3 de 7). El 300 va a valid con impago: contado en train, el 2 cruzaría. El 800 tiene
+# créditos en bureau y ningún panel, y el 999 ni eso: ninguno de los dos es cliente con histórico.
+TARGET_COLA = {100: 1, 200: 0, 400: 1, 500: 1, 600: 1, 700: 0, 800: 1, 900: 0, 999: 1, 1000: 0}
+
+
+def base_cola(parte_300="valid"):
+    filas = [{"SK_ID_CURR": c, "TARGET": t, "split": "train"} for c, t in TARGET_COLA.items()]
+    return pd.DataFrame([*filas, {"SK_ID_CURR": 300, "TARGET": 1, "split": parte_300}])
+
+
+def test_la_cola_de_bb_cuenta_los_creditos_con_historico_del_agregado(bb, puente, por_cliente):
+    """Contando filas del panel, o créditos de bureau sin panel (el 800), los marcados cambian."""
+    base = base_cola()
+    informe = ajustar_cola_bb(bb, puente, base, base)
+    train = base.loc[base.split.eq("train"), "SK_ID_CURR"]
+    conteo = por_cliente["BB_N_CREDITS_WBAL"].reindex(train).dropna()
+    assert informe.index.tolist() == list(range(2, int(conteo.max()) + 1))
+    for corte, marcados in informe["marcados"].items():
+        assert marcados == int(conteo.ge(corte).sum()), corte
+    assert parametro("bb_many_credits_corte").n_train_operativo == len(conteo) == 8
+
+
+def test_valid_no_mueve_la_cola_de_bb(bb, puente):
+    """Las dos direcciones: el 300 en valid deja el corte en 3, y contado en train lo baja a 2."""
+    base = base_cola()
+    ajustar_cola_bb(bb, puente, base, base)
+    assert valor("bb_many_credits_corte") == 3
+    base = base_cola("train")
+    ajustar_cola_bb(bb, puente, base, base, sobrescribir=True)
+    assert valor("bb_many_credits_corte") == 2
 
 
 # --- el puente, desde el nivel cliente --------------------------------------------------------
@@ -1772,3 +1808,58 @@ def test_contraste_de_la_ventana_de_mora_reciente(barrido_real):
         marcados.append(n1)
     # si la ventana no llegara a la bandera, los tres cortes medirían lo mismo
     assert marcados == sorted(set(marcados))
+
+
+# --- el 3.9, la cola del conteo contra el dato real ---------------------------------------------
+
+# La celda 47 del notebook sobre los 307.511: la U por tramos de créditos con histórico (1 a 2, 3 a
+# 5, 6 a 10 y 11 a 21) y la cola de 22 o más de la celda 59
+COLA_EDA = {
+    "clientes": 92_231,
+    "mediana": 5,
+    "p99": 21,
+    "maximo": 116,
+    "tasas de la U": [8.70, 7.60, 7.90, 8.74],
+    "cola de 22": (749, 11.08, 8.12, 0.0031),
+}
+
+
+@sin_dato_real
+def test_la_cola_del_conteo_reproduce_el_eda(dato_real, cliente_real):
+    conteo = cliente_real["BB_N_CREDITS_WBAL"].rename("n")
+    a = dato_real["target_cliente"].to_frame().join(conteo, how="inner")
+    tramos = pd.cut(a["n"], [0, 2, 5, 10, 21, 200])
+    tasas = a.groupby(tramos, observed=True)["TARGET"].mean().mul(100).round(2).tolist()
+    cola = a["n"].ge(22)
+    n1, _, z = efecto_bandera(cola, a["TARGET"])
+    medido = {
+        "clientes": len(a),
+        "mediana": a["n"].median(),
+        "p99": a["n"].quantile(0.99),
+        "maximo": a["n"].max(),
+        "tasas de la U": tasas[:4],
+        "cola de 22": (
+            n1,
+            round(a["TARGET"][cola].mean() * 100, 2),
+            round(a["TARGET"][~cola].mean() * 100, 2),
+            round(2 * norm.sf(abs(z)), 4),
+        ),
+    }
+    assert medido == COLA_EDA
+
+
+@sin_dato_real
+@sin_split
+def test_sobre_el_split_la_cola_de_bb_empieza_en_18_creditos(dato_real):
+    """El primero que cruza los 2pp: con 17 se queda en +1,92pp, con 18 llega a +2,51pp.
+
+    El p99 más uno del EDA daría 22, con +3,39pp y 574 marcados. Los 18 de bureau son otro conteo.
+    """
+    split = cargar_split()
+    informe = ajustar_cola_bb(dato_real["bb"], dato_real["puente"], split, split)
+    assert valor("bb_many_credits_corte") == 18
+    assert parametro("bb_many_credits_corte").n_train_operativo == 73_767
+    assert informe.loc[[17, 18, 22], "marcados"].tolist() == [2_140, 1_653, 574]
+    assert informe.loc[[17, 18, 22], "delta_pp"].round(2).tolist() == [1.92, 2.51, 3.39]
+    assert informe.index[informe.p99_mas_uno].tolist() == [22]
+

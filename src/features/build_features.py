@@ -217,17 +217,49 @@ def ajustar_cola_bureau(
     """
     filas = _bureau_de_train(bureau, base, split)
     clientes = filas.groupby("SK_ID_CURR")["TARGET"].agg(n="size", target="first")
+    return _primer_corte_que_cruza(
+        clientes["n"], clientes["target"], "bureau_count_cola", sobrescribir
+    )
+
+
+def ajustar_cola_bb(
+    bb: pd.DataFrame,
+    puente: pd.Series,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `BB_MANY_CREDITS_FLAG` con el criterio de `bureau_count_cola`.
+
+    El conteo es el de `BB_N_CREDITS_WBAL`: créditos distintos del panel con padre en `puente`,
+    sobre los clientes de train con histórico. El 22 del EDA era el p99 más uno, y queda marcado en
+    el informe como contraste, medido sobre la misma población.
+    """
+    creditos = puente[puente.index.isin(bb["SK_ID_BUREAU"].unique())]
+    entrenamiento = solo_train(base, split).set_index("SK_ID_CURR")["TARGET"]
+    clientes = entrenamiento.to_frame().join(creditos.value_counts().rename("n"), how="inner")
+    informe = _primer_corte_que_cruza(
+        clientes["n"], clientes["TARGET"], "bb_many_credits_corte", sobrescribir
+    )
+    # el primer entero por encima del p99, que es como el EDA llegó al 22 desde un p99 de 21
+    return informe.assign(p99_mas_uno=informe.index == int(clientes["n"].quantile(0.99)) + 1)
+
+
+def _primer_corte_que_cruza(
+    conteo: pd.Series, target: pd.Series, nombre: str, sobrescribir: bool
+) -> pd.DataFrame:
+    """Barre los cortes de un conteo por cliente y fija el primero cuyo delta cruza el umbral."""
     barrido = []
-    for corte in range(2, clientes["n"].max() + 1):
-        cola = clientes["n"].ge(corte)
-        delta = clientes["target"][cola].mean() - clientes["target"][~cola].mean()
+    for corte in range(2, conteo.max() + 1):
+        cola = conteo.ge(corte)
+        delta = target[cola].mean() - target[~cola].mean()
         barrido.append((corte, int(cola.sum()), delta * 100))
     informe = pd.DataFrame(barrido, columns=["corte", "marcados", "delta_pp"]).set_index("corte")
     cruzan = informe.index[informe["delta_pp"] >= valor("umbral_flags_pp")]
     if cruzan.empty:
         raise ValueError("ningún corte del conteo cruza el umbral de banderas")
-    fijar_operativo("bureau_count_cola", int(cruzan[0]), len(clientes), sobrescribir)
-    logger.info("cola del conteo refijada en %s sobre %s clientes", cruzan[0], f"{len(clientes):,}")
+    fijar_operativo(nombre, int(cruzan[0]), len(conteo), sobrescribir)
+    logger.info("%s refijado en %s sobre %s clientes", nombre, cruzan[0], f"{len(conteo):,}")
     return informe.assign(elegido=informe.index == cruzan[0])
 
 

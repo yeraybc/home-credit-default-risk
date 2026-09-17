@@ -400,11 +400,15 @@ PARAMS: dict[str, Parametro] = {
         ),
     ),
     # bureau_balance: cortes medidos
+    # El 22 es el p99 más uno del EDA sobre los 307.511. Desde el 3.9 se refija con el criterio de
+    # bureau_count_cola: sobre los 73.767 clientes de train con histórico sale 18, con +2,51pp y
+    # 1.653 marcados (17 se queda en +1,92pp), y el p99 más uno daría 22 con +3,39pp y 574.
     "bb_many_credits_corte": Parametro(
         22,
         "medido",
-        "corte de la cola del conteo de créditos con histórico",
-        "notebook 03 celda 59",
+        "créditos con histórico a partir de los cuales el cliente está en la cola del conteo: el "
+        "primer corte cuyo delta cruza umbral_flags_pp",
+        "notebook 03 celdas 47 y 59",
     ),
     # Dominio y no medido, desde el 3.3, que es quien lo consume: el EDA no lo eligió contra la
     # tasa de default, es que con menos de seis meses cada mitad se queda en uno o dos y la

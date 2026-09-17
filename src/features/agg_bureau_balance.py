@@ -82,7 +82,7 @@ TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"],
 
 # Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y
 # cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva la cola
-# del conteo, que es `medido` y revienta en `valor()` hasta que el 3.9 la refija.
+# del conteo, que es `medido` y revienta en `valor()` hasta que `ajustar_cola_bb()` la refija.
 CORTES = tuple(
     sorted({c for cortes in CORTES_POR_FEATURE["bureau_balance"].values() for c in cortes})
 )
@@ -149,8 +149,8 @@ def agregar_por_credito(bb: pd.DataFrame, cortes: dict[str, float] | None = None
     ningún NaN, y la categórica conserva sus ocho niveles con un frame vacío.
 
     `cortes` solo alcanza a `bb_min_meses_trayectoria`, que es el único que este nivel consume, y
-    es lo que deja al 3.9 ejecutar su contraste sin tocar la agregación. Los tres `medido` del nivel
-    cliente no se resuelven aquí, así que este paso corre sin haberlos refijado.
+    es lo que deja al 3.9 ejecutar su contraste sin tocar la agregación. Los cortes del nivel
+    cliente no se resuelven aquí, así que este paso corre sin haber refijado la cola.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in bb.columns]
     if faltan:
@@ -332,8 +332,9 @@ def agregar_bureau_balance(
 
     `cortes` sustituye a los de `params.py` y se reenvía entero al paso crédito, que es el punto de
     entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. De los tres que consume este
-    nivel, `bb_many_credits_corte` es `medido` y revienta en `valor()` hasta que el 3.9 lo refija
-    sobre train; el denominador mínimo y la ventana de la mora reciente son `dominio` desde el 3.8.
+    nivel, `bb_many_credits_corte` es `medido` y revienta en `valor()` hasta que
+    `ajustar_cola_bb()` lo refija sobre train; el denominador mínimo y la ventana de la mora
+    reciente son `dominio` desde el 3.8.
     """
     c = _cortes(cortes, CORTES_CLIENTE)
     cred = agregar_por_credito(bb, cortes)

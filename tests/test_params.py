@@ -157,6 +157,8 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     # los dos barridos del EDA que el 3.8 cita en params.py al pasar sus cortes a dominio
     0.0981, 0.1040, 0.1095, 0.1129,       # rank-biserial del porcentaje con 1, 3, 6 y 12 meses
     5.25, 4.89, 4.31,                     # delta de la mora reciente con 3, 6 y 12 meses
+    # la cola del conteo de bureau_balance que refija el 3.9, sobre sus 73.767 clientes de train
+    2.51, 1.92, 3.39,                     # delta con 18 y 17 creditos, y con el p99 mas uno (22)
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
