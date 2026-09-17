@@ -421,7 +421,8 @@ PARAMS: dict[str, Parametro] = {
         contraste_pendiente=(
             "comprobar sobre el split que el orden de la trayectoria a nivel cliente (sin mora, "
             "mejora, empeora y estable) no depende de la ventana mínima, o sea que la señal no "
-            "depende de este valor. Lo ejecuta el 3.9"
+            "depende de este valor. Ejecutado en el 3.9 con 4, 6, 9 y 12 meses y fijado en "
+            "test_contraste_de_la_ventana_minima_de_la_trayectoria"
         ),
     ),
     # previous_application: cortes medidos

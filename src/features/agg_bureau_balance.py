@@ -76,8 +76,8 @@ DTYPE_CLAVE = "int64"
 COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
 
 # ordenada por prioridad del peor recorrido, que es lo que el nivel cliente toma con un max. Estable
-# por encima de empeora salió de las tasas del EDA sobre train completo y no del dominio: lo remide
-# el 3.9 sobre train
+# por encima de empeora es de dominio desde el 3.9, la mora en las dos mitades pesa más que el
+# deterioro puntual: sobre train queda por encima con cualquier ventana mínima, sin significación
 TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
 # Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y

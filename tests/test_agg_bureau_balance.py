@@ -1863,3 +1863,45 @@ def test_sobre_el_split_la_cola_de_bb_empieza_en_18_creditos(dato_real):
     assert informe.loc[[17, 18, 22], "delta_pp"].round(2).tolist() == [1.92, 2.51, 3.39]
     assert informe.index[informe.p99_mas_uno].tolist() == [22]
 
+
+# --- el 3.9, la ventana mínima y el orden de la trayectoria --------------------------------------
+
+# Sobre los clientes de train con trayectoria evaluable, por ventana mínima: evaluables, y estables
+# frente a los que empeoran con sus n, la diferencia en pp y su p. Estable queda por encima en las
+# cuatro y en ninguna es significativo: el orden se sostiene por dominio, no por la medida.
+ORDEN_TRAYECTORIA_TRAIN = {
+    4: (56_346, 4_859, 7_838, 0.79, 0.179),
+    6: (53_284, 4_773, 7_535, 0.98, 0.098),
+    9: (47_825, 4_488, 6_724, 1.14, 0.061),
+    12: (42_578, 4_147, 5_897, 1.01, 0.111),
+}
+
+
+@pytest.fixture(scope="module")
+def barrido_trayectoria(dato_real):
+    return {
+        k: agregar_bureau_balance(
+            dato_real["bb"], dato_real["puente"], {**REFERENCIA, "bb_min_meses_trayectoria": k}
+        )
+        for k in ORDEN_TRAYECTORIA_TRAIN
+    }
+
+
+@sin_dato_real
+@sin_split
+def test_contraste_de_la_ventana_minima_de_la_trayectoria(barrido_trayectoria):
+    """El orden robusto no depende de la ventana mínima, que por eso es dominio y no medido.
+
+    Sin mora por debajo de mejora, y mejora por debajo de empeora y de estable, con 4, 6, 9 y 12
+    meses. Entre estable y empeora solo se mide: con 6 meses, +0,98pp con p de 0,098.
+    """
+    target = target_de_train()
+    for k, esperado in ORDEN_TRAYECTORIA_TRAIN.items():
+        a = con_target(barrido_trayectoria[k], target)
+        a = a[a["BB_TRAJECTORY"].notna()]
+        tasa = a.groupby("BB_TRAJECTORY", observed=True)["TARGET"].mean()
+        assert tasa["sin mora"] < tasa["mejora"] < min(tasa["empeora"], tasa["estable"]), k
+        par = a[a["BB_TRAJECTORY"].isin(["estable", "empeora"])]
+        n1, delta, z = efecto_bandera(par["BB_TRAJECTORY"].eq("estable"), par["TARGET"])
+        medido = (len(a), n1, len(par) - n1, round(delta, 2), round(2 * norm.sf(abs(z)), 3))
+        assert medido == esperado, k
