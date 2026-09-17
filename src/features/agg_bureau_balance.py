@@ -55,6 +55,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.features.agg_bureau import POBLACIONES as POBLACIONES_BUREAU
 from src.features.cleaning import (
     COL_BB_DPD,
     COL_BB_IS_DPD,
@@ -108,6 +109,20 @@ BANDERAS_TRAYECTORIA = {
     "BB_PERSISTENT_DPD_FLAG": "estable",
     "BB_WORSENING_DPD_FLAG": "empeora",
     "BB_RECOVERED_DPD_FLAG": "mejora",
+}
+
+# Las poblaciones sobre las que la receta midió cada feature, como máscara del frame que devuelve
+# `unir_bureau_balance()` sobre la salida de `unir_bureau()`, como en `agg_bureau.py`. None es la
+# población del propio evaluador.
+POBLACIONES = {
+    "global": None,
+    "no nulos (auto-cond.)": None,
+    "con histórico": lambda d: d["HAS_BUREAU_BALANCE"].eq(1),
+    "con historial de bureau": POBLACIONES_BUREAU["con historial"],
+    "trayectoria evaluable": lambda d: d["BB_TRAJECTORY"].notna(),
+    # deja fuera al cliente con todos sus créditos ciegos, que tiene panel y ningún estado
+    "con estado reportado": lambda d: d["BB_STATUS_WORST"].notna(),
+    "clientes con mora": lambda d: d["BB_ANY_DPD_FLAG"].eq(1),
 }
 
 

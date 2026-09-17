@@ -21,6 +21,7 @@ from src.features.agg_bureau_balance import (
     COLUMNAS_ORIGEN,
     COLUMNAS_SIN_RECETA,
     CORTES_CLIENTE,
+    POBLACIONES,
     TRAYECTORIAS,
     agregar_bureau_balance,
     agregar_por_credito,
@@ -34,6 +35,7 @@ from src.features.cleaning import (
     limpiar_bureau,
     limpiar_bureau_balance,
 )
+from src.features.eval import remedir_receta
 from src.features.params import parametro, valor
 from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -1097,6 +1099,39 @@ def test_el_fixture_de_la_union_ejercita_cada_rama(clientes, por_cliente):
     assert {rama: bool(m.any()) for rama, m in ramas.items()} == dict.fromkeys(ramas, True)
 
 
+def test_las_poblaciones_son_exactamente_las_de_la_receta(clientes, por_cliente):
+    """Ninguna etiqueta de lo provisional sin máscara ni máscara sin usar, y cada población
+    condicionada deja fuera a alguien de la suya sin dejar entrar a nadie de fuera. En las banderas
+    la n son los marcados y la puerta local no ve la población: esto es lo que la sostiene."""
+    receta = cargar_receta("bureau_balance")["features"]
+    medidas = {
+        f["poblacion_medicion"]
+        for f in receta
+        if f["firmeza"] == "provisional" and f["tipo"] != "control"
+    }
+    assert medidas == set(POBLACIONES)
+    # el bucle de abajo se salta las None: sin esto, una condicionada que pase a None no cae en CI
+    sin_mascara = {e for e, m in POBLACIONES.items() if m is None}
+    assert sin_mascara == {"global", "no nulos (auto-cond.)"}
+    clientes = clientes.assign(HAS_BUREAU_HISTORY=clientes["BUREAU_OVERDUE_UNION"].notna())
+    unido = unir_bureau_balance(clientes, por_cliente)
+    # del conteo y del origen, no de las banderas que leen las propias máscaras
+    panel_ = unido["BB_N_CREDITS_WBAL"].notna()
+    bureau = unido["BUREAU_OVERDUE_UNION"].notna()
+    for etiqueta, mascara in POBLACIONES.items():
+        if mascara is None:
+            continue
+        dentro = mascara(unido)
+        assert dentro.dtype == bool and dentro.any(), etiqueta
+        if etiqueta == "con historial de bureau":
+            assert dentro.equals(bureau) and (dentro & ~panel_).any()
+        elif etiqueta == "con histórico":
+            assert dentro.equals(panel_)
+        else:
+            assert not (dentro & ~panel_).any(), f"{etiqueta} incluye a un cliente sin panel"
+            assert (panel_ & ~dentro).any(), f"{etiqueta} no deja fuera a nadie con panel"
+
+
 def test_la_union_sin_la_mora_de_bureau_revienta_con_su_nombre(clientes, por_cliente):
     """Sin ella el cliente con mora solo en bureau saldría sin marcar y nada avisaría."""
     with pytest.raises(ValueError, match="BUREAU_OVERDUE_UNION"):
@@ -1905,3 +1940,38 @@ def test_contraste_de_la_ventana_minima_de_la_trayectoria(barrido_trayectoria):
         n1, delta, z = efecto_bandera(par["BB_TRAJECTORY"].eq("estable"), par["TARGET"])
         medido = (len(a), n1, len(par) - n1, round(delta, 2), round(2 * norm.sf(abs(z)), 3))
         assert medido == esperado, k
+
+
+# --- 3.10, la receta remedida sobre train -------------------------------------------------------
+
+
+@sin_dato_real
+@sin_split
+def test_sobre_el_split_lo_provisional_de_bb_sigue_en_el_mismo_orden(dato_real, bureau_real):
+    """Las 22 provisionales, con cocientes frente a la receta entre 0,57 y 1,26 salvo una.
+
+    Dos no pasan la puerta del 2.3 tal cual, y no por lo mismo. `BB_MANY_CREDITS_FLAG` mide otra
+    población, porque su corte bajó de 22 a 18 al refijarse. `BB_STATUS_WORST` como continua
+    dentro de los morosos es cero: el pipeline reproduce el 0,0065 del EDA sobre su población, en
+    train da 0,00001 y en 15 folds cambia de signo, de -0,0064 a +0,0090, así que su cociente no
+    mide nada. Lo que sostiene su descarte es que sigue sin significación.
+    """
+    split = cargar_split()
+    ajustar_cola_bb(dato_real["bb"], dato_real["puente"], split, split)
+    train = split.loc[split.split.eq("train"), ["SK_ID_CURR", "TARGET"]]
+    # la mora de bureau no depende de sus cortes medidos, así que valen los de referencia
+    base = unir_bureau(train, bureau_real[1])
+    unido = unir_bureau_balance(base, agregar_bureau_balance(dato_real["bb"], dato_real["puente"]))
+    receta = cargar_receta("bureau_balance")
+    tabla = remedir_receta(unido, unido.TARGET, receta, POBLACIONES).set_index(["tipo", "feature"])
+    assert len(tabla) == 22
+
+    cola, severidad = ("flag", "BB_MANY_CREDITS_FLAG"), ("continua", "BB_STATUS_WORST")
+    assert tabla.loc[cola, "n"] == 1_653 and tabla.loc[cola, "mismo_orden"] is True
+    assert tabla.loc[severidad, "p"] > receta["metodologia"]["alfa_bonferroni"]
+    resto = tabla.drop(index=[cola, severidad])
+    proporcion = resto.n / resto.n_receta
+    assert proporcion.between(0.7, 0.9).all(), proporcion[~proporcion.between(0.7, 0.9)]
+    # eq(True) y no all(): sobre object, un vacío cuenta como verdadero
+    assert resto.mismo_orden.eq(True).all(), resto.index[~resto.mismo_orden.eq(True)].tolist()
+    assert tabla.loc[("flag", "HAS_BUREAU_BALANCE"), "n"] == 73_767
