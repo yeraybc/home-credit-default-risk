@@ -369,20 +369,37 @@ PARAMS: dict[str, Parametro] = {
         "cuyo delta cruza umbral_flags_pp",
         "auditoría transversal, pendiente 5",
     ),
-    # bureau_balance: cortes medidos
+    # bureau_balance. Los dos primeros son dominio desde el 3.8 y por la razón de los 180 días de
+    # bureau: el barrido del EDA no tiene pico. El r_rb del porcentaje sube con el mínimo (0,0981
+    # con 1 mes a 0,1129 con 12), así que un máximo se iría al corte más alto por selección de
+    # población, y el 6 responde a que con uno o dos meses el ratio vale 0 o 1 por ruido de reporte.
+    # El delta de la mora reciente baja con la ventana (+5,25pp con 3 a +4,31pp con 12) con z casi
+    # plana, y el 6 quedó como compromiso.
     "bb_min_meses_reportados": Parametro(
         6,
-        "medido",
+        "dominio",
         "denominador mínimo del porcentaje de meses en mora",
         "notebook 03 celda 56",
+        contraste_pendiente=(
+            "comprobar sobre el split que BB_PCT_MONTHS_DPD separa el default con un mínimo de 1, "
+            "3, 6 y 12 meses reportados, con efectos dentro de remedicion_factor_max entre sí, o "
+            "sea que la señal no depende de este valor. Ejecutado en el 3.8 y fijado en "
+            "test_contraste_del_denominador_minimo"
+        ),
     ),
     "bb_mora_reciente_meses": Parametro(
         6,
-        "medido",
+        "dominio",
         "ventana de la mora reciente, cortada sobre la recencia relativa al fin de ventana "
         "de cada crédito y no sobre la absoluta",
-        "notebook 03 celda 62",
+        "notebook 03 celdas 61 y 62",
+        contraste_pendiente=(
+            "comprobar sobre el split que BB_RECENT_DPD_FLAG_REL cruza umbral_flags_pp con "
+            "ventanas de 3, 6 y 12 meses, o sea que la señal no depende de este valor. Ejecutado "
+            "en el 3.8 y fijado en test_contraste_de_la_ventana_de_mora_reciente"
+        ),
     ),
+    # bureau_balance: cortes medidos
     "bb_many_credits_corte": Parametro(
         22,
         "medido",

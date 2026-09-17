@@ -1,4 +1,4 @@
-"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.7).
+"""Tests de la agregación de bureau_balance a nivel crédito y cliente (puntos 3.2 a 3.8).
 
 Todos sobre un panel sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `bureau_balance.csv`, `bureau.csv` y `application_train.csv` y
@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
+from scipy.stats import mannwhitneyu
 from scipy.stats.contingency import association
 
 from src.config import ruta
@@ -32,7 +33,7 @@ from src.features.cleaning import (
     limpiar_bureau,
     limpiar_bureau_balance,
 )
-from src.features.params import parametro
+from src.features.params import parametro, valor
 from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
@@ -521,9 +522,9 @@ def test_un_sk_id_bureau_repetido_con_otro_cliente_revienta(bureau):
 
 # --- 3.5, la agregación a nivel cliente -------------------------------------------------------
 
-# Los cortes salen del registro y no de literales, como en `test_agg_bureau`: los tres son `medido`
-# y `valor()` los bloquea hasta que el 3.8 y el 3.9 los refijan sobre train, así que aquí se pasan
-# con su referencia del EDA, que es lo que la puerta reproduce.
+# Los cortes salen del registro y no de literales, como en `test_agg_bureau`: la cola del conteo es
+# `medido` y `valor()` la bloquea hasta que el 3.9 la refija sobre train, así que aquí se pasan los
+# tres con su referencia del EDA, que es lo que la puerta reproduce.
 REFERENCIA = {n: parametro(n).valor_referencia for n in CORTES_CLIENTE}
 # el fixture no llega a los 22 créditos de la cola, así que la bajo a 3: cae justo en el 500, que
 # es el borde que separa `>=` de `>`
@@ -1667,3 +1668,107 @@ def test_la_concordancia_credito_a_credito_reproduce_la_del_eda(dato_real, burea
         **{k: (int(m.sum()), round(target[m].mean() * 100, 2)) for k, m in grupos.items()},
     }
     assert medido == CONCORDANCIA_CREDITO
+
+
+# --- el 3.8, el denominador y la mora reciente contra el dato real -----------------------------
+
+# Los barridos de las celdas 56 y 61 del notebook, sobre los 307.511: el rank-biserial de
+# BB_PCT_MONTHS_DPD por mínimo de meses reportados, y la mora reciente absoluta por ventana, con sus
+# marcados, su delta en pp y su z
+BARRIDO_DENOMINADOR_EDA = {1: (89_856, 0.0981), 3: (88_021, 0.1040), 6: (83_971, 0.1095),
+                           12: (74_023, 0.1129)}
+BARRIDO_MORA_RECIENTE_EDA = {3: (8_611, 5.25, 17.0), 6: (11_602, 4.89, 18.0),
+                             12: (15_889, 4.31, 18.1)}
+
+
+@pytest.fixture(scope="module")
+def barrido_real(dato_real):
+    """El agregado de cliente con los dos cortes a la vez en cada valor de los dos barridos."""
+    return {
+        k: agregar_bureau_balance(
+            dato_real["bb"],
+            dato_real["puente"],
+            {**REFERENCIA, "bb_min_meses_reportados": k, "bb_mora_reciente_meses": k},
+        )
+        for k in sorted({*BARRIDO_DENOMINADOR_EDA, *BARRIDO_MORA_RECIENTE_EDA})
+    }
+
+
+def rank_biserial(valores, target):
+    """Con signo: positivo si los morosos toman valores más altos. Con su p, como la celda 56."""
+    x1, x0 = valores[target == 1], valores[target == 0]
+    u, p = mannwhitneyu(x1, x0)
+    return 2 * u / (len(x0) * len(x1)) - 1, p
+
+
+def efecto_bandera(bandera, target):
+    """Marcados, delta en pp y z del contraste de proporciones, el de `EvaluadorSenal`."""
+    marcados = bandera == 1
+    n1, n0 = int(marcados.sum()), int((~marcados).sum())
+    p1, p0, pp = target[marcados].mean(), target[~marcados].mean(), target.mean()
+    return n1, (p1 - p0) * 100, (p1 - p0) / np.sqrt(pp * (1 - pp) * (1 / n1 + 1 / n0))
+
+
+def con_target(agregado, target):
+    """Los clientes con histórico de una población, con su TARGET al lado."""
+    return agregado.join(target.rename("TARGET"), how="inner")
+
+
+@sin_dato_real
+def test_el_barrido_del_denominador_reproduce_el_eda(dato_real, barrido_real):
+    for k, esperado in BARRIDO_DENOMINADOR_EDA.items():
+        a = con_target(barrido_real[k], dato_real["target_cliente"])
+        a = a[a["BB_PCT_MONTHS_DPD"].notna()]
+        r, _ = rank_biserial(a["BB_PCT_MONTHS_DPD"], a["TARGET"])
+        assert (len(a), round(r, 4)) == esperado, k
+
+
+@sin_dato_real
+def test_el_barrido_de_la_mora_reciente_absoluta_reproduce_el_eda(dato_real, barrido_real):
+    for k, esperado in BARRIDO_MORA_RECIENTE_EDA.items():
+        a = con_target(barrido_real[k], dato_real["target_cliente"])
+        assert len(a) == 92_231, "la población de la celda 61 son los clientes con histórico"
+        n1, delta, z = efecto_bandera(a["BB_RECENT_DPD_FLAG"], a["TARGET"])
+        assert (n1, round(delta, 2), round(z, 1)) == esperado, k
+
+
+def target_de_train():
+    split = cargar_split()
+    return split.loc[split.split == "train"].set_index("SK_ID_CURR")["TARGET"]
+
+
+@sin_dato_real
+@sin_split
+def test_contraste_del_denominador_minimo(barrido_real):
+    """La señal no depende del mínimo de meses reportados, que por eso es dominio y no medido.
+
+    Sobre los 73.767 clientes de train con histórico, el r_rb sube de +0,0986 con 1 mes a +0,1129
+    con 12 (0,1042 con 3 y 0,1099 con 6), sin pico y con p de 6,3e-48 o menos.
+    """
+    target, efectos = target_de_train(), []
+    for k in BARRIDO_DENOMINADOR_EDA:
+        a = con_target(barrido_real[k], target)
+        a = a[a["BB_PCT_MONTHS_DPD"].notna()]
+        r, p = rank_biserial(a["BB_PCT_MONTHS_DPD"], a["TARGET"])
+        assert r > 0 and p < 0.05, k
+        efectos.append(r)
+    assert max(efectos) / min(efectos) <= valor("remedicion_factor_max")
+
+
+@sin_dato_real
+@sin_split
+def test_contraste_de_la_ventana_de_mora_reciente(barrido_real):
+    """La bandera relativa separa con cualquier ventana de 3 a 12 meses, que por eso es dominio.
+
+    Sobre los 73.767 clientes de train con histórico: +5,27pp con 3 meses (8.521 marcados), +5,02pp
+    con 6 (11.394) y +4,36pp con 12 (15.243). La absoluta, que es la que barrió el EDA, da +5,29pp,
+    +5,07pp y +4,39pp.
+    """
+    target, marcados = target_de_train(), []
+    for k in BARRIDO_MORA_RECIENTE_EDA:
+        a = con_target(barrido_real[k], target)
+        n1, delta, _ = efecto_bandera(a["BB_RECENT_DPD_FLAG_REL"], a["TARGET"])
+        assert delta >= valor("umbral_flags_pp"), k
+        marcados.append(n1)
+    # si la ventana no llegara a la bandera, los tres cortes medirían lo mismo
+    assert marcados == sorted(set(marcados))

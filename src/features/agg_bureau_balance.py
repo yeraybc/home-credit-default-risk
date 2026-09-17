@@ -81,8 +81,8 @@ COLUMNAS_ORIGEN: tuple[str, ...] = (CLAVE, "MONTHS_BALANCE", "STATUS")
 TRAYECTORIAS = pd.CategoricalDtype(["sin mora", "mejora", "empeora", "estable"], ordered=True)
 
 # Los cortes que lleva dentro alguna feature de la tabla, del mismo registro que usa `params.py`, y
-# cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva los tres
-# `medido` del de cliente, que revientan en `valor()` hasta que el 3.8 y el 3.9 los refijan.
+# cuáles consume cada nivel. Separarlos es lo que permite que el nivel crédito no resuelva la cola
+# del conteo, que es `medido` y revienta en `valor()` hasta que el 3.9 la refija.
 CORTES = tuple(
     sorted({c for cortes in CORTES_POR_FEATURE["bureau_balance"].values() for c in cortes})
 )
@@ -331,8 +331,9 @@ def agregar_bureau_balance(
     se construyen, que la capa 2b los remide.
 
     `cortes` sustituye a los de `params.py` y se reenvía entero al paso crédito, que es el punto de
-    entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. Los tres que consume este nivel
-    son `medido` y revientan en `valor()` hasta que el 3.8 y el 3.9 los refijan sobre train.
+    entrada de `bb_min_meses_trayectoria` para el contraste del 3.9. De los tres que consume este
+    nivel, `bb_many_credits_corte` es `medido` y revienta en `valor()` hasta que el 3.9 lo refija
+    sobre train; el denominador mínimo y la ventana de la mora reciente son `dominio` desde el 3.8.
     """
     c = _cortes(cortes, CORTES_CLIENTE)
     cred = agregar_por_credito(bb, cortes)

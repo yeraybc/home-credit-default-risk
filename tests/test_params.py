@@ -154,6 +154,9 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     # bureau_balance, las primeras que el bloque 3 pone delante de agg_bureau_balance.py
     8.14, 8.04, 0.35,                     # HAS_BUREAU_BALANCE: las dos tasas y su p
     2.74, 2.76,                           # BB_ANY_DPD_FLAG con los ciegos dentro y sin ellos
+    # los dos barridos del EDA que el 3.8 cita en params.py al pasar sus cortes a dominio
+    0.0981, 0.1040, 0.1095, 0.1129,       # rank-biserial del porcentaje con 1, 3, 6 y 12 meses
+    5.25, 4.89, 4.31,                     # delta de la mora reciente con 3, 6 y 12 meses
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -369,6 +372,14 @@ def test_la_ventana_minima_de_la_trayectoria_es_dominio_con_su_contraste_declara
     assert p.procedencia == "dominio"
     assert valor("bb_min_meses_trayectoria") == 6
     assert "bb_min_meses_trayectoria" in con_contraste_pendiente()
+
+
+@pytest.mark.parametrize("nombre", ["bb_min_meses_reportados", "bb_mora_reciente_meses"])
+def test_el_denominador_y_la_mora_reciente_de_bb_son_dominio_con_su_contraste(nombre):
+    """El barrido del EDA no tiene pico, así que no hay corte que refijar sobre train (3.8)."""
+    assert parametro(nombre).procedencia == "dominio"
+    assert valor(nombre) == 6
+    assert nombre in con_contraste_pendiente()
 
 
 def test_el_cap_de_la_antiguedad_del_coche_es_estimado():
