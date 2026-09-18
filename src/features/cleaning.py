@@ -1,9 +1,9 @@
 """Limpieza determinista de nivel fila, capa 1 del pipeline de features.
 
-Sirve a dos tablas y en cada una hace una cosa distinta, así que las dos mitades van separadas:
-`limpiar_application()` en la primera, con sus centinelas y sus columnas eliminadas, y
-`limpiar_bureau()` en la segunda, con la validez de dominio de los importes y las fechas. Lo que
-comparten es el criterio de capa, no el contenido.
+Sirve a tres tablas y en cada una hace una cosa distinta, así que las tres partes van separadas:
+`limpiar_application()` con sus centinelas y sus columnas eliminadas, `limpiar_bureau()` con la
+validez de dominio de los importes y las fechas, y `limpiar_bureau_balance()` con la
+decodificación de `STATUS`. Lo que comparten es el criterio de capa, no el contenido.
 
 Solo entra aquí lo que no estima ningún parámetro a partir de datos: centinelas, columnas que
 se eliminan por motivo estructural, y caps con una constante fija de dominio. Todo lo que
@@ -446,6 +446,152 @@ def limpiar_bureau(bureau: pd.DataFrame) -> pd.DataFrame:
     limpio = aplicar_caps_bureau(limpio)
     limpio = capar_deuda_al_credito(limpio)
     return acotar_ventanas_bureau(limpio)
+
+
+# - bureau_balance -
+# Es el caso opuesto a `bureau`: el EDA no encontró ni un valor fuera de dominio, así que esta
+# limpieza no retira nada. Lo que aporta es la decodificación, que convierte una letra en la
+# severidad y las dos banderas que el nivel crédito agrega, y el parar cuando el dominio se rompe.
+#
+# El dominio de `STATUS` y su traducción son la misma constante: declarar la lista de códigos
+# válidos aparte del mapa sería el mismo dominio en dos sitios, que es lo que dejó 52.500 frente a
+# 52.497 en `bureau`. `C` (saldado) y `X` (sin información) van a NaN y no a 0 porque están fuera
+# de la escala de severidad: leer "sin dato" como "sin mora" es la codificación que diluye la
+# señal rara, y es la razón de que el nivel crédito tenga que distinguir los créditos sin ningún
+# estado numérico, que sobre esta tabla entera son **130.368, el 15,95%**. El EDA publica 67.116
+# (12,82%) y no es otra cifra: es la misma medida sobre los 523.515 créditos enlazables a train,
+# que es la población que él tenía. Las dos están bien, igual que `bureau_t` frente a `bureau`.
+STATUS_DPD: dict[str, float] = {
+    "C": np.nan,
+    "X": np.nan,
+    "0": 0.0,
+    "1": 1.0,
+    "2": 2.0,
+    "3": 3.0,
+    "4": 4.0,
+    "5": 5.0,
+}
+
+# Categórica con los ocho códigos **siempre** y en este orden, estén o no en el lote. Un
+# `astype("category")` a secas deduce los niveles del frame que tenga delante, así que el cliente
+# suelto de la API saldría con un dtype distinto del de la tabla entera: es el patrón 12, el
+# esquema que depende del lote.
+DTYPE_STATUS = pd.CategoricalDtype(categories=list(STATUS_DPD))
+
+# La severidad en ese mismo orden, para decodificar por el código de la categórica en vez de con
+# un `map` sobre 27,3 millones de cadenas. Sale del mismo dict y en la línea de al lado, así que
+# no puede desalinearse de las categorías, y un `map` sobre la categórica tampoco valdría: `C` y
+# `X` colapsan al mismo NaN y pandas decide entonces si devuelve categórica o no.
+SEVERIDAD_BB = np.array(list(STATUS_DPD.values()), dtype="float32")
+
+COL_BB_DPD = "BB_DPD"
+COL_BB_IS_X = "BB_IS_X"
+COL_BB_IS_DPD = "BB_IS_DPD"
+
+# La ventana del panel, cerrada por los dos lados. No sale de `params.py` y no es olvido: no es un
+# corte de modelado con procedencia del EDA, es el rango que el buró reporta.
+MESES_BB = (-96, 0)
+
+
+def _normalizar_status(status: pd.Series) -> pd.Series:
+    """`strip()` y `upper()` sobre los ocho niveles y no sobre los 27,3 millones de cadenas.
+
+    `load_table` deja `STATUS` en `category`, y un `.str.strip().str.upper()` encima la
+    devuelve a `object` reconstruyendo una cadena por fila. Renombrar las categorías toca ocho
+    valores. El camino de `object` queda para el frame que llega sin tipos, como el de la API.
+    """
+    if isinstance(status.dtype, pd.CategoricalDtype):
+        nuevas = {c: str(c).strip().upper() for c in status.cat.categories}
+        # dos niveles que colapsan al mismo (" C" y "C") no se pueden renombrar en sitio
+        if len(set(nuevas.values())) == len(nuevas):
+            return status.cat.rename_categories(nuevas)
+        status = status.astype(object)
+    return status.where(status.isna(), status.astype(str).str.strip().str.upper())
+
+
+def _exigir_dominio(valores: pd.Series, fuera: pd.Series, que: str) -> None:
+    """Revienta nombrando qué encontró, no solo cuántas filas."""
+    if not fuera.any():
+        return
+    vistos = sorted(pd.unique(valores[fuera]).tolist(), key=repr)[:10]
+    raise ValueError(
+        f"{que} fuera de dominio en {int(fuera.sum())} filas de bureau_balance: {vistos}. "
+        "La tabla no trae ninguna, así que es un dato que el pipeline no sabe leer y no se "
+        "deja caer en silencio, que es el fallo abierto de CREDIT_ACTIVE en bureau"
+    )
+
+
+def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
+    """Decodifica `STATUS` y exige el dominio del panel, a nivel fila y antes de agregar.
+
+    Deja tres columnas al lado de las tres de la tabla: `BB_DPD` con la severidad de 0 a 5 y NaN
+    en `C` y `X`, y las dos banderas `BB_IS_X` y `BB_IS_DPD`. La escala fina se conserva aquí
+    aunque el modelo vaya a usar la binaria, porque el nivel crédito necesita el peor estado.
+
+    **`BB_IS_DPD` vale 0 en `C` y `X`, y es a propósito:** la pregunta que responde es si ese mes
+    está en mora, y un mes cerrado o sin informar no lo está. Lo que no se puede hacer con ella es
+    sumarla y dividir entre todos los meses, que sería leer el sin dato como sin mora: el
+    denominador bueno son los meses reportados, o sea `BB_DPD.notna()`, y quien los cuenta es el
+    nivel crédito. Las tres columnas son las dos lecturas en el mismo sitio a propósito, para que
+    el de arriba no tenga que volver a mirar la letra.
+
+    **Las dos validaciones revientan en vez de dejar caer la fila.** Un código de `STATUS` que no
+    esté en `STATUS_DPD` saldría como NaN y se leería igual que un `C`, o sea como "sin mora"; y
+    un `MONTHS_BALANCE` fuera de -96 a 0, o con decimales que el `int8` truncaría, es el eje del
+    panel, del que el nivel crédito saca la ventana, así que anularlo la mediría mal sin que nada
+    avise. Es la diferencia con `acotar_ventanas_bureau()`, donde la fecha rota es un dato
+    entre otros y la fila sobrevive sin él.
+
+    Ninguna fila se borra, por lo mismo que en `limpiar_bureau()`, y además porque la suma de
+    `BB_MONTHS_TOTAL` contra las filas enlazadas es una puerta del nivel cliente.
+
+    Idempotente sin necesitar guarda: las tres derivadas salen de `STATUS`, que esta función
+    normaliza pero no destruye, así que la segunda pasada las recalcula idénticas. Es lo
+    contrario de `fotografiar_signo()`, que sí lee una columna que sus vecinas anulan.
+
+    **El coste del paso grande, medido y no supuesto**, que es lo que el nivel crédito necesita
+    para saber si la doble agregación cabe entera: sobre las 27.299.925 filas la limpieza tarda
+    0,2 segundos y deja el frame en 312 MB, frente a los 156 MB y 6,4 segundos de la carga. El
+    pico de RSS con `load_table` es de 2,4 GB al cargar y 2,6 al limpiar, así que
+    `reduce_mem_usage` basta y no hace falta tocar la carga. `BB_DPD` va en `float32` (104 MB) y
+    no en `Int8` nullable (52 MB): los 52 MB de diferencia no se notan contra ese pico, el `max`
+    por crédito tarda lo mismo con los dos, y `Int8` sería la única columna nullable del proyecto.
+
+    Lo que **no** hace, para que no parezca olvido: no busca duplicados del par crédito-mes, que
+    ya caza la guarda de ventana de `agregar_por_credito()`, y pagarlo dos veces sobre 27,3
+    millones de filas no sale a cuenta; y no mira `SK_ID_BUREAU`, que es
+    del puente, el único que tiene `bureau` delante para saber si la clave ajena vale. **Tampoco
+    le fija el tipo**, así que sale en `uint32` desde `load_table` y en `int64` desde un
+    `read_csv` a pelo: es el patrón 12 sobre la clave, y quien decide es el nivel crédito, que la
+    agrupa, y el puente, que la cruza con `bureau`. Las cinco columnas que esta función sí fija no
+    dependen del lote.
+
+    **Su llamante es `agregar_por_credito()`**, que la pasa por dentro antes de agregar este frame
+    por `SK_ID_BUREAU`.
+    """
+    bb = bb.copy()
+    if "MONTHS_BALANCE" in bb.columns:
+        meses = bb["MONTHS_BALANCE"]
+        fuera = ~meses.between(*MESES_BB)
+        # en una columna entera no cabe un decimal, y mirarlo ahí costaría 0,09 s sobre la tabla
+        if not pd.api.types.is_integer_dtype(meses):
+            fuera |= meses.mod(1).ne(0)
+        _exigir_dominio(meses, fuera, "MONTHS_BALANCE")
+        bb["MONTHS_BALANCE"] = meses.astype("int8")
+    if "STATUS" in bb.columns:
+        status = _normalizar_status(bb["STATUS"])
+        _exigir_dominio(status, ~status.isin(DTYPE_STATUS.categories), "STATUS")
+        # El orden de los niveles se impone con el constructor y **no con un
+        # `astype(DTYPE_STATUS)`**: pandas da por iguales dos categóricas no ordenadas con el
+        # mismo conjunto de niveles, así que el astype devolvía la de entrada tal cual y el orden
+        # se colaba desde el lote. `load_table` deja `C` y `X` al final, y leída la severidad por
+        # el código con ese orden la puerta salía con el 71,56% de las filas en mora en vez del
+        # 1,26%.
+        bb["STATUS"] = pd.Categorical(status, categories=DTYPE_STATUS.categories)
+        bb[COL_BB_DPD] = SEVERIDAD_BB[bb["STATUS"].cat.codes.to_numpy()]
+        bb[COL_BB_IS_X] = bb["STATUS"].eq("X").astype("int8")
+        bb[COL_BB_IS_DPD] = bb[COL_BB_DPD].gt(0).astype("int8")
+    return bb
 
 
 def limpiar_application(app: pd.DataFrame) -> pd.DataFrame:

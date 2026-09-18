@@ -268,9 +268,17 @@ def test_remedir_revienta_con_una_poblacion_sin_mascara(frame_receta):
 
 def test_remedir_revienta_con_un_tipo_sin_medicion(frame_receta):
     frame, target = frame_receta
-    receta = {"features": [_feature("HAS", "control", "global")]}
-    with pytest.raises(ValueError, match="control"):
+    receta = {"features": [_feature("HAS", "ordinal", "global")]}
+    with pytest.raises(ValueError, match="ordinal"):
         remedir_receta(frame, target, receta, POBLACIONES)
+
+
+def test_remedir_salta_el_control_sin_efecto(frame_receta):
+    """Es el `BB_CENSORED_RATIO` de bureau_balance: tipo `control` con `efecto: null`."""
+    frame, target = frame_receta
+    control = {**_feature("CONTINUA", "control", "auto"), "efecto": None}
+    tabla = remedir_receta(frame, target, {"features": [*RECETA["features"], control]}, POBLACIONES)
+    assert len(tabla) == 5
 
 
 def test_el_mismo_orden_es_un_factor_de_dos_hacia_los_dos_lados(frame_receta):

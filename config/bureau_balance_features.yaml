@@ -7,7 +7,10 @@ nota: 'cobertura del 29,99% de train, completa por cliente en el 99,78% de los c
   lista. Tres parámetros se eligieron comparando rendimiento contra la tasa de default
   y no son constantes de dominio, así que hay que refijarlos sobre el split: el denominador
   mínimo de 6 meses reportados de BB_PCT_MONTHS_DPD, el corte de 6 meses de la mora
-  reciente y el de 22 créditos de la cola.'
+  reciente y el de 22 créditos de la cola. Sustituido en la Fase 3: el denominador
+  mínimo y la ventana de la mora reciente pasaron a dominio, porque sus barridos no
+  tienen pico, con su contraste sobre train fijado en test; la cola se refija sobre
+  train con el criterio de la de bureau y queda en 18 créditos.'
 metodologia:
   efectos_sobre: train completo, no sobre el split de entrenamiento
   alfa_bonferroni: 0.001923

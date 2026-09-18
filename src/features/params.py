@@ -369,31 +369,61 @@ PARAMS: dict[str, Parametro] = {
         "cuyo delta cruza umbral_flags_pp",
         "auditoría transversal, pendiente 5",
     ),
-    # bureau_balance: cortes medidos
+    # bureau_balance. Los dos primeros son dominio desde el 3.8 y por la razón de los 180 días de
+    # bureau: el barrido del EDA no tiene pico. El r_rb del porcentaje sube con el mínimo (0,0981
+    # con 1 mes a 0,1129 con 12), así que un máximo se iría al corte más alto por selección de
+    # población, y el 6 responde a que con uno o dos meses el ratio vale 0 o 1 por ruido de reporte.
+    # El delta de la mora reciente baja con la ventana (+5,25pp con 3 a +4,31pp con 12) con z casi
+    # plana, y el 6 quedó como compromiso.
     "bb_min_meses_reportados": Parametro(
         6,
-        "medido",
+        "dominio",
         "denominador mínimo del porcentaje de meses en mora",
         "notebook 03 celda 56",
+        contraste_pendiente=(
+            "comprobar sobre el split que BB_PCT_MONTHS_DPD separa el default con un mínimo de 1, "
+            "3, 6 y 12 meses reportados, con efectos dentro de remedicion_factor_max entre sí, o "
+            "sea que la señal no depende de este valor. Ejecutado en el 3.8 y fijado en "
+            "test_contraste_del_denominador_minimo"
+        ),
     ),
     "bb_mora_reciente_meses": Parametro(
         6,
-        "medido",
+        "dominio",
         "ventana de la mora reciente, cortada sobre la recencia relativa al fin de ventana "
         "de cada crédito y no sobre la absoluta",
-        "notebook 03 celda 62",
+        "notebook 03 celdas 61 y 62",
+        contraste_pendiente=(
+            "comprobar sobre el split que BB_RECENT_DPD_FLAG_REL cruza umbral_flags_pp con "
+            "ventanas de 3, 6 y 12 meses, o sea que la señal no depende de este valor. Ejecutado "
+            "en el 3.8 y fijado en test_contraste_de_la_ventana_de_mora_reciente"
+        ),
     ),
+    # bureau_balance: cortes medidos
+    # El 22 es el p99 más uno del EDA sobre los 307.511. Desde el 3.9 se refija con el criterio de
+    # bureau_count_cola: sobre los 73.767 clientes de train con histórico sale 18, con +2,51pp y
+    # 1.653 marcados (17 se queda en +1,92pp), y el p99 más uno daría 22 con +3,39pp y 574.
     "bb_many_credits_corte": Parametro(
         22,
         "medido",
-        "corte de la cola del conteo de créditos con histórico",
-        "notebook 03 celda 59",
+        "créditos con histórico a partir de los cuales el cliente está en la cola del conteo: el "
+        "primer corte cuyo delta cruza umbral_flags_pp",
+        "notebook 03 celdas 47 y 59",
     ),
+    # Dominio y no medido, desde el 3.3, que es quien lo consume: el EDA no lo eligió contra la
+    # tasa de default, es que con menos de seis meses cada mitad se queda en uno o dos y la
+    # comparación entre ellas no dice nada de trayectoria.
     "bb_min_meses_trayectoria": Parametro(
         6,
-        "medido",
+        "dominio",
         "ventana mínima para partir el histórico en dos mitades y leer la trayectoria",
         "notebook 03 celda 37",
+        contraste_pendiente=(
+            "comprobar sobre el split que el orden de la trayectoria a nivel cliente (sin mora, "
+            "mejora, empeora y estable) no depende de la ventana mínima, o sea que la señal no "
+            "depende de este valor. Ejecutado en el 3.9 con 4, 6, 9 y 12 meses y fijado en "
+            "test_contraste_de_la_ventana_minima_de_la_trayectoria"
+        ),
     ),
     # previous_application: cortes medidos
     "prev_count_cola": Parametro(
@@ -511,8 +541,10 @@ def fijar_operativo(
     Refijar uno ya fijado exige `sobrescribir=True`, la misma guarda que `construir_split()`.
     Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
     del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
-    dejan la segunda cifra con el n de la segunda y nadie se entera. Hoy solo hay un
-    consumidor, `ajustar_capa2a()`; el riesgo aparece en cuanto haya el segundo.
+    dejan la segunda cifra con el n de la segunda y nadie se entera. La guarda vale para todo el
+    que refija, que hoy son `ajustar_capa2a()` y los refijados de bureau y bureau_balance en
+    `build_features.py`, cada uno con su test de que refijar otra vez la exige (el de la capa 2a,
+    sobre `registrar_limites()`).
     """
     p = parametro(nombre)
     if p.procedencia not in REAJUSTABLES:

@@ -181,13 +181,16 @@ def remedir_receta(
 
     Cada una con su `tipo`, su `codificacion` y su `poblacion_medicion`, que `poblaciones` traduce
     a máscara porque las etiquetas son de cada tabla. Los descartes `firme` no se remiden: son
-    redundancia estructural y valen en cualquier submuestra.
+    redundancia estructural y valen en cualquier submuestra. Los de tipo `control` tampoco: la
+    receta no les da efecto, así que no hay nada con qué comparar.
 
     Devuelve una fila por feature con el efecto de la receta, el remedido y su cociente. En las
     continuas el rank-biserial va en valor absoluto, así que ahí el cociente compara magnitud y no
     dirección. Qué se hace con lo que se aleje es del IV del bloque 5, no de esta tabla.
     """
-    features = [f for f in receta["features"] if f["firmeza"] == "provisional"]
+    features = [
+        f for f in receta["features"] if f["firmeza"] == "provisional" and f["tipo"] != "control"
+    ]
     flags, continuas = [], []
     for f in features:
         # una etiqueta sin máscara revienta aquí con su nombre, antes de medir nada
