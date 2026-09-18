@@ -930,6 +930,13 @@ def test_valid_no_mueve_la_cola_de_bb(bb, puente):
     assert valor("bb_many_credits_corte") == 2
 
 
+def test_refijar_la_cola_de_bb_otra_vez_exige_sobrescribir(bb, puente):
+    base = base_cola()
+    ajustar_cola_bb(bb, puente, base, base)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        ajustar_cola_bb(bb, puente, base, base)
+
+
 # --- el puente, desde el nivel cliente --------------------------------------------------------
 
 
