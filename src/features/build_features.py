@@ -234,6 +234,10 @@ def ajustar_cola_bb(
     El conteo es el de `BB_N_CREDITS_WBAL`: créditos distintos del panel con padre en `puente`,
     sobre los clientes de train con histórico. El 22 del EDA era el p99 más uno, y queda marcado en
     el informe como contraste, medido sobre la misma población.
+
+    Va fuera del `Pipeline` por lo mismo que los de bureau, así que en el CV de la Fase 4 cada fold
+    usa el corte elegido sobre todo el 80%. Es más inestable que la cola de bureau: en 15 folds sale
+    de 15 a 22, con 18 en seis y 17 en otros seis.
     """
     creditos = puente[puente.index.isin(bb["SK_ID_BUREAU"].unique())]
     entrenamiento = solo_train(base, split).set_index("SK_ID_CURR")["TARGET"]
