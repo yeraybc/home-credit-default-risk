@@ -541,8 +541,10 @@ def fijar_operativo(
     Refijar uno ya fijado exige `sobrescribir=True`, la misma guarda que `construir_split()`.
     Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
     del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
-    dejan la segunda cifra con el n de la segunda y nadie se entera. Hoy solo hay un
-    consumidor, `ajustar_capa2a()`; el riesgo aparece en cuanto haya el segundo.
+    dejan la segunda cifra con el n de la segunda y nadie se entera. La guarda vale para todo el
+    que refija, que hoy son `ajustar_capa2a()` y los refijados de bureau y bureau_balance en
+    `build_features.py`, cada uno con su test de que refijar otra vez la exige (el de la capa 2a,
+    sobre `registrar_limites()`).
     """
     p = parametro(nombre)
     if p.procedencia not in REAJUSTABLES:
