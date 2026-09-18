@@ -20,7 +20,9 @@ from src.features.agg_bureau_balance import (
     BANDERAS_TRAYECTORIA,
     COLUMNAS_ORIGEN,
     COLUMNAS_SIN_RECETA,
+    CORTES,
     CORTES_CLIENTE,
+    CORTES_CREDITO,
     POBLACIONES,
     TRAYECTORIAS,
     agregar_bureau_balance,
@@ -978,6 +980,12 @@ def test_un_puente_con_el_credito_repetido_revienta_en_vez_de_duplicarlo(bb, pue
 
 
 # --- los cortes, por los dos lados ------------------------------------------------------------
+
+
+def test_los_cortes_de_los_dos_niveles_son_los_del_registro():
+    """Un corte del registro sin nivel lo aceptaría `_cortes()` y no lo consumiría nadie."""
+    assert set(CORTES_CREDITO) | set(CORTES_CLIENTE) == set(CORTES)
+    assert not set(CORTES_CREDITO) & set(CORTES_CLIENTE)
 
 
 def test_sin_cortes_revienta_mientras_los_medidos_esten_sin_fijar(bb, puente):
