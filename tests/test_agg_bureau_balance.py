@@ -1948,13 +1948,15 @@ def test_contraste_de_la_ventana_minima_de_la_trayectoria(barrido_trayectoria):
 @sin_dato_real
 @sin_split
 def test_sobre_el_split_lo_provisional_de_bb_sigue_en_el_mismo_orden(dato_real, bureau_real):
-    """Las 22 provisionales, con cocientes frente a la receta entre 0,57 y 1,26 salvo una.
+    """Las 22 provisionales: 17 con cocientes frente a la receta de 0,97 a 1,26, y cinco aparte.
 
-    Dos no pasan la puerta del 2.3 tal cual, y no por lo mismo. `BB_MANY_CREDITS_FLAG` mide otra
-    población, porque su corte bajó de 22 a 18 al refijarse. `BB_STATUS_WORST` como continua
-    dentro de los morosos es cero: el pipeline reproduce el 0,0065 del EDA sobre su población, en
-    train da 0,00001 y en 15 folds cambia de signo, de -0,0064 a +0,0090, así que su cociente no
-    mide nada. Lo que sostiene su descarte es que sigue sin significación.
+    `BB_MANY_CREDITS_FLAG` mide otra población, porque su corte bajó de 22 a 18 al refijarse.
+    Las otras cuatro son efectos que no se distinguen de cero, y contra ellos el cociente no mide
+    nada. `BB_STATUS_WORST` como continua dentro de los morosos reproduce el 0,0065 del EDA, en
+    train da 0,00001 y en 15 folds cambia de signo, de -0,0064 a +0,0090. `BB_RECOVERED_DPD_FLAG`
+    (+0,29pp, p 0,48, cociente 0,57), `HAS_BUREAU_BALANCE` (+0,09pp, p 0,47) y `BB_N_CREDITS_WBAL`
+    (0,0048, p 0,53, negativa en 13 de 15 folds que el valor absoluto tapa) pasaban el cociente
+    por azar. Lo que sostiene su lectura es que siguen sin significación.
     """
     split = cargar_split()
     ajustar_cola_bb(dato_real["bb"], dato_real["puente"], split, split)
@@ -1966,12 +1968,21 @@ def test_sobre_el_split_lo_provisional_de_bb_sigue_en_el_mismo_orden(dato_real, 
     tabla = remedir_receta(unido, unido.TARGET, receta, POBLACIONES).set_index(["tipo", "feature"])
     assert len(tabla) == 22
 
-    cola, severidad = ("flag", "BB_MANY_CREDITS_FLAG"), ("continua", "BB_STATUS_WORST")
+    cola = ("flag", "BB_MANY_CREDITS_FLAG")
+    nulas = [
+        ("continua", "BB_STATUS_WORST"),
+        ("flag", "BB_RECOVERED_DPD_FLAG"),
+        ("flag", "HAS_BUREAU_BALANCE"),
+        ("continua", "BB_N_CREDITS_WBAL"),
+    ]
     assert tabla.loc[cola, "n"] == 1_653 and tabla.loc[cola, "mismo_orden"] is True
-    assert tabla.loc[severidad, "p"] > receta["metodologia"]["alfa_bonferroni"]
-    resto = tabla.drop(index=[cola, severidad])
-    proporcion = resto.n / resto.n_receta
+    p = tabla.loc[nulas, "p"]
+    assert p.gt(receta["metodologia"]["alfa_bonferroni"]).all(), p
+    # la población sí se exige también a las nulas: su n sigue siendo la de la receta
+    proporcion = tabla.drop(index=[cola]).pipe(lambda t: t.n / t.n_receta)
     assert proporcion.between(0.7, 0.9).all(), proporcion[~proporcion.between(0.7, 0.9)]
+    resto = tabla.drop(index=[cola, *nulas])
     # eq(True) y no all(): sobre object, un vacío cuenta como verdadero
     assert resto.mismo_orden.eq(True).all(), resto.index[~resto.mismo_orden.eq(True)].tolist()
+    assert resto.cociente.between(0.96, 1.27).all(), resto.cociente
     assert tabla.loc[("flag", "HAS_BUREAU_BALANCE"), "n"] == 73_767
