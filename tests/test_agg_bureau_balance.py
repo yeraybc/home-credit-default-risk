@@ -1957,7 +1957,9 @@ def test_contraste_de_la_ventana_minima_de_la_trayectoria(barrido_trayectoria):
 def test_sobre_el_split_lo_provisional_de_bb_sigue_en_el_mismo_orden(dato_real, bureau_real):
     """Las 22 provisionales: 17 con cocientes frente a la receta de 0,97 a 1,26, y cinco aparte.
 
-    `BB_MANY_CREDITS_FLAG` mide otra población, porque su corte bajó de 22 a 18 al refijarse.
+    `BB_MANY_CREDITS_FLAG` mide otra población, porque su corte bajó de 22 a 18. Lo baja el
+    criterio y no el split: sobre los 307.511 el primer corte que cruza también es 18 (+2,48pp con
+    2.092 marcados), y el 22 del EDA era el p99 más uno.
     Las otras cuatro son efectos que no se distinguen de cero, y contra ellos el cociente no mide
     nada. `BB_STATUS_WORST` como continua dentro de los morosos reproduce el 0,0065 del EDA, en
     train da 0,00001 y en 15 folds cambia de signo, de -0,0064 a +0,0090. `BB_RECOVERED_DPD_FLAG`
