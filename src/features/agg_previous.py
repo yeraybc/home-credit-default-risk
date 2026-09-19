@@ -21,11 +21,19 @@ from src.features.params import valor
 
 # Las columnas de previous_application de las que sale alguna feature. Como en bureau, la
 # agregación exige su esquema: una columna ausente en silencio saldría como "sin dato".
-NUMERICAS_ORIGEN: tuple[str, ...] = ("DAYS_DECISION", "CNT_PAYMENT")
+NUMERICAS_ORIGEN: tuple[str, ...] = (
+    "DAYS_DECISION",
+    "CNT_PAYMENT",
+    "AMT_APPLICATION",
+    "AMT_CREDIT",
+    "AMT_ANNUITY",
+    "RATE_DOWN_PAYMENT",
+)
 COLUMNAS_ORIGEN: tuple[str, ...] = (
     "SK_ID_CURR",
     "NAME_CLIENT_TYPE",
     "NAME_CONTRACT_STATUS",
+    "NAME_CONTRACT_TYPE",
     "CODE_REJECT_REASON",
     *NUMERICAS_ORIGEN,
 )
@@ -37,18 +45,31 @@ CORTES: tuple[str, ...] = (
     "prev_ventana_reciente_dias",
     "suelo_anios_denominador",
     "prev_plazo_largo_cuotas",
+    "prev_sobreconcesion_corte",
 )
 
 # El tipo de cliente que delata solicitudes anteriores a la ventana de la tabla.
 TIPOS_RECURRENTES: tuple[str, ...] = ("Repeater", "Refreshed")
+
+# Las features que no se agregan sobre todas las solicitudes del cliente sino sobre las que la
+# variable tiene sentido; fuera de ese denominador la solicitud no cuenta, y sin ninguna dentro
+# la feature es NaN aunque el cliente tenga previas. Es el `DENOMINADOR` del notebook 04 más el
+# coste implícito, que allí no figuraba y también se mide sobre un subconjunto.
+DENOMINADOR: dict[str, str] = {
+    "PREV_CREDIT_APPLICATION_RATIO": "las dos cifras positivas",
+    "PREV_OVERGRANTED_RATIO": "las dos cifras positivas",
+    "PREV_CNT_PAYMENT_MEAN": "plazo positivo",
+    "PREV_DOWN_PAYMENT_RATE_MEAN": "solo consumo",
+    "PREV_IMPLIED_COST_MEAN": "aprobadas con cuota, plazo y crédito positivos",
+}
 
 
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
     Llama a `limpiar_previous()` antes de agregar, que es idempotente. `cortes` sustituye a los
-    de `params.py` para los contrastes; sin él, el plazo largo, que es `medido`, revienta hasta
-    que se refija sobre train.
+    de `params.py` para los contrastes; sin él, el plazo largo y la sobreconcesión, que son
+    `medido`, revientan hasta que se refijan sobre train.
 
     `PREV_REFUSED_LONG_TERM_FLAG` marca el plazo largo en una solicitud **no aprobada**, Canceled
     incluida, como la midió el notebook: con solo las Refused los 78 marcados de train son 59.
@@ -69,8 +90,25 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     decision = p["DAYS_DECISION"]
     primera = decision.eq(decision.groupby(p["SK_ID_CURR"]).transform("min"))
     rechazada = p["NAME_CONTRACT_STATUS"].eq("Refused")
+    # con la solicitud a 0 y el crédito positivo el cociente sería infinito, no un dato
+    dos_cifras = p["AMT_APPLICATION"].gt(0) & p["AMT_CREDIT"].gt(0)
+    concesion = (p["AMT_CREDIT"] / p["AMT_APPLICATION"]).where(dos_cifras)
+    # lo que se devuelve frente a lo que se recibe, solo donde hay algo que devolver
+    valida = (
+        p["NAME_CONTRACT_STATUS"].eq("Approved")
+        & p["AMT_ANNUITY"].gt(0)
+        & p["CNT_PAYMENT"].gt(0)
+        & p["AMT_CREDIT"].gt(0)
+    )
+    coste = (p["AMT_ANNUITY"] * p["CNT_PAYMENT"] / p["AMT_CREDIT"]).where(valida)
     # booleanas y no int8 por lo mismo que en bureau: su suma sale siempre en int64
     f = p.assign(
+        _concesion=concesion,
+        # proporción y no bandera: el corte se barrió sobre la proporción; el borde queda fuera
+        _sobreconcedida=concesion.gt(c["prev_sobreconcesion_corte"]).astype(float).where(dos_cifras),
+        _coste=coste,
+        _entrada=p["RATE_DOWN_PAYMENT"].where(p["NAME_CONTRACT_TYPE"].eq("Consumer loans")),
+        _plazo=p["CNT_PAYMENT"].where(p["CNT_PAYMENT"].gt(0)),
         _reciente=decision > -c["prev_ventana_reciente_dias"],
         _recurrente_en_la_primera=primera & p["NAME_CLIENT_TYPE"].isin(TIPOS_RECURRENTES),
         _rechazada=rechazada,
@@ -89,6 +127,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         PREV_REFUSED_RATIO=("_rechazada", "mean"),
         PREV_REFUSED_SCOFR_FLAG=("_scofr", "max"),
         PREV_REFUSED_LONG_TERM_FLAG=("_plazo_largo", "max"),
+        PREV_CREDIT_APPLICATION_RATIO=("_concesion", "mean"),
+        PREV_OVERGRANTED_RATIO=("_sobreconcedida", "mean"),
+        PREV_CNT_PAYMENT_MEAN=("_plazo", "mean"),
+        PREV_IMPLIED_COST_MEAN=("_coste", "mean"),
+        PREV_DOWN_PAYMENT_RATE_MEAN=("_entrada", "mean"),
     )
     # el conteo está censurado por la ventana de ocho años de la tabla: se normaliza por los años
     # de relación, con suelo para no dividir por casi cero

@@ -1,4 +1,4 @@
-"""Tests de la agregación de previous_application por cliente (puntos 4.2 y 4.3).
+"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.4).
 
 Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `previous_application.csv` y el split y solo corre en local.
@@ -14,9 +14,12 @@ from src.data.loader import TABLE_FILES, load_table
 from src.features.agg_previous import (
     COLUMNAS_ORIGEN,
     CORTES,
+    DENOMINADOR,
+    NUMERICAS_ORIGEN,
     agregar_previous,
     unir_previous,
 )
+from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
@@ -31,6 +34,7 @@ REFERENCIA = {
     n: parametro(n).valor_referencia for n in CORTES if parametro(n).procedencia == "medido"
 }
 LARGO = REFERENCIA["prev_plazo_largo_cuotas"]
+SOBRE = REFERENCIA["prev_sobreconcesion_corte"]
 
 
 def agregar(prev, cortes=None):
@@ -45,6 +49,11 @@ def solicitud(cliente, dias, tipo="New", **campos):
         "NAME_CONTRACT_STATUS": "Approved",
         "CODE_REJECT_REASON": "XAP",
         "CNT_PAYMENT": 12.0,
+        "AMT_APPLICATION": 100.0,
+        "AMT_CREDIT": 100.0,
+        "AMT_ANNUITY": 10.0,
+        "NAME_CONTRACT_TYPE": "Cash loans",
+        "RATE_DOWN_PAYMENT": np.nan,
         **campos,
     }
 
@@ -73,6 +82,17 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 # 3  dos rechazos por scoring externo: es un `max` y no un `sum`
 # 4  un Canceled y un Approved con plazo largo: solo el no aprobado marca, y no hace falta Refused
 # 5  un Refused con el plazo justo en el corte y otro con el plazo sin dato: ninguno marca
+# Y para la relación entre cifras, cada uno con su denominador:
+# 7  las cuatro ramas a la vez: una sobreconcedida, una justo en el corte, un plazo 0 y un Refused
+#    sin crédito, con una entrada de consumo y otra de cash que no entra
+# 8  con previas y ninguna fila en ningún denominador: solicitud 0 con crédito positivo (el cociente
+#    sería infinito) y crédito 0 con solicitud positiva, ambos sin plazo
+# 9  una entrada negativa de consumo, que la limpieza pasa a 0
+# 10 una aprobada sin cuota y un Refused con cuota, plazo y crédito: el coste solo lee aprobadas y
+#    se queda sin dato
+# 11 dos aprobadas con plazo, una con crédito 0 y otra con cuota 0: el dato real no las tiene, y
+#    sin ellas el `> 0` del coste puede pasar a `>= 0` y dar infinito o un coste 0
+CONSUMO = "Consumer loans"
 SOLICITUDES = [
     solicitud(1, -100),
     solicitud(2, -2000, "Repeater"),
@@ -90,6 +110,20 @@ SOLICITUDES = [
     solicitud(6, -1000, "New"),
     solicitud(6, -10, "Repeater"),
     solicitud(365243, -400),
+    solicitud(7, -900, NAME_CONTRACT_TYPE=CONSUMO, AMT_CREDIT=130.0, AMT_ANNUITY=20.0,
+              CNT_PAYMENT=10.0, RATE_DOWN_PAYMENT=0.2),
+    solicitud(7, -600, NAME_CONTRACT_TYPE=CONSUMO, AMT_CREDIT=110.0, CNT_PAYMENT=0.0,
+              RATE_DOWN_PAYMENT=0.0),
+    solicitud(7, -300, AMT_CREDIT=90.0, AMT_ANNUITY=5.0, CNT_PAYMENT=6.0, RATE_DOWN_PAYMENT=0.5),
+    rechazo(7, -100, AMT_CREDIT=0.0),
+    rechazo(8, -700, AMT_APPLICATION=0.0, AMT_CREDIT=50.0, CNT_PAYMENT=np.nan),
+    solicitud(8, -400, NAME_CONTRACT_STATUS="Canceled", AMT_CREDIT=0.0, CNT_PAYMENT=0.0),
+    solicitud(9, -300, NAME_CONTRACT_TYPE=CONSUMO, RATE_DOWN_PAYMENT=-0.5),
+    solicitud(9, -100, NAME_CONTRACT_TYPE=CONSUMO, RATE_DOWN_PAYMENT=0.3),
+    solicitud(10, -250, AMT_ANNUITY=np.nan),
+    rechazo(10, -200, AMT_ANNUITY=30.0),
+    solicitud(11, -500, AMT_CREDIT=0.0),
+    solicitud(11, -200, AMT_ANNUITY=0.0),
 ]
 
 
@@ -132,6 +166,31 @@ ESPERADO = {
         n=1, minimo=-400, maximo=-400, c12=0, ritmo=ritmo(1, 400), recortado=0,
         rechazos=0, ratio=0.0, scofr=0, largo=0,
     ),
+}
+# La relación entre cifras, a mano y solo donde el cliente la ejercita: NaN es "sin fila en su
+# denominador". El 7 lo calcula todo a la vez: cocientes 1,3, 1,1 y 0,9 (uno sobre el corte, uno
+# justo en él y otro por debajo), plazos 10, 6 y 12 (el 0 no entra), coste de las dos aprobadas con
+# cuota y plazo, y entrada de sus dos operaciones de consumo.
+NAN = np.nan
+ESPERADO_CIFRAS = {
+    1: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=NAN),
+    4: dict(concesion=1.0, sobre=0.0, plazo=61.0, coste=6.1, entrada=NAN),
+    5: dict(concesion=1.0, sobre=0.0, plazo=36.0, coste=1.2, entrada=NAN),
+    7: dict(
+        concesion=1.1, sobre=1 / 3, plazo=28 / 3,
+        coste=(20 * 10 / 130 + 5 * 6 / 90) / 2, entrada=0.1,
+    ),
+    8: dict(concesion=NAN, sobre=NAN, plazo=NAN, coste=NAN, entrada=NAN),
+    9: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=0.15),
+    10: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
+    11: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
+}
+COLUMNA_CIFRAS = {
+    "concesion": "PREV_CREDIT_APPLICATION_RATIO",
+    "sobre": "PREV_OVERGRANTED_RATIO",
+    "plazo": "PREV_CNT_PAYMENT_MEAN",
+    "coste": "PREV_IMPLIED_COST_MEAN",
+    "entrada": "PREV_DOWN_PAYMENT_RATE_MEAN",
 }
 COLUMNA = {
     "n": "PREV_APPLICATION_COUNT",
@@ -177,6 +236,32 @@ def test_el_fixture_ejercita_cada_rama(prev):
     assert LARGO in cinco.CNT_PAYMENT.tolist() and cinco.CNT_PAYMENT.isna().any()
     # sin ningún rechazo, con previas: el 0 de la bandera del motivo
     assert (prev[prev.SK_ID_CURR == 6].NAME_CONTRACT_STATUS != "Refused").all()
+    # la relación entre cifras: las dos formas de quedar sin cociente y el borde del corte, con una
+    # solicitud por encima y otra por debajo
+    assert (prev.AMT_APPLICATION.eq(0) & prev.AMT_CREDIT.gt(0)).any()
+    assert (prev.AMT_CREDIT.eq(0) & prev.AMT_APPLICATION.gt(0)).any()
+    ratio = prev.AMT_CREDIT / prev.AMT_APPLICATION
+    assert ratio.eq(SOBRE).any() and ratio.gt(SOBRE).any() and ratio.between(0.01, SOBRE).any()
+    # un plazo 0 que sí está en el frame
+    assert prev.CNT_PAYMENT.eq(0).any()
+    # el 10: su única aprobada no tiene cuota y su Refused tiene las tres cifras, así que solo el
+    # filtro de estado deja el coste sin dato
+    diez = prev[prev.SK_ID_CURR == 10].set_index("NAME_CONTRACT_STATUS")
+    assert diez.loc["Approved", "AMT_ANNUITY"] != diez.loc["Approved", "AMT_ANNUITY"]
+    assert diez.loc["Refused", ["AMT_ANNUITY", "CNT_PAYMENT", "AMT_CREDIT"]].gt(0).all()
+    # el 11: aprobadas con plazo, una con crédito 0 y cuota y otra con cuota 0 y crédito
+    once = prev[prev.SK_ID_CURR == 11]
+    assert once.NAME_CONTRACT_STATUS.eq("Approved").all() and once.CNT_PAYMENT.gt(0).all()
+    assert (once.AMT_CREDIT.eq(0) & once.AMT_ANNUITY.gt(0)).any()
+    assert (once.AMT_ANNUITY.eq(0) & once.AMT_CREDIT.gt(0)).any()
+    # la entrada: consumo y cash con valor, y una negativa de consumo que la limpieza cambia
+    entrada = prev[prev.RATE_DOWN_PAYMENT.notna()]
+    assert set(entrada.NAME_CONTRACT_TYPE) == {CONSUMO, "Cash loans"}
+    assert prev[prev.NAME_CONTRACT_TYPE.eq(CONSUMO)].RATE_DOWN_PAYMENT.lt(0).any()
+    # el 8: con previas y todas sus filas fuera de todos los denominadores
+    ocho = prev[prev.SK_ID_CURR == 8]
+    assert len(ocho) == 2 and not (ocho.AMT_APPLICATION.gt(0) & ocho.AMT_CREDIT.gt(0)).any()
+    assert not ocho.CNT_PAYMENT.gt(0).any() and not ocho.NAME_CONTRACT_STATUS.eq("Approved").any()
 
 
 @pytest.mark.parametrize("cliente", sorted(ESPERADO))
@@ -184,6 +269,65 @@ def test_el_agregado_de_cada_cliente_es_el_calculado_a_mano(prev, cliente):
     fila = agregar(prev).loc[cliente]
     for clave, esperado in ESPERADO[cliente].items():
         assert fila[COLUMNA[clave]] == pytest.approx(esperado), f"{COLUMNA[clave]}: {fila}"
+
+
+@pytest.mark.parametrize("cliente", sorted(ESPERADO_CIFRAS))
+def test_la_relacion_entre_cifras_de_cada_cliente_es_la_calculada_a_mano(prev, cliente):
+    fila = agregar(prev).loc[cliente]
+    for clave, esperado in ESPERADO_CIFRAS[cliente].items():
+        columna = COLUMNA_CIFRAS[clave]
+        assert fila[columna] == pytest.approx(esperado, nan_ok=True), f"{columna}: {fila}"
+
+
+def test_la_sobreconcesion_deja_fuera_el_borde(prev):
+    """En las dos direcciones: con el corte una centésima por debajo el 1,1 del 7 pasa a marcar."""
+    assert agregar(prev).loc[7, "PREV_OVERGRANTED_RATIO"] == pytest.approx(1 / 3)
+    baja = agregar(prev, {"prev_sobreconcesion_corte": SOBRE - 0.01})
+    assert baja.loc[7, "PREV_OVERGRANTED_RATIO"] == pytest.approx(2 / 3)
+
+
+def test_sin_dos_cifras_positivas_el_cociente_es_nan_y_no_infinito(prev):
+    """El 8 tiene solicitud 0 con crédito positivo: sin la máscara sería infinito, y con solo la
+    de la solicitud, su otra fila (crédito 0) daría 0 en vez de quedar fuera."""
+    agregado = agregar(prev)
+    assert not np.isinf(agregado.select_dtypes("float")).any().any()
+    assert agregado.loc[8, ["PREV_CREDIT_APPLICATION_RATIO", "PREV_OVERGRANTED_RATIO"]].isna().all()
+
+
+def test_cada_feature_con_denominador_propio_es_nan_sin_ninguna_fila_dentro(prev):
+    """Con previas y ninguna fila en su denominador: NaN, y no 0 ni la media de todas las filas."""
+    agregado = agregar(prev)
+    columnas = list(DENOMINADOR)
+    assert set(columnas) == set(COLUMNA_CIFRAS.values())
+    assert agregado.loc[8, "PREV_APPLICATION_COUNT"] > 0
+    assert agregado.loc[8, columnas].isna().all()
+    # y cada una tiene dato en algún cliente: el 8 no es el fixture entero
+    assert agregado[columnas].notna().any().all()
+
+
+def test_la_entrada_solo_lee_consumo(prev):
+    """El 7 tiene una entrada de cash de 0,5: si entrara, la media saldría 0,2333 y no 0,1."""
+    assert agregar(prev).loc[7, "PREV_DOWN_PAYMENT_RATE_MEAN"] == pytest.approx(0.1)
+    todo_consumo = prev.assign(NAME_CONTRACT_TYPE=CONSUMO)
+    assert agregar(todo_consumo).loc[7, "PREV_DOWN_PAYMENT_RATE_MEAN"] == pytest.approx(0.7 / 3)
+
+
+def test_el_coste_solo_lee_aprobadas(prev):
+    """El 10 tiene una aprobada sin cuota y un Refused con las tres cifras: con todas las
+    solicitudes el coste saldría 3,6 en vez de quedar sin dato."""
+    assert np.isnan(agregar(prev).loc[10, "PREV_IMPLIED_COST_MEAN"])
+    todas_aprobadas = agregar(prev.assign(NAME_CONTRACT_STATUS="Approved"))
+    assert todas_aprobadas.loc[10, "PREV_IMPLIED_COST_MEAN"] == pytest.approx(3.6)
+
+
+def test_agregar_el_crudo_y_el_limpio_da_lo_mismo(prev):
+    """La entrada negativa del 9 es la primera cifra que lee un valor que la limpieza cambia: si la
+    agregación dejara de limpiar por dentro, el crudo daría 0,-1 en vez de 0,15."""
+    assert prev.RATE_DOWN_PAYMENT.lt(0).any()
+    pd.testing.assert_frame_equal(agregar(limpiar_previous(prev)), agregar(prev))
+    crudo = prev.RATE_DOWN_PAYMENT.where(prev.NAME_CONTRACT_TYPE.eq(CONSUMO))
+    sin_limpiar = crudo[prev.SK_ID_CURR == 9].mean()
+    assert sin_limpiar != pytest.approx(agregar(prev).loc[9, "PREV_DOWN_PAYMENT_RATE_MEAN"])
 
 
 def test_la_ventana_de_doce_meses_deja_fuera_el_borde(prev):
@@ -264,6 +408,11 @@ ESQUEMA = {
     "PREV_REFUSED_SCOFR_FLAG": "int8",
     "PREV_REFUSED_LONG_TERM_FLAG": "int8",
     "PREV_APPLICATIONS_PER_YEAR": "float64",
+    "PREV_CREDIT_APPLICATION_RATIO": "float64",
+    "PREV_OVERGRANTED_RATIO": "float64",
+    "PREV_CNT_PAYMENT_MEAN": "float64",
+    "PREV_IMPLIED_COST_MEAN": "float64",
+    "PREV_DOWN_PAYMENT_RATE_MEAN": "float64",
 }
 
 
@@ -337,7 +486,7 @@ def test_un_frame_vacio_da_un_agregado_vacio_con_el_mismo_esquema(prev, sin_tipo
     assert unido[lleno.columns].isna().all().all()
 
 
-@pytest.mark.parametrize("columna", ["DAYS_DECISION", "CNT_PAYMENT"])
+@pytest.mark.parametrize("columna", NUMERICAS_ORIGEN)
 def test_una_numerica_que_no_es_numero_revienta_en_la_frontera(prev, columna):
     roto = prev.astype({columna: object})
     roto.loc[0, columna] = "ayer"
@@ -386,8 +535,8 @@ sin_dato_real = pytest.mark.skipif(
     reason="data/raw y el split no viajan con el repo",
 )
 
-# La parte del 4.2 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que es la
-# del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto de features.
+# La parte del 4.2 al 4.4 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
+# es la del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto.
 PUERTA = {
     "crudo": {
         "con previas": 291_057,
@@ -395,6 +544,11 @@ PUERTA = {
         "historial recortado": 53_934,
         "rechazo por scoring externo": 6_788,
         "plazo largo rechazado": 78,
+        "cociente de concesión": 290_042,
+        "sobreconcesión": 290_042,
+        "plazo medio": 288_566,
+        "coste implícito": 287_433,
+        "entrada de consumo": 268_895,
     },
     "modelado": {
         "con previas": 291_041,
@@ -402,6 +556,11 @@ PUERTA = {
         "historial recortado": 53_933,
         "rechazo por scoring externo": 6_787,
         "plazo largo rechazado": 78,
+        "cociente de concesión": 290_026,
+        "sobreconcesión": 290_026,
+        "plazo medio": 288_550,
+        "coste implícito": 287_417,
+        "entrada de consumo": 268_879,
     },
 }
 # La tabla entera: 338.857 clientes, más que los de train porque incluye los de application_test
@@ -430,6 +589,11 @@ def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
         "historial recortado": int(con.PREV_HISTORIAL_RECORTADO.sum()),
         "rechazo por scoring externo": int(con.PREV_REFUSED_SCOFR_FLAG.sum()),
         "plazo largo rechazado": int(con.PREV_REFUSED_LONG_TERM_FLAG.sum()),
+        "cociente de concesión": int(con.PREV_CREDIT_APPLICATION_RATIO.notna().sum()),
+        "sobreconcesión": int(con.PREV_OVERGRANTED_RATIO.notna().sum()),
+        "plazo medio": int(con.PREV_CNT_PAYMENT_MEAN.notna().sum()),
+        "coste implícito": int(con.PREV_IMPLIED_COST_MEAN.notna().sum()),
+        "entrada de consumo": int(con.PREV_DOWN_PAYMENT_RATE_MEAN.notna().sum()),
     }
     assert con.PREV_REFUSED_RATIO.notna().all()
     assert medido == PUERTA[poblacion]
@@ -442,6 +606,14 @@ def test_sobre_el_dato_real_el_agregado_es_de_la_tabla_entera(dato_real):
     assert len(prev) == 1_670_214
     assert len(agregado) == CLIENTES_TABLA
     assert agregado.PREV_APPLICATION_COUNT.sum() == len(prev)
+    # los no nulos de la relación entre cifras sobre la tabla entera, cada uno con su denominador
+    assert agregado[list(DENOMINADOR)].notna().sum().to_dict() == {
+        "PREV_CREDIT_APPLICATION_RATIO": 337_752,
+        "PREV_OVERGRANTED_RATIO": 337_752,
+        "PREV_CNT_PAYMENT_MEAN": 336_161,
+        "PREV_IMPLIED_COST_MEAN": 334_894,
+        "PREV_DOWN_PAYMENT_RATE_MEAN": 313_162,
+    }
 
 
 @sin_dato_real
@@ -452,11 +624,16 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
     una solicitud justo en -365, uno bajo el suelo del ritmo y el del identificador 365243. Del
     rechazo, uno con plazo largo solo en una solicitud Canceled, uno solo en Approved (que no
     marca), uno con todas sus solicitudes rechazadas, el de más rechazos y uno con scoring externo.
+    De la relación entre cifras, los seis del comentario de abajo.
     """
     prev, agregado, _ = dato_real
     perfiles = [
         *[193_980, 307_630, 187_868, 261_733, 100_068, 365_243],
         *[101_379, 297_641, 109_699, 265_681, 282_125],
+        # de la relación entre cifras: solo con solicitud 0 y crédito positivo, la entrada negativa
+        # de consumo (las dos de la tabla), el cociente justo en el corte, el único con consumo y
+        # otro producto, y una aprobada con plazo 0 y cuota
+        *[100_368, 133_068, 350_530, 277_619, 100_003, 100_006],
     ]
     muestra = [*np.random.default_rng(0).choice(agregado.index, 300, replace=False), *perfiles]
     trozo = prev[prev.SK_ID_CURR.isin(muestra)]
