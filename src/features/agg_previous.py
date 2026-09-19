@@ -21,13 +21,23 @@ from src.features.params import valor
 
 # Las columnas de previous_application de las que sale alguna feature. Como en bureau, la
 # agregación exige su esquema: una columna ausente en silencio saldría como "sin dato".
-NUMERICAS_ORIGEN: tuple[str, ...] = ("DAYS_DECISION",)
-COLUMNAS_ORIGEN: tuple[str, ...] = ("SK_ID_CURR", "NAME_CLIENT_TYPE", *NUMERICAS_ORIGEN)
+NUMERICAS_ORIGEN: tuple[str, ...] = ("DAYS_DECISION", "CNT_PAYMENT")
+COLUMNAS_ORIGEN: tuple[str, ...] = (
+    "SK_ID_CURR",
+    "NAME_CLIENT_TYPE",
+    "NAME_CONTRACT_STATUS",
+    "CODE_REJECT_REASON",
+    *NUMERICAS_ORIGEN,
+)
 
 # Los cortes que lee la agregación, y solo esos: uno del registro que aún no se consume pasaría la
 # guarda de `cortes` y se ignoraría en silencio. Crece con cada punto que añade una feature con
 # corte, y un test lo cruza con `CORTES_POR_FEATURE`.
-CORTES: tuple[str, ...] = ("prev_ventana_reciente_dias", "suelo_anios_denominador")
+CORTES: tuple[str, ...] = (
+    "prev_ventana_reciente_dias",
+    "suelo_anios_denominador",
+    "prev_plazo_largo_cuotas",
+)
 
 # El tipo de cliente que delata solicitudes anteriores a la ventana de la tabla.
 TIPOS_RECURRENTES: tuple[str, ...] = ("Repeater", "Refreshed")
@@ -37,8 +47,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
     Llama a `limpiar_previous()` antes de agregar, que es idempotente. `cortes` sustituye a los
-    de `params.py` para los contrastes. Los dos que lee hoy son de dominio, así que no hace falta
-    refijar nada para construir.
+    de `params.py` para los contrastes; sin él, el plazo largo, que es `medido`, revienta hasta
+    que se refija sobre train.
+
+    `PREV_REFUSED_LONG_TERM_FLAG` marca el plazo largo en una solicitud **no aprobada**, Canceled
+    incluida, como la midió el notebook: con solo las Refused los 78 marcados de train son 59.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in prev.columns]
     if faltan:
@@ -55,17 +68,27 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     p = limpiar_previous(prev)
     decision = p["DAYS_DECISION"]
     primera = decision.eq(decision.groupby(p["SK_ID_CURR"]).transform("min"))
+    rechazada = p["NAME_CONTRACT_STATUS"].eq("Refused")
     # booleanas y no int8 por lo mismo que en bureau: su suma sale siempre en int64
     f = p.assign(
         _reciente=decision > -c["prev_ventana_reciente_dias"],
         _recurrente_en_la_primera=primera & p["NAME_CLIENT_TYPE"].isin(TIPOS_RECURRENTES),
+        _rechazada=rechazada,
+        _scofr=rechazada & p["CODE_REJECT_REASON"].eq("SCOFR"),
+        _plazo_largo=p["CNT_PAYMENT"].gt(c["prev_plazo_largo_cuotas"])
+        & p["NAME_CONTRACT_STATUS"].ne("Approved"),
     )
+    # el motivo va como bandera y no como conteo: está a cero en casi todos
     agregado = f.groupby("SK_ID_CURR").agg(
         PREV_APPLICATION_COUNT=("SK_ID_CURR", "size"),
         PREV_DAYS_DECISION_MIN=("DAYS_DECISION", "min"),
         PREV_DAYS_DECISION_MAX=("DAYS_DECISION", "max"),
         PREV_COUNT_12M=("_reciente", "sum"),
         PREV_HISTORIAL_RECORTADO=("_recurrente_en_la_primera", "max"),
+        PREV_REFUSED_COUNT=("_rechazada", "sum"),
+        PREV_REFUSED_RATIO=("_rechazada", "mean"),
+        PREV_REFUSED_SCOFR_FLAG=("_scofr", "max"),
+        PREV_REFUSED_LONG_TERM_FLAG=("_plazo_largo", "max"),
     )
     # el conteo está censurado por la ventana de ocho años de la tabla: se normaliza por los años
     # de relación, con suelo para no dividir por casi cero
@@ -80,6 +103,10 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
             "PREV_APPLICATION_COUNT": "int64",
             "PREV_COUNT_12M": "int64",
             "PREV_HISTORIAL_RECORTADO": "int8",
+            "PREV_REFUSED_COUNT": "int64",
+            "PREV_REFUSED_RATIO": "float64",
+            "PREV_REFUSED_SCOFR_FLAG": "int8",
+            "PREV_REFUSED_LONG_TERM_FLAG": "int8",
         }
     )
 
