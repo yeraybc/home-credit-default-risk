@@ -1,9 +1,11 @@
 """Limpieza determinista de nivel fila, capa 1 del pipeline de features.
 
-Sirve a tres tablas y en cada una hace una cosa distinta, así que las tres partes van separadas:
-`limpiar_application()` con sus centinelas y sus columnas eliminadas, `limpiar_bureau()` con la
-validez de dominio de los importes y las fechas, y `limpiar_bureau_balance()` con la
-decodificación de `STATUS`. Lo que comparten es el criterio de capa, no el contenido.
+Sirve a cuatro tablas y en cada una hace una cosa distinta, así que las cuatro partes van
+separadas: `limpiar_application()` con sus centinelas y sus columnas eliminadas,
+`limpiar_bureau()` con la validez de dominio de los importes y las fechas,
+`limpiar_bureau_balance()` con la decodificación de `STATUS` y `limpiar_previous()` con el
+centinela de las fechas y el dominio del estado. Lo que comparten es el criterio de capa, no el
+contenido.
 
 Solo entra aquí lo que no estima ningún parámetro a partir de datos: centinelas, columnas que
 se eliminan por motivo estructural, y caps con una constante fija de dominio. Todo lo que
@@ -509,13 +511,13 @@ def _normalizar_status(status: pd.Series) -> pd.Series:
     return status.where(status.isna(), status.astype(str).str.strip().str.upper())
 
 
-def _exigir_dominio(valores: pd.Series, fuera: pd.Series, que: str) -> None:
+def _exigir_dominio(valores: pd.Series, fuera: pd.Series, que: str, tabla: str) -> None:
     """Revienta nombrando qué encontró, no solo cuántas filas."""
     if not fuera.any():
         return
     vistos = sorted(pd.unique(valores[fuera]).tolist(), key=repr)[:10]
     raise ValueError(
-        f"{que} fuera de dominio en {int(fuera.sum())} filas de bureau_balance: {vistos}. "
+        f"{que} fuera de dominio en {int(fuera.sum())} filas de {tabla}: {vistos}. "
         "La tabla no trae ninguna, así que es un dato que el pipeline no sabe leer y no se "
         "deja caer en silencio, que es el fallo abierto de CREDIT_ACTIVE en bureau"
     )
@@ -576,11 +578,13 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
         # en una columna entera no cabe un decimal, y mirarlo ahí costaría 0,09 s sobre la tabla
         if not pd.api.types.is_integer_dtype(meses):
             fuera |= meses.mod(1).ne(0)
-        _exigir_dominio(meses, fuera, "MONTHS_BALANCE")
+        _exigir_dominio(meses, fuera, "MONTHS_BALANCE", "bureau_balance")
         bb["MONTHS_BALANCE"] = meses.astype("int8")
     if "STATUS" in bb.columns:
         status = _normalizar_status(bb["STATUS"])
-        _exigir_dominio(status, ~status.isin(DTYPE_STATUS.categories), "STATUS")
+        _exigir_dominio(
+            status, ~status.isin(DTYPE_STATUS.categories), "STATUS", "bureau_balance"
+        )
         # El orden de los niveles se impone con el constructor y **no con un
         # `astype(DTYPE_STATUS)`**: pandas da por iguales dos categóricas no ordenadas con el
         # mismo conjunto de niveles, así que el astype devolvía la de entrada tal cual y el orden
@@ -592,6 +596,69 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
         bb[COL_BB_IS_X] = bb["STATUS"].eq("X").astype("int8")
         bb[COL_BB_IS_DPD] = bb[COL_BB_DPD].gt(0).astype("int8")
     return bb
+
+
+# - previous_application -
+# **Cifras sobre la tabla entera, 1.670.214 filas y 338.857 clientes**, que es sobre lo que corre
+# la limpieza. Aquí coinciden con las del EDA, que midió el nivel solicitud sobre la tabla entera y
+# solo pasó a `prev_t` al cruzar con el objetivo.
+#
+# Las seis fechas del ciclo de vida. `DAYS_DECISION` no trae el centinela y va igual, para que la
+# regla no dependa de una medición.
+FECHAS_PREVIOUS: tuple[str, ...] = (
+    "DAYS_DECISION",
+    "DAYS_FIRST_DRAWING",
+    "DAYS_FIRST_DUE",
+    "DAYS_LAST_DUE_1ST_VERSION",
+    "DAYS_LAST_DUE",
+    "DAYS_TERMINATION",
+)
+# La entrada en importe y en tasa: hoy sus negativos son las mismas dos filas, pero cada una se
+# corrige por su cuenta porque la API puede mandar una sin la otra.
+ENTRADAS_PREVIOUS: tuple[str, ...] = ("AMT_DOWN_PAYMENT", "RATE_DOWN_PAYMENT")
+# Sin normalizar a propósito: la tabla no trae ni una variante por espacios o caso, así que un
+# estado mal escrito es un dato que el pipeline no sabe leer.
+ESTADOS_CONTRATO: tuple[str, ...] = ("Approved", "Canceled", "Refused", "Unused offer")
+
+
+def limpiar_previous(prev: pd.DataFrame) -> pd.DataFrame:
+    """Validez de dominio de previous_application, a nivel fila y antes de agregar.
+
+    Tres reglas y es el caso opuesto al buró: ningún importe se acerca a lo implausible, así que
+    no hay caps. **El centinela 365243 pasa a NaN** en las fechas del ciclo de vida, 1.506.087
+    celdas repartidas en cinco de las seis; sin esto el 4.5 contaría 365243 como fecha por vencer.
+    **Las dos entradas negativas** (-0,90 y -0,45, redondeo sobre un importe que no puede serlo)
+    pasan a 0. Y **un `NAME_CONTRACT_STATUS` fuera de sus cuatro estados revienta**, NaN
+    incluido, en vez de caer en silencio, que es el fallo abierto de `CREDIT_ACTIVE` en bureau.
+
+    **El centinela no lleva bandera, y está comprobado y no supuesto.** En `DAYS_TERMINATION`
+    el EDA lo leyó como contrato vivo y no como ausencia, así que pasarlo a NaN lo junta con los
+    673.065 del bloque sin formalizar. Pero todas las features de la receta se midieron sobre
+    las fechas con el centinela ya a NaN, y la única que lo leía, el conteo de contratos vivos
+    (0,0118), no llegó al ranking. Solo se tocan esas seis columnas: hay un cliente con
+    `SK_ID_CURR` 365243.
+
+    Lo que **no** hace, para que no parezca olvido: no borra filas, por lo mismo que las otras
+    dos auxiliares; no toca `SELLERPLACE_AREA`, cuyo -1 es un código que no alimenta ninguna
+    feature; y no fija el tipo de las fechas, que salen en `float32` desde `load_table` y
+    cambian de tipo según lleve centinela el lote. Eso lo fija la agregación en su frontera.
+
+    Idempotente sin guarda: en la segunda pasada el centinela ya es NaN y la entrada ya es 0.
+    """
+    prev = prev.copy()
+    centinela = valor("centinela_365243")
+    for col in FECHAS_PREVIOUS:
+        if col in prev.columns:
+            prev[col] = prev[col].mask(prev[col].eq(centinela))
+    for col in ENTRADAS_PREVIOUS:
+        if col in prev.columns:
+            prev[col] = prev[col].clip(lower=0)
+    if "NAME_CONTRACT_STATUS" in prev.columns:
+        estado = prev["NAME_CONTRACT_STATUS"]
+        _exigir_dominio(
+            estado, ~estado.isin(ESTADOS_CONTRATO), "NAME_CONTRACT_STATUS", "previous_application"
+        )
+    return prev
 
 
 def limpiar_application(app: pd.DataFrame) -> pd.DataFrame:
