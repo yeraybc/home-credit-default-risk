@@ -55,6 +55,9 @@ CORTES: tuple[str, ...] = (
     "prev_adelanto_liquidacion_dias",
     "prev_hora_temprana_max",
     "prev_finalidades_urgentes",
+    "prev_count_cola",
+    "prev_actividad_12m_cola",
+    "prev_relacion_larga_anios",
 )
 
 # El tipo de cliente que delata solicitudes anteriores a la ventana de la tabla.
@@ -81,6 +84,15 @@ DENOMINADOR: dict[str, str] = {
     "PREV_URGENT_PURPOSE_RATIO": "finalidad declarada",
 }
 
+# Lo que la agregación añade y la receta no tiene, con su motivo. Es la lista que el bloque 5
+# tiene que repartir en buckets.
+COLUMNAS_SIN_RECETA: dict[str, str] = {
+    "PREV_RELACION_CORTA_ACTIVA": (
+        "el término de la interacción de la relación corta con la actividad alta, el pendiente 7 "
+        "de la auditoría transversal: la receta conserva PREV_ACTIVIDAD_12M_COLA solo para él"
+    ),
+}
+
 
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
@@ -100,6 +112,9 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     `PREV_URGENT_PURPOSE_RATIO` es una proporción y nunca un conteo, y la lista de finalidades
     urgentes es `medido`: entra por `cortes` y revienta hasta que se refija sobre train.
     `PREV_PHANTOM_FLAG` vale 0 en quien tiene previas y ninguna sin combinación de producto.
+
+    Las dos colas son `medido`. `PREV_ACTIVIDAD_12M_COLA` se conserva solo como término de
+    `PREV_RELACION_CORTA_ACTIVA`: fijado el ritmo anual, su efecto propio desaparece.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in prev.columns]
     if faltan:
@@ -187,10 +202,15 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     )
     # el conteo está censurado por la ventana de ocho años de la tabla: se normaliza por los años
     # de relación, con suelo para no dividir por casi cero
-    anios = (-agregado["PREV_DAYS_DECISION_MIN"] / valor("dias_por_anio")).clip(
+    anios = -agregado["PREV_DAYS_DECISION_MIN"] / valor("dias_por_anio")
+    agregado["PREV_APPLICATIONS_PER_YEAR"] = agregado["PREV_APPLICATION_COUNT"] / anios.clip(
         lower=c["suelo_anios_denominador"]
     )
-    agregado["PREV_APPLICATIONS_PER_YEAR"] = agregado["PREV_APPLICATION_COUNT"] / anios
+    agregado["PREV_COUNT_COLA"] = agregado["PREV_APPLICATION_COUNT"] >= c["prev_count_cola"]
+    activa = agregado["PREV_COUNT_12M"] >= c["prev_actividad_12m_cola"]
+    agregado["PREV_ACTIVIDAD_12M_COLA"] = activa
+    # la relación corta y la actividad alta se refuerzan más de lo que suman: el término explícito
+    agregado["PREV_RELACION_CORTA_ACTIVA"] = activa & (anios < c["prev_relacion_larga_anios"])
     # el esquema no puede depender del lote: un frame vacío deja los conteos y la bandera en
     # object o bool
     return agregado.astype(
@@ -205,6 +225,9 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
             "PREV_EARLY_HOUR_RATIO": "float64",
             "PREV_NO_SUITE_RATIO": "float64",
             "PREV_PHANTOM_FLAG": "int8",
+            "PREV_COUNT_COLA": "int8",
+            "PREV_ACTIVIDAD_12M_COLA": "int8",
+            "PREV_RELACION_CORTA_ACTIVA": "int8",
         }
     )
 

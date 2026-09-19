@@ -454,6 +454,22 @@ PARAMS: dict[str, Parametro] = {
             "de ejecutar con los refijados de previous_application (4.8)"
         ),
     ),
+    # Dominio y no medido, decidido en el 4.7: es un borde de la rejilla descriptiva de la celda
+    # 121 (0, 1, 2, 4, 6 y 8 años), que parte la cartera casi por la mitad, y no salió de un
+    # barrido. Sobre train completo la superaditividad con 2 a 6 años es +2,86, +1,99, +1,61,
+    # +1,78 y +1,73pp: positiva con cualquiera, y el 4 es casi la más baja. El borde entra
+    "prev_relacion_larga_anios": Parametro(
+        4,
+        "dominio",
+        "años desde la solicitud más antigua a partir de los cuales la relación es larga, con el "
+        "borde dentro",
+        "notebook 04 celdas 121 y 131",
+        contraste_pendiente=(
+            "comprobar sobre el split que la relación corta con actividad alta sigue siendo "
+            "superaditiva con 3, 4 y 5 años, o sea que PREV_RELACION_CORTA_ACTIVA no depende de "
+            "este valor. Pendiente de ejecutar con los refijados de previous_application (4.8)"
+        ),
+    ),
     # previous_application: cortes medidos
     # Medido y no dominio, decidido en el 4.6 con auditoria-fuga-datos: la lista se escribe como
     # liquidez urgente, pero sus cinco finalidades con al menos 100 solicitudes son exactamente las
@@ -542,6 +558,11 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
         "PREV_COUNT_COLA": ("prev_count_cola",),
         "PREV_COUNT_12M": ("prev_ventana_reciente_dias",),
         "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola", "prev_ventana_reciente_dias"),
+        "PREV_RELACION_CORTA_ACTIVA": (
+            "prev_actividad_12m_cola",
+            "prev_ventana_reciente_dias",
+            "prev_relacion_larga_anios",
+        ),
         "PREV_EARLY_SETTLED_FLAG": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_COUNT": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_RATIO": ("prev_adelanto_liquidacion_dias",),

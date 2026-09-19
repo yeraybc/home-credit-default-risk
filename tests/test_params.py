@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from src.config import RAIZ, cargar_config
-from src.features import agg_bureau, agg_bureau_balance
+from src.features import agg_bureau, agg_bureau_balance, agg_previous
 from src.features.params import (
     CORTES_POR_FEATURE,
     PARAMS,
@@ -161,6 +161,8 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     2.51, 1.92, 3.39,                     # delta con 18 y 17 creditos, y con el p99 mas uno (22)
     # previous_application, que limpiar_previous() cita en su docstring
     0.0118,                               # rank-biserial del conteo de contratos vivos
+    # el barrido de la relación larga que el 4.7 cita en params.py al declararla de dominio
+    2.86, 1.99, 1.61, 1.78, 1.73,         # superaditividad con 2, 3, 4, 5 y 6 años
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -281,6 +283,7 @@ TABLAS = ["bureau", "bureau_balance", "previous_application"]
 SIN_RECETA = {
     "bureau": set(agg_bureau.COLUMNAS_SIN_RECETA),
     "bureau_balance": set(agg_bureau_balance.COLUMNAS_SIN_RECETA),
+    "previous_application": set(agg_previous.COLUMNAS_SIN_RECETA),
 }
 
 

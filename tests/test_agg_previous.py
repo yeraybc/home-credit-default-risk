@@ -1,4 +1,4 @@
-"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.6).
+"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.7).
 
 Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `previous_application.csv` y el split y solo corre en local.
@@ -13,6 +13,7 @@ from src.config import RAIZ, ruta
 from src.data.loader import TABLE_FILES, load_table
 from src.features.agg_previous import (
     COLUMNAS_ORIGEN,
+    COLUMNAS_SIN_RECETA,
     CORTES,
     DENOMINADOR,
     NUMERICAS_ORIGEN,
@@ -38,6 +39,9 @@ SOBRE = REFERENCIA["prev_sobreconcesion_corte"]
 ADELANTO = REFERENCIA["prev_adelanto_liquidacion_dias"]
 URGENTES = REFERENCIA["prev_finalidades_urgentes"]
 HORA = valor("prev_hora_temprana_max")
+COLA = REFERENCIA["prev_count_cola"]
+ACTIVIDAD = REFERENCIA["prev_actividad_12m_cola"]
+LARGA = valor("prev_relacion_larga_anios")
 
 
 def agregar(prev, cortes=None):
@@ -121,6 +125,13 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 # 17 todo fantasma y sin finalidad: la calle es NaN y no 0
 # 18 una sola fila de calle con finalidad urgente, a las 23: los dos ratios valen 1
 # 19 una finalidad informada y no urgente, a las 0: la proporción urgente vale 0 y no NaN
+# Y para las colas y el término de la interacción (recientes son las de los últimos doce meses):
+# 20 justo en la cola del conteo y en la de actividad, con la relación corta: las tres a 1
+# 21 justo en la cola de actividad y con la más antigua justo en el corte de la relación larga: el
+#    borde entra en la larga, así que el término vale 0
+# 22 un conteo y una actividad por debajo de las dos colas, con la relación corta: las tres a 0
+# 23 la más antigua un día por debajo del corte de la relación larga, con la actividad justo en su
+#    cola: es corta con 365,25 días por año y sería larga con 365, así que el término vale 1
 CONSUMO = "Consumer loans"
 SENTINELA = 365243.0
 SOLICITUDES = [
@@ -173,6 +184,14 @@ SOLICITUDES = [
     solicitud(18, -120, HOUR_APPR_PROCESS_START=23.0, PRODUCT_COMBINATION="Card Street",
               NAME_CASH_LOAN_PURPOSE="Urgent needs"),
     solicitud(19, -110, HOUR_APPR_PROCESS_START=0.0, NAME_CASH_LOAN_PURPOSE="Medicine"),
+    *[solicitud(20, -50 * (i + 1)) for i in range(ACTIVIDAD)],
+    *[solicitud(20, -400 - 60 * i) for i in range(COLA - ACTIVIDAD)],
+    *[solicitud(21, -50 * (i + 1)) for i in range(ACTIVIDAD)],
+    solicitud(21, -round(LARGA * DIAS)),
+    *[solicitud(22, -50 * (i + 1)) for i in range(ACTIVIDAD - 1)],
+    *[solicitud(22, -400 - 60 * i) for i in range(COLA - ACTIVIDAD)],
+    *[solicitud(23, -50 * (i + 1)) for i in range(ACTIVIDAD)],
+    solicitud(23, -round(LARGA * DIAS) + 1),
 ]
 
 
@@ -268,6 +287,21 @@ COLUMNA_CAPTACION = {
     "sin_acompanante": "PREV_NO_SUITE_RATIO",
     "urgente": "PREV_URGENT_PURPOSE_RATIO",
     "fantasma": "PREV_PHANTOM_FLAG",
+}
+# Las colas y el término, a mano. Los clientes sin caso propio traen las tres a 0: el 1, el 5 y el
+# 365243 no llegan a ninguna cola
+ESPERADO_COLAS = {
+    1: dict(cola=0, actividad=0, corta_activa=0),
+    5: dict(cola=0, actividad=0, corta_activa=0),
+    20: dict(cola=1, actividad=1, corta_activa=1),
+    21: dict(cola=0, actividad=1, corta_activa=0),
+    22: dict(cola=0, actividad=0, corta_activa=0),
+    23: dict(cola=0, actividad=1, corta_activa=1),
+}
+COLUMNA_COLAS = {
+    "cola": "PREV_COUNT_COLA",
+    "actividad": "PREV_ACTIVIDAD_12M_COLA",
+    "corta_activa": "PREV_RELACION_CORTA_ACTIVA",
 }
 COLUMNA = {
     "n": "PREV_APPLICATION_COUNT",
@@ -371,6 +405,19 @@ def test_el_fixture_ejercita_cada_rama(prev):
     # el 19 declara una finalidad que no es urgente y el 18 una que sí, así que el 0 y el 1 se ven
     assert prev[prev.SK_ID_CURR == 19].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).sum() == 0
     assert prev[prev.SK_ID_CURR == 18].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).all()
+    # las colas: el conteo y la actividad justo en el corte y uno por debajo, y la más antigua justo
+    # en el corte de la relación larga junto a otra más corta
+    veinte, veintiuno, veintidos = (prev[prev.SK_ID_CURR == c] for c in (20, 21, 22))
+    assert len(veinte) == COLA and len(veintidos) == COLA - 1
+    for cliente in (veinte, veintiuno):
+        assert cliente.DAYS_DECISION.gt(-VENTANA).sum() == ACTIVIDAD
+    assert veintidos.DAYS_DECISION.gt(-VENTANA).sum() == ACTIVIDAD - 1
+    assert -veintiuno.DAYS_DECISION.min() / DIAS == LARGA
+    # el 23, un día por debajo del corte: corta con los días por año del registro y larga con 365
+    veintitres = prev[prev.SK_ID_CURR == 23]
+    assert -veintitres.DAYS_DECISION.min() / DIAS < LARGA <= -veintitres.DAYS_DECISION.min() / 365
+    for corta in (veinte, veintidos):
+        assert -corta.DAYS_DECISION.min() / DIAS < LARGA
 
 
 @pytest.mark.parametrize("cliente", sorted(ESPERADO))
@@ -394,6 +441,30 @@ def test_la_captacion_y_la_finalidad_de_cada_cliente_son_las_calculadas_a_mano(p
     for clave, esperado in ESPERADO_CAPTACION[cliente].items():
         columna = COLUMNA_CAPTACION[clave]
         assert fila[columna] == pytest.approx(esperado, nan_ok=True), f"{columna}: {fila}"
+
+
+@pytest.mark.parametrize("cliente", sorted(ESPERADO_COLAS))
+def test_las_colas_y_el_termino_de_cada_cliente_son_los_calculados_a_mano(prev, cliente):
+    fila = agregar(prev).loc[cliente]
+    for clave, esperado in ESPERADO_COLAS[cliente].items():
+        assert fila[COLUMNA_COLAS[clave]] == esperado, f"{COLUMNA_COLAS[clave]}: {fila}"
+
+
+def test_las_colas_y_el_termino_deja_dentro_sus_bordes(prev):
+    """Cada corte, en las dos direcciones: uno más saca al cliente justo en el borde, y uno menos
+    mete al que está justo por debajo."""
+    def col(cortes, cliente, columna):
+        return agregar(prev, cortes).loc[cliente, columna]
+
+    assert col({"prev_count_cola": COLA + 1}, 20, "PREV_COUNT_COLA") == 0
+    assert col({"prev_count_cola": COLA - 1}, 22, "PREV_COUNT_COLA") == 1
+    assert col({"prev_actividad_12m_cola": ACTIVIDAD + 1}, 20, "PREV_ACTIVIDAD_12M_COLA") == 0
+    assert col({"prev_actividad_12m_cola": ACTIVIDAD + 1}, 20, "PREV_RELACION_CORTA_ACTIVA") == 0
+    assert col({"prev_actividad_12m_cola": ACTIVIDAD - 1}, 22, "PREV_ACTIVIDAD_12M_COLA") == 1
+    assert col({"prev_actividad_12m_cola": ACTIVIDAD - 1}, 22, "PREV_RELACION_CORTA_ACTIVA") == 1
+    # el 21 está justo en el corte de la relación larga: un poco más y pasa a corta
+    assert col({}, 21, "PREV_RELACION_CORTA_ACTIVA") == 0
+    assert col({"prev_relacion_larga_anios": LARGA + 0.01}, 21, "PREV_RELACION_CORTA_ACTIVA") == 1
 
 
 def test_la_hora_temprana_deja_dentro_el_borde(prev):
@@ -621,6 +692,9 @@ ESQUEMA = {
     "PREV_NO_SUITE_RATIO": "float64",
     "PREV_URGENT_PURPOSE_RATIO": "float64",
     "PREV_PHANTOM_FLAG": "int8",
+    "PREV_COUNT_COLA": "int8",
+    "PREV_ACTIVIDAD_12M_COLA": "int8",
+    "PREV_RELACION_CORTA_ACTIVA": "int8",
 }
 
 
@@ -636,14 +710,28 @@ def test_el_tipo_de_las_fechas_de_entrada_no_cambia_la_salida(prev, tipo):
 
 
 def test_la_salida_cumple_el_contrato_con_la_receta(prev):
-    """Las columnas son una parte de las de la receta: las de los puntos siguientes aún no están."""
+    """Las columnas son las de la receta menos los descartes firmes, más las declaradas sin receta.
+
+    `HAS_PREV_APPLICATION` no sale de aquí sino de `unir_previous()`, que es donde existe el
+    cliente sin solicitudes.
+    """
     receta = yaml.safe_load(
         (RAIZ / "config" / "previous_application_features.yaml").read_text()
     )["features"]
     nombres = {f["nombre"] for f in receta}
+    firmes = {f["nombre"] for f in receta if f["firmeza"] == "firme"}
+    assert firmes == {
+        "PREV_IMPLIED_COST_MAX",
+        "PREV_EARLY_SETTLED_COUNT",
+        "PREV_EARLY_SETTLED_RATIO",
+    }
+    esperadas = (nombres - firmes - {"HAS_PREV_APPLICATION"}) | set(COLUMNAS_SIN_RECETA)
     agregado = agregar(prev)
-    assert set(agregado.columns) <= nombres
+    assert set(agregado.columns) == esperadas
     assert agregado.index.name == "SK_ID_CURR" and agregado.index.is_unique
+    assert not set(COLUMNAS_SIN_RECETA) & nombres, "una columna sin receta que sí está en ella"
+    for motivo in COLUMNAS_SIN_RECETA.values():
+        assert motivo.strip()
 
 
 def test_cada_columna_de_la_salida_varia_entre_clientes(prev):
@@ -664,8 +752,8 @@ def test_un_corte_que_la_agregacion_no_lee_revienta(prev):
     """Ni uno mal escrito ni uno del registro que aún no se consume se ignoran en silencio."""
     with pytest.raises(KeyError, match="prev_ventana"):
         agregar(prev, {"prev_ventana": 90})
-    with pytest.raises(KeyError, match="prev_count_cola"):
-        agregar(prev, {"prev_count_cola": 3})
+    with pytest.raises(KeyError, match="prev_ratio_rechazo_min_solicitudes"):
+        agregar(prev, {"prev_ratio_rechazo_min_solicitudes": 2})
 
 
 def test_no_muta_el_frame_de_entrada(prev):
@@ -743,7 +831,7 @@ sin_dato_real = pytest.mark.skipif(
     reason="data/raw y el split no viajan con el repo",
 )
 
-# La parte del 4.2 al 4.6 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
+# La parte del 4.2 al 4.7 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
 # es la del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto.
 PUERTA = {
     "crudo": {
@@ -762,6 +850,9 @@ PUERTA = {
         "algo por vencer": 147_954,
         "finalidad informada": 35_917,
         "registro fantasma": 284,
+        "cola del conteo": 9_422,
+        "cola de actividad": 45_771,
+        "relación corta y activa": 21_913,
     },
     "modelado": {
         "con previas": 291_041,
@@ -779,8 +870,12 @@ PUERTA = {
         "algo por vencer": 147_944,
         "finalidad informada": 35_914,
         "registro fantasma": 284,
+        "cola del conteo": 9_419,
+        "cola de actividad": 45_764,
+        "relación corta y activa": 21_912,
     },
 }
+COLAS = ("PREV_COUNT_COLA", "PREV_ACTIVIDAD_12M_COLA", "PREV_RELACION_CORTA_ACTIVA")
 # La tabla entera: 338.857 clientes, más que los de train porque incluye los de application_test
 CLIENTES_TABLA = 338_857
 
@@ -817,6 +912,9 @@ def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
         "algo por vencer": int(con.PREV_FUTURE_DUE_MAX.notna().sum()),
         "finalidad informada": int(con.PREV_URGENT_PURPOSE_RATIO.notna().sum()),
         "registro fantasma": int(con.PREV_PHANTOM_FLAG.sum()),
+        "cola del conteo": int(con.PREV_COUNT_COLA.sum()),
+        "cola de actividad": int(con.PREV_ACTIVIDAD_12M_COLA.sum()),
+        "relación corta y activa": int(con.PREV_RELACION_CORTA_ACTIVA.sum()),
     }
     # la calle y las otras tres proporciones tienen dato en todo el que tiene previas
     columnas_completas = ["PREV_REFUSED_RATIO", "PREV_STREET_RATIO", "PREV_EARLY_HOUR_RATIO",
@@ -844,6 +942,11 @@ def test_sobre_el_dato_real_el_agregado_es_de_la_tabla_entera(dato_real):
         "PREV_STREET_RATIO": 338_857,
         "PREV_URGENT_PURPOSE_RATIO": 42_201,
     }
+    assert agregado[list(COLAS)].sum().to_dict() == {
+        "PREV_COUNT_COLA": 11_699,
+        "PREV_ACTIVIDAD_12M_COLA": 52_113,
+        "PREV_RELACION_CORTA_ACTIVA": 24_813,
+    }
     # 346 filas sin combinación de producto, de 315 clientes, y ninguno con todas sus filas así
     assert prev.PRODUCT_COMBINATION.isna().sum() == 346
     assert agregado.PREV_PHANTOM_FLAG.sum() == 315
@@ -857,7 +960,8 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
     una solicitud justo en -365, uno bajo el suelo del ritmo y el del identificador 365243. Del
     rechazo, uno con plazo largo solo en una solicitud Canceled, uno solo en Approved (que no
     marca), uno con todas sus solicitudes rechazadas, el de más rechazos y uno con scoring externo.
-    De la relación entre cifras, del ciclo de vida y de la captación, los del comentario de abajo.
+    De la relación entre cifras, del ciclo de vida, de la captación y de las colas, los del
+    comentario de abajo.
     """
     prev, agregado, _ = dato_real
     perfiles = [
@@ -874,6 +978,10 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
         # finalidades urgentes poco frecuentes, uno con urgente, no urgente y sin declarar, y uno
         # con horas a los dos lados del corte
         *[222_844, 417_884, 200_835, 297_922, 100_356, 100_035],
+        # de las colas: exactamente 15 y exactamente 14 solicitudes, exactamente 4 y exactamente 3
+        # en doce meses, la más antigua en -1461 y en -1460 con actividad alta (el borde de la
+        # relación larga a los dos lados), y uno con las dos colas y el término
+        *[100_082, 100_105, 100_025, 100_009, 104_221, 125_223, 100_302],
     ]
     muestra = [*np.random.default_rng(0).choice(agregado.index, 300, replace=False), *perfiles]
     trozo = prev[prev.SK_ID_CURR.isin(muestra)]
@@ -889,3 +997,44 @@ def test_sobre_el_dato_real_el_recorte_no_depende_del_orden(dato_real):
     filas = prev[prev.SK_ID_CURR == 193_980]
     assert agregar(filas.iloc[::-1]).loc[193_980, "PREV_HISTORIAL_RECORTADO"] == 1
     assert agregado.loc[193_980, "PREV_HISTORIAL_RECORTADO"] == 1
+
+
+@sin_dato_real
+def test_sobre_el_dato_real_la_relacion_corta_y_activa_es_superaditiva(dato_real):
+    """Las cuatro esquinas de la celda 131 y sus +1,61pp, sobre la cruda y sobre la de modelado.
+
+    Es un contraste y no una decisión: el corte de 4 años es de dominio y nada del objetivo entra
+    en `src/`. La superaditividad es la de la esquina corta y activa frente a la suma de los otros
+    tres efectos, que es lo que dice el notebook para conservar la cola de actividad.
+    """
+    _, agregado, _ = dato_real
+    objetivos = {
+        "crudo": load_table("application_train", usecols=["SK_ID_CURR", "TARGET"]),
+        "modelado": cargar_split()[["SK_ID_CURR", "TARGET"]],
+    }
+    esquinas = {
+        "crudo": {
+            (True, 0): 125_505,
+            (True, 1): 23_858,
+            (False, 0): 119_781,
+            (False, 1): 21_913,
+        },
+        "modelado": {
+            (True, 0): 125_501,
+            (True, 1): 23_852,
+            (False, 0): 119_776,
+            (False, 1): 21_912,
+        },
+    }
+    for poblacion, objetivo in objetivos.items():
+        unido = unir_previous(objetivo, agregado)
+        con = unido[unido.HAS_PREV_APPLICATION == 1]
+        larga = -con.PREV_DAYS_DECISION_MIN / DIAS >= LARGA
+        grupo = con.groupby([larga, con.PREV_ACTIVIDAD_12M_COLA]).TARGET.agg(["size", "mean"])
+        assert grupo["size"].to_dict() == esquinas[poblacion]
+        tasa = (grupo["mean"] * 100).to_dict()
+        aditivo = tasa[(False, 0)] + tasa[(True, 1)] - tasa[(True, 0)]
+        assert tasa[(False, 1)] - aditivo == pytest.approx(1.61, abs=0.01)
+        # la esquina es exactamente el término, no otra población parecida
+        marcados = con[con.PREV_RELACION_CORTA_ACTIVA == 1]
+        assert marcados.TARGET.mean() * 100 == pytest.approx(tasa[(False, 1)])
