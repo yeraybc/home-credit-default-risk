@@ -425,6 +425,21 @@ PARAMS: dict[str, Parametro] = {
             "test_contraste_de_la_ventana_minima_de_la_trayectoria"
         ),
     ),
+    # previous_application. Dominio porque es la ventana de un año y no se eligió contra el default:
+    # el notebook corta `DAYS_DECISION > -365` con el 365 literal y no con dias_por_anio, y no es
+    # lo mismo: hay 1.855 solicitudes justo en -365 y con 365,25 entrarían, lo que mueve el
+    # conteo de 1.201 clientes
+    "prev_ventana_reciente_dias": Parametro(
+        365,
+        "dominio",
+        "ventana de las solicitudes recientes, un año, con el borde fuera",
+        "notebook 04 celda 121",
+        contraste_pendiente=(
+            "comprobar sobre el split que la actividad reciente separa el default con ventanas "
+            "de 6, 12 y 24 meses, o sea que la señal de PREV_COUNT_12M y de su cola no depende "
+            "de este valor. Pendiente de ejecutar con el refijado de la cola de actividad (4.8)"
+        ),
+    ),
     # previous_application: cortes medidos
     "prev_count_cola": Parametro(
         15, "medido", "corte de la cola del conteo de solicitudes", "notebook 04 celda 153"
@@ -491,7 +506,8 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "previous_application": {
         "PREV_COUNT_COLA": ("prev_count_cola",),
-        "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola",),
+        "PREV_COUNT_12M": ("prev_ventana_reciente_dias",),
+        "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola", "prev_ventana_reciente_dias"),
         "PREV_EARLY_SETTLED_FLAG": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_COUNT": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_RATIO": ("prev_adelanto_liquidacion_dias",),
