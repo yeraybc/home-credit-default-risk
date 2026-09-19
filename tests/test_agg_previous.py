@@ -1,4 +1,4 @@
-"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.4).
+"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.5).
 
 Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `previous_application.csv` y el split y solo corre en local.
@@ -35,6 +35,7 @@ REFERENCIA = {
 }
 LARGO = REFERENCIA["prev_plazo_largo_cuotas"]
 SOBRE = REFERENCIA["prev_sobreconcesion_corte"]
+ADELANTO = REFERENCIA["prev_adelanto_liquidacion_dias"]
 
 
 def agregar(prev, cortes=None):
@@ -54,6 +55,8 @@ def solicitud(cliente, dias, tipo="New", **campos):
         "AMT_ANNUITY": 10.0,
         "NAME_CONTRACT_TYPE": "Cash loans",
         "RATE_DOWN_PAYMENT": np.nan,
+        "DAYS_LAST_DUE_1ST_VERSION": np.nan,
+        "DAYS_LAST_DUE": np.nan,
         **campos,
     }
 
@@ -92,7 +95,17 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 #    se queda sin dato
 # 11 dos aprobadas con plazo, una con crédito 0 y otra con cuota 0: el dato real no las tiene, y
 #    sin ellas el `> 0` del coste puede pasar a `>= 0` y dar infinito o un coste 0
+# Y para el ciclo de vida, con el fin previsto y el efectivo (NaN es "sin fecha"; el resto de
+# clientes no trae ninguna y queda sin operación terminada):
+# 12 una liquidada con más de un año de adelanto y el fin previsto por delante, y una viva con
+#    otro fin por delante más cercano: la bandera marca y el máximo es de la ya cerrada
+# 13 una liquidada justo en el corte, otra que cierra en la fecha prevista y otra con el fin
+#    previsto en 0: ninguna marca, no cuenta como por vencer, y con terminadas la bandera vale 0
+# 14 el centinela en el fin previsto de una operación con fin efectivo: sin limpiarlo marcaría
+# 15 el centinela en el fin efectivo de una con fin previsto por delante: sin limpiarlo contaría
+#    como terminada y la bandera saldría 0 en vez de NaN
 CONSUMO = "Consumer loans"
+SENTINELA = 365243.0
 SOLICITUDES = [
     solicitud(1, -100),
     solicitud(2, -2000, "Repeater"),
@@ -124,6 +137,13 @@ SOLICITUDES = [
     rechazo(10, -200, AMT_ANNUITY=30.0),
     solicitud(11, -500, AMT_CREDIT=0.0),
     solicitud(11, -200, AMT_ANNUITY=0.0),
+    solicitud(12, -900, DAYS_LAST_DUE_1ST_VERSION=100.0, DAYS_LAST_DUE=-300.0),
+    solicitud(12, -400, DAYS_LAST_DUE_1ST_VERSION=50.0),
+    solicitud(13, -900, DAYS_LAST_DUE_1ST_VERSION=-100.0, DAYS_LAST_DUE=-465.0),
+    solicitud(13, -400, DAYS_LAST_DUE_1ST_VERSION=-50.0, DAYS_LAST_DUE=-50.0),
+    solicitud(13, -200, DAYS_LAST_DUE_1ST_VERSION=0.0, DAYS_LAST_DUE=0.0),
+    solicitud(14, -700, DAYS_LAST_DUE_1ST_VERSION=SENTINELA, DAYS_LAST_DUE=-200.0),
+    solicitud(15, -300, DAYS_LAST_DUE_1ST_VERSION=300.0, DAYS_LAST_DUE=SENTINELA),
 ]
 
 
@@ -173,17 +193,24 @@ ESPERADO = {
 # cuota y plazo, y entrada de sus dos operaciones de consumo.
 NAN = np.nan
 ESPERADO_CIFRAS = {
-    1: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=NAN),
+    1: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=NAN, liquidada=NAN,
+            por_vencer=NAN),
     4: dict(concesion=1.0, sobre=0.0, plazo=61.0, coste=6.1, entrada=NAN),
     5: dict(concesion=1.0, sobre=0.0, plazo=36.0, coste=1.2, entrada=NAN),
     7: dict(
         concesion=1.1, sobre=1 / 3, plazo=28 / 3,
         coste=(20 * 10 / 130 + 5 * 6 / 90) / 2, entrada=0.1,
     ),
-    8: dict(concesion=NAN, sobre=NAN, plazo=NAN, coste=NAN, entrada=NAN),
+    8: dict(concesion=NAN, sobre=NAN, plazo=NAN, coste=NAN, entrada=NAN, liquidada=NAN,
+            por_vencer=NAN),
     9: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=0.15),
     10: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
     11: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
+    # el ciclo de vida: el 1 y el 8 no traen ninguna fecha y son NaN en las dos
+    12: dict(liquidada=1.0, por_vencer=100.0),
+    13: dict(liquidada=0.0, por_vencer=NAN),
+    14: dict(liquidada=NAN, por_vencer=NAN),
+    15: dict(liquidada=NAN, por_vencer=300.0),
 }
 COLUMNA_CIFRAS = {
     "concesion": "PREV_CREDIT_APPLICATION_RATIO",
@@ -191,6 +218,8 @@ COLUMNA_CIFRAS = {
     "plazo": "PREV_CNT_PAYMENT_MEAN",
     "coste": "PREV_IMPLIED_COST_MEAN",
     "entrada": "PREV_DOWN_PAYMENT_RATE_MEAN",
+    "liquidada": "PREV_EARLY_SETTLED_FLAG",
+    "por_vencer": "PREV_FUTURE_DUE_MAX",
 }
 COLUMNA = {
     "n": "PREV_APPLICATION_COUNT",
@@ -262,6 +291,20 @@ def test_el_fixture_ejercita_cada_rama(prev):
     ocho = prev[prev.SK_ID_CURR == 8]
     assert len(ocho) == 2 and not (ocho.AMT_APPLICATION.gt(0) & ocho.AMT_CREDIT.gt(0)).any()
     assert not ocho.CNT_PAYMENT.gt(0).any() and not ocho.NAME_CONTRACT_STATUS.eq("Approved").any()
+    # el ciclo de vida: adelanto por encima, justo en el corte y en la fecha prevista
+    desfase = prev.DAYS_LAST_DUE_1ST_VERSION - prev.DAYS_LAST_DUE
+    assert desfase.gt(ADELANTO).any() and desfase.eq(ADELANTO).any() and desfase.eq(0).any()
+    # una liquidada con el fin previsto por delante, y una viva con otro fin por delante más cercano
+    doce = prev[prev.SK_ID_CURR == 12]
+    assert doce.DAYS_LAST_DUE.notna().sum() == 1 and doce.DAYS_LAST_DUE_1ST_VERSION.gt(0).all()
+    assert doce.loc[doce.DAYS_LAST_DUE.notna(), "DAYS_LAST_DUE_1ST_VERSION"].item() > (
+        doce.loc[doce.DAYS_LAST_DUE.isna(), "DAYS_LAST_DUE_1ST_VERSION"].item()
+    )
+    # el centinela en cada una de las dos fechas, cada uno en su cliente
+    assert prev[prev.SK_ID_CURR == 14].DAYS_LAST_DUE_1ST_VERSION.eq(SENTINELA).all()
+    assert prev[prev.SK_ID_CURR == 15].DAYS_LAST_DUE.eq(SENTINELA).all()
+    # con previas y ninguna operación terminada, y con alguna terminada
+    assert prev[prev.SK_ID_CURR == 1].DAYS_LAST_DUE.isna().all()
 
 
 @pytest.mark.parametrize("cliente", sorted(ESPERADO))
@@ -310,6 +353,40 @@ def test_la_entrada_solo_lee_consumo(prev):
     assert agregar(prev).loc[7, "PREV_DOWN_PAYMENT_RATE_MEAN"] == pytest.approx(0.1)
     todo_consumo = prev.assign(NAME_CONTRACT_TYPE=CONSUMO)
     assert agregar(todo_consumo).loc[7, "PREV_DOWN_PAYMENT_RATE_MEAN"] == pytest.approx(0.7 / 3)
+
+
+def test_la_liquidacion_deja_fuera_el_borde_y_es_nan_sin_operacion_terminada(prev):
+    """En las dos direcciones: con el corte un día por debajo el borde del 13 marca, y quien no
+    tiene ninguna operación terminada no es 0, es NaN (un 0 mezclaría "no evaluable" con "no
+    liquidó pronto")."""
+    agregado = agregar(prev)
+    assert agregado.loc[[12, 13], "PREV_EARLY_SETTLED_FLAG"].tolist() == [1, 0]
+    baja = agregar(prev, {"prev_adelanto_liquidacion_dias": ADELANTO - 1})
+    assert baja.loc[13, "PREV_EARLY_SETTLED_FLAG"] == 1
+    assert agregado.loc[1, "PREV_EARLY_SETTLED_FLAG"] != agregado.loc[1, "PREV_EARLY_SETTLED_FLAG"]
+
+
+def test_lo_por_vencer_es_el_maximo_del_fin_previsto_aunque_la_operacion_este_cerrada(prev):
+    """El 12 tiene una cerrada con el fin previsto en 100 y una viva en 50: el máximo es 100. Es la
+    lectura literal del notebook, el plan pactado y no la deuda viva; con solo las vivas saldría
+    50."""
+    assert agregar(prev).loc[12, "PREV_FUTURE_DUE_MAX"] == 100
+    solo_vivas = prev.assign(DAYS_LAST_DUE_1ST_VERSION=prev.DAYS_LAST_DUE_1ST_VERSION.where(
+        prev.DAYS_LAST_DUE.isna()))
+    assert agregar(solo_vivas).loc[12, "PREV_FUTURE_DUE_MAX"] == 50
+
+
+def test_el_centinela_de_las_fechas_de_fin_no_cuenta_ni_como_terminada_ni_como_por_vencer(prev):
+    """Sin limpiar, el 14 marcaría liquidación con un fin por vencer en 365243, y el 15 saldría
+    con la bandera a 0 en vez de NaN: la limpieza tiene que ir antes."""
+    agregado = agregar(prev)
+    assert agregado.loc[[14, 15], "PREV_EARLY_SETTLED_FLAG"].isna().all()
+    assert agregado.loc[14, "PREV_FUTURE_DUE_MAX"] != agregado.loc[14, "PREV_FUTURE_DUE_MAX"]
+    assert agregado.loc[15, "PREV_FUTURE_DUE_MAX"] == 300
+    crudo = prev[prev.SK_ID_CURR.isin([14, 15])]
+    adelanto = crudo.DAYS_LAST_DUE_1ST_VERSION - crudo.DAYS_LAST_DUE
+    assert adelanto.notna().all() and adelanto.iloc[0] > ADELANTO
+    assert crudo.DAYS_LAST_DUE_1ST_VERSION.max() == SENTINELA
 
 
 def test_el_coste_solo_lee_aprobadas(prev):
@@ -413,6 +490,8 @@ ESQUEMA = {
     "PREV_CNT_PAYMENT_MEAN": "float64",
     "PREV_IMPLIED_COST_MEAN": "float64",
     "PREV_DOWN_PAYMENT_RATE_MEAN": "float64",
+    "PREV_EARLY_SETTLED_FLAG": "float64",
+    "PREV_FUTURE_DUE_MAX": "float64",
 }
 
 
@@ -535,7 +614,7 @@ sin_dato_real = pytest.mark.skipif(
     reason="data/raw y el split no viajan con el repo",
 )
 
-# La parte del 4.2 al 4.4 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
+# La parte del 4.2 al 4.5 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
 # es la del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto.
 PUERTA = {
     "crudo": {
@@ -549,6 +628,9 @@ PUERTA = {
         "plazo medio": 288_566,
         "coste implícito": 287_433,
         "entrada de consumo": 268_895,
+        "con operación terminada": 267_623,
+        "liquidación anticipada": 47_682,
+        "algo por vencer": 147_954,
     },
     "modelado": {
         "con previas": 291_041,
@@ -561,6 +643,9 @@ PUERTA = {
         "plazo medio": 288_550,
         "coste implícito": 287_417,
         "entrada de consumo": 268_879,
+        "con operación terminada": 267_608,
+        "liquidación anticipada": 47_681,
+        "algo por vencer": 147_944,
     },
 }
 # La tabla entera: 338.857 clientes, más que los de train porque incluye los de application_test
@@ -594,6 +679,9 @@ def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
         "plazo medio": int(con.PREV_CNT_PAYMENT_MEAN.notna().sum()),
         "coste implícito": int(con.PREV_IMPLIED_COST_MEAN.notna().sum()),
         "entrada de consumo": int(con.PREV_DOWN_PAYMENT_RATE_MEAN.notna().sum()),
+        "con operación terminada": int(con.PREV_EARLY_SETTLED_FLAG.notna().sum()),
+        "liquidación anticipada": int(con.PREV_EARLY_SETTLED_FLAG.eq(1).sum()),
+        "algo por vencer": int(con.PREV_FUTURE_DUE_MAX.notna().sum()),
     }
     assert con.PREV_REFUSED_RATIO.notna().all()
     assert medido == PUERTA[poblacion]
@@ -613,6 +701,8 @@ def test_sobre_el_dato_real_el_agregado_es_de_la_tabla_entera(dato_real):
         "PREV_CNT_PAYMENT_MEAN": 336_161,
         "PREV_IMPLIED_COST_MEAN": 334_894,
         "PREV_DOWN_PAYMENT_RATE_MEAN": 313_162,
+        "PREV_EARLY_SETTLED_FLAG": 312_263,
+        "PREV_FUTURE_DUE_MAX": 171_430,
     }
 
 
@@ -624,7 +714,7 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
     una solicitud justo en -365, uno bajo el suelo del ritmo y el del identificador 365243. Del
     rechazo, uno con plazo largo solo en una solicitud Canceled, uno solo en Approved (que no
     marca), uno con todas sus solicitudes rechazadas, el de más rechazos y uno con scoring externo.
-    De la relación entre cifras, los seis del comentario de abajo.
+    De la relación entre cifras y del ciclo de vida, los del comentario de abajo.
     """
     prev, agregado, _ = dato_real
     perfiles = [
@@ -634,6 +724,9 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
         # de consumo (las dos de la tabla), el cociente justo en el corte, el único con consumo y
         # otro producto, y una aprobada con plazo 0 y cuota
         *[100_368, 133_068, 350_530, 277_619, 100_003, 100_006],
+        # del ciclo de vida: el adelanto justo en el corte y uno un día por encima, el centinela en
+        # el fin previsto y en el efectivo, un por vencer ya cerrado y uno sin operación terminada
+        *[341_999, 163_755, 100_011, 100_014, 100_002, 100_022],
     ]
     muestra = [*np.random.default_rng(0).choice(agregado.index, 300, replace=False), *perfiles]
     trozo = prev[prev.SK_ID_CURR.isin(muestra)]

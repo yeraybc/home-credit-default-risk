@@ -28,6 +28,8 @@ NUMERICAS_ORIGEN: tuple[str, ...] = (
     "AMT_CREDIT",
     "AMT_ANNUITY",
     "RATE_DOWN_PAYMENT",
+    "DAYS_LAST_DUE_1ST_VERSION",
+    "DAYS_LAST_DUE",
 )
 COLUMNAS_ORIGEN: tuple[str, ...] = (
     "SK_ID_CURR",
@@ -46,6 +48,7 @@ CORTES: tuple[str, ...] = (
     "suelo_anios_denominador",
     "prev_plazo_largo_cuotas",
     "prev_sobreconcesion_corte",
+    "prev_adelanto_liquidacion_dias",
 )
 
 # El tipo de cliente que delata solicitudes anteriores a la ventana de la tabla.
@@ -61,6 +64,8 @@ DENOMINADOR: dict[str, str] = {
     "PREV_CNT_PAYMENT_MEAN": "plazo positivo",
     "PREV_DOWN_PAYMENT_RATE_MEAN": "solo consumo",
     "PREV_IMPLIED_COST_MEAN": "aprobadas con cuota, plazo y crédito positivos",
+    "PREV_EARLY_SETTLED_FLAG": "con operación terminada, las dos fechas de fin",
+    "PREV_FUTURE_DUE_MAX": "fin previsto por vencer",
 }
 
 
@@ -73,6 +78,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
 
     `PREV_REFUSED_LONG_TERM_FLAG` marca el plazo largo en una solicitud **no aprobada**, Canceled
     incluida, como la midió el notebook: con solo las Refused los 78 marcados de train son 59.
+
+    `PREV_EARLY_SETTLED_FLAG` es NaN sin ninguna operación terminada, y no 0 como en el notebook:
+    se midió sobre los que tienen alguna. `PREV_FUTURE_DUE_MAX` lee el fin **previsto**, como el
+    notebook, así que cuenta también las operaciones ya liquidadas antes de ese fin: es el plan
+    pactado y no la deuda viva (84.673 de las 224.392 solicitudes por vencer ya se cerraron).
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in prev.columns]
     if faltan:
@@ -101,6 +111,9 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         & p["AMT_CREDIT"].gt(0)
     )
     coste = (p["AMT_ANNUITY"] * p["CNT_PAYMENT"] / p["AMT_CREDIT"]).where(valida)
+    # el fin previsto frente al efectivo; sin el segundo la operación no ha terminado
+    previsto = p["DAYS_LAST_DUE_1ST_VERSION"]
+    adelanto = previsto - p["DAYS_LAST_DUE"]
     # booleanas y no int8 por lo mismo que en bureau: su suma sale siempre en int64
     f = p.assign(
         _concesion=concesion,
@@ -115,6 +128,10 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         _scofr=rechazada & p["CODE_REJECT_REASON"].eq("SCOFR"),
         _plazo_largo=p["CNT_PAYMENT"].gt(c["prev_plazo_largo_cuotas"])
         & p["NAME_CONTRACT_STATUS"].ne("Approved"),
+        _liquidada=adelanto.gt(c["prev_adelanto_liquidacion_dias"])
+        .astype(float)
+        .where(adelanto.notna()),
+        _por_vencer=previsto.where(previsto.gt(0)),
     )
     # el motivo va como bandera y no como conteo: está a cero en casi todos
     agregado = f.groupby("SK_ID_CURR").agg(
@@ -132,6 +149,8 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         PREV_CNT_PAYMENT_MEAN=("_plazo", "mean"),
         PREV_IMPLIED_COST_MEAN=("_coste", "mean"),
         PREV_DOWN_PAYMENT_RATE_MEAN=("_entrada", "mean"),
+        PREV_EARLY_SETTLED_FLAG=("_liquidada", "max"),
+        PREV_FUTURE_DUE_MAX=("_por_vencer", "max"),
     )
     # el conteo está censurado por la ventana de ocho años de la tabla: se normaliza por los años
     # de relación, con suelo para no dividir por casi cero
