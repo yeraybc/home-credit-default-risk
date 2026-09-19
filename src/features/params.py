@@ -55,12 +55,13 @@ class Parametro:
     perderse al reclasificarlo.
     """
 
-    valor_referencia: float | None
+    # una tupla cuando el corte es una lista de categorías, como las finalidades urgentes
+    valor_referencia: float | tuple[str, ...] | None
     procedencia: str
     descripcion: str
     fuente: str
     contraste_pendiente: str | None = None
-    valor_operativo: float | None = None
+    valor_operativo: float | tuple[str, ...] | None = None
     n_train_operativo: int | None = None
 
     def __post_init__(self) -> None:
@@ -440,7 +441,40 @@ PARAMS: dict[str, Parametro] = {
             "de este valor. Pendiente de ejecutar con el refijado de la cola de actividad (4.8)"
         ),
     ),
+    # Dominio por lo mismo que las app_hora_*: hasta las 8 es la franja antes de que abra la
+    # oficina a las 9, y el 82,44% de las decisiones cae entre las 9 y las 17. El borde entra
+    "prev_hora_temprana_max": Parametro(
+        8,
+        "dominio",
+        "última hora de la franja temprana de la solicitud, con el borde dentro",
+        "notebook 04 celda 153",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_EARLY_HOUR_RATIO separa el default con la franja "
+            "hasta las 7, las 8 y las 9, o sea que la señal no depende de este valor. Pendiente "
+            "de ejecutar con los refijados de previous_application (4.8)"
+        ),
+    ),
     # previous_application: cortes medidos
+    # Medido y no dominio, decidido en el 4.6 con auditoria-fuga-datos: la lista se escribe como
+    # liquidez urgente, pero sus cinco finalidades con al menos 100 solicitudes son exactamente las
+    # cinco primeras de la tabla ordenada por tasa de default (celda 92), y el corte cae justo
+    # después: Medicine (13,42%) y Repairs (13,00%) van sexta y séptima y se quedan fuera. Las otras
+    # dos (15 y 25 solicitudes) no estaban en esa tabla. El 4.8 la refija sobre train con una regla
+    # declarada
+    "prev_finalidades_urgentes": Parametro(
+        (
+            "Refusal to name the goal",
+            "Car repairs",
+            "Gasification / water supply",
+            "Money for a third person",
+            "Payments on other loans",
+            "Urgent needs",
+            "Building a house or an annex",
+        ),
+        "medido",
+        "finalidades declaradas que cuentan como liquidez urgente",
+        "notebook 04 celdas 92 y 153",
+    ),
     "prev_count_cola": Parametro(
         15, "medido", "corte de la cola del conteo de solicitudes", "notebook 04 celda 153"
     ),
@@ -515,6 +549,8 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
         "PREV_OVERGRANTED_RATIO": ("prev_sobreconcesion_corte",),
         "PREV_REFUSED_RATIO": ("prev_ratio_rechazo_min_solicitudes",),
         "PREV_APPLICATIONS_PER_YEAR": ("suelo_anios_denominador",),
+        "PREV_EARLY_HOUR_RATIO": ("prev_hora_temprana_max",),
+        "PREV_URGENT_PURPOSE_RATIO": ("prev_finalidades_urgentes",),
     },
 }
 
@@ -545,7 +581,7 @@ def valor(nombre: str):  # noqa: ANN201 - devuelve el tipo que declare el parám
 
 
 def fijar_operativo(
-    nombre: str, valor_nuevo: float, n_train: int, sobrescribir: bool = False
+    nombre: str, valor_nuevo: float | tuple[str, ...], n_train: int, sobrescribir: bool = False
 ) -> None:
     """Único punto de escritura del valor operativo de un reajustable.
 

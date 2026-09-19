@@ -1,4 +1,4 @@
-"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.5).
+"""Tests de la agregación de previous_application por cliente (puntos 4.2 a 4.6).
 
 Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la puerta contra el dato
 real del final, que se salta sin `previous_application.csv` y el split y solo corre en local.
@@ -36,6 +36,8 @@ REFERENCIA = {
 LARGO = REFERENCIA["prev_plazo_largo_cuotas"]
 SOBRE = REFERENCIA["prev_sobreconcesion_corte"]
 ADELANTO = REFERENCIA["prev_adelanto_liquidacion_dias"]
+URGENTES = REFERENCIA["prev_finalidades_urgentes"]
+HORA = valor("prev_hora_temprana_max")
 
 
 def agregar(prev, cortes=None):
@@ -57,6 +59,11 @@ def solicitud(cliente, dias, tipo="New", **campos):
         "RATE_DOWN_PAYMENT": np.nan,
         "DAYS_LAST_DUE_1ST_VERSION": np.nan,
         "DAYS_LAST_DUE": np.nan,
+        # por defecto: combinación definida y no de calle, mediodía, con acompañante y sin finalidad
+        "PRODUCT_COMBINATION": "Cash X-Sell: low",
+        "HOUR_APPR_PROCESS_START": 12.0,
+        "NAME_TYPE_SUITE": "Unaccompanied",
+        "NAME_CASH_LOAN_PURPOSE": "XAP",
         **campos,
     }
 
@@ -104,6 +111,16 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 # 14 el centinela en el fin previsto de una operación con fin efectivo: sin limpiarlo marcaría
 # 15 el centinela en el fin efectivo de una con fin previsto por delante: sin limpiarlo contaría
 #    como terminada y la bandera saldría 0 en vez de NaN
+# Y para la captación y la finalidad (el resto de clientes trae los valores por defecto: sin calle,
+# sin hora temprana, con acompañante y sin finalidad declarada):
+# 8  sus dos filas sin combinación de producto: fantasma, y sin ninguna fila en el denominador de la
+#    calle ni en el de la finalidad
+# 16 tres filas: la hora justo en el corte con calle, sin acompañante y finalidad urgente; una a la
+#    hora siguiente con "Repairs", que no es "Car repairs"; y una sin combinación con XNA como
+#    finalidad, que sale de los dos denominadores
+# 17 todo fantasma y sin finalidad: la calle es NaN y no 0
+# 18 una sola fila de calle con finalidad urgente, a las 23: los dos ratios valen 1
+# 19 una finalidad informada y no urgente, a las 0: la proporción urgente vale 0 y no NaN
 CONSUMO = "Consumer loans"
 SENTINELA = 365243.0
 SOLICITUDES = [
@@ -129,8 +146,10 @@ SOLICITUDES = [
               RATE_DOWN_PAYMENT=0.0),
     solicitud(7, -300, AMT_CREDIT=90.0, AMT_ANNUITY=5.0, CNT_PAYMENT=6.0, RATE_DOWN_PAYMENT=0.5),
     rechazo(7, -100, AMT_CREDIT=0.0),
-    rechazo(8, -700, AMT_APPLICATION=0.0, AMT_CREDIT=50.0, CNT_PAYMENT=np.nan),
-    solicitud(8, -400, NAME_CONTRACT_STATUS="Canceled", AMT_CREDIT=0.0, CNT_PAYMENT=0.0),
+    rechazo(8, -700, AMT_APPLICATION=0.0, AMT_CREDIT=50.0, CNT_PAYMENT=np.nan,
+            PRODUCT_COMBINATION=np.nan),
+    solicitud(8, -400, NAME_CONTRACT_STATUS="Canceled", AMT_CREDIT=0.0, CNT_PAYMENT=0.0,
+              PRODUCT_COMBINATION=np.nan),
     solicitud(9, -300, NAME_CONTRACT_TYPE=CONSUMO, RATE_DOWN_PAYMENT=-0.5),
     solicitud(9, -100, NAME_CONTRACT_TYPE=CONSUMO, RATE_DOWN_PAYMENT=0.3),
     solicitud(10, -250, AMT_ANNUITY=np.nan),
@@ -144,6 +163,16 @@ SOLICITUDES = [
     solicitud(13, -200, DAYS_LAST_DUE_1ST_VERSION=0.0, DAYS_LAST_DUE=0.0),
     solicitud(14, -700, DAYS_LAST_DUE_1ST_VERSION=SENTINELA, DAYS_LAST_DUE=-200.0),
     solicitud(15, -300, DAYS_LAST_DUE_1ST_VERSION=300.0, DAYS_LAST_DUE=SENTINELA),
+    solicitud(16, -300, HOUR_APPR_PROCESS_START=HORA, PRODUCT_COMBINATION="Cash Street: high",
+              NAME_TYPE_SUITE=np.nan, NAME_CASH_LOAN_PURPOSE="Car repairs"),
+    solicitud(16, -200, HOUR_APPR_PROCESS_START=HORA + 1, NAME_TYPE_SUITE="Family",
+              NAME_CASH_LOAN_PURPOSE="Repairs"),
+    solicitud(16, -100, PRODUCT_COMBINATION=np.nan, NAME_TYPE_SUITE=np.nan,
+              NAME_CASH_LOAN_PURPOSE="XNA"),
+    solicitud(17, -150, HOUR_APPR_PROCESS_START=HORA + 1, PRODUCT_COMBINATION=np.nan),
+    solicitud(18, -120, HOUR_APPR_PROCESS_START=23.0, PRODUCT_COMBINATION="Card Street",
+              NAME_CASH_LOAN_PURPOSE="Urgent needs"),
+    solicitud(19, -110, HOUR_APPR_PROCESS_START=0.0, NAME_CASH_LOAN_PURPOSE="Medicine"),
 ]
 
 
@@ -202,7 +231,7 @@ ESPERADO_CIFRAS = {
         coste=(20 * 10 / 130 + 5 * 6 / 90) / 2, entrada=0.1,
     ),
     8: dict(concesion=NAN, sobre=NAN, plazo=NAN, coste=NAN, entrada=NAN, liquidada=NAN,
-            por_vencer=NAN),
+            por_vencer=NAN, calle=NAN, urgente=NAN),
     9: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=0.15),
     10: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
     11: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
@@ -220,6 +249,25 @@ COLUMNA_CIFRAS = {
     "entrada": "PREV_DOWN_PAYMENT_RATE_MEAN",
     "liquidada": "PREV_EARLY_SETTLED_FLAG",
     "por_vencer": "PREV_FUTURE_DUE_MAX",
+    "calle": "PREV_STREET_RATIO",
+    "urgente": "PREV_URGENT_PURPOSE_RATIO",
+}
+# La captación y la finalidad, a mano por cliente. Los clientes sin caso propio traen los valores
+# por defecto: calle 0, hora temprana 0, sin acompañante 0 y urgente NaN, que no declaran finalidad.
+ESPERADO_CAPTACION = {
+    1: dict(calle=0.0, temprana=0.0, sin_acompanante=0.0, urgente=NAN, fantasma=0),
+    8: dict(calle=NAN, temprana=0.0, sin_acompanante=0.0, urgente=NAN, fantasma=1),
+    16: dict(calle=1 / 2, temprana=1 / 3, sin_acompanante=2 / 3, urgente=1 / 2, fantasma=1),
+    17: dict(calle=NAN, temprana=0.0, sin_acompanante=0.0, urgente=NAN, fantasma=1),
+    18: dict(calle=1.0, temprana=0.0, sin_acompanante=0.0, urgente=1.0, fantasma=0),
+    19: dict(calle=0.0, temprana=1.0, sin_acompanante=0.0, urgente=0.0, fantasma=0),
+}
+COLUMNA_CAPTACION = {
+    "calle": "PREV_STREET_RATIO",
+    "temprana": "PREV_EARLY_HOUR_RATIO",
+    "sin_acompanante": "PREV_NO_SUITE_RATIO",
+    "urgente": "PREV_URGENT_PURPOSE_RATIO",
+    "fantasma": "PREV_PHANTOM_FLAG",
 }
 COLUMNA = {
     "n": "PREV_APPLICATION_COUNT",
@@ -305,6 +353,24 @@ def test_el_fixture_ejercita_cada_rama(prev):
     assert prev[prev.SK_ID_CURR == 15].DAYS_LAST_DUE.eq(SENTINELA).all()
     # con previas y ninguna operación terminada, y con alguna terminada
     assert prev[prev.SK_ID_CURR == 1].DAYS_LAST_DUE.isna().all()
+    # la captación: el 8 con todas sus filas sin combinación y sin finalidad, y el 17 igual
+    assert prev[prev.SK_ID_CURR.isin([8, 17])].PRODUCT_COMBINATION.isna().all()
+    assert prev[prev.SK_ID_CURR.isin([8, 17])].NAME_CASH_LOAN_PURPOSE.isin(["XAP", "XNA"]).all()
+    # el 16: una fantasma junto a dos definidas, una con y otra sin calle, la hora en el corte y
+    # una más arriba, un hueco de acompañante en dos filas, y la finalidad urgente, una casi
+    # igual que no lo es y una XNA
+    dieciseis = prev[prev.SK_ID_CURR == 16]
+    assert dieciseis.PRODUCT_COMBINATION.isna().sum() == 1
+    assert dieciseis.PRODUCT_COMBINATION.str.contains("Street", na=False).sum() == 1
+    horas = dieciseis.HOUR_APPR_PROCESS_START
+    assert HORA in set(horas) and (horas > HORA).any()
+    acompanante = dieciseis.NAME_TYPE_SUITE
+    assert acompanante.isna().sum() == 2 and acompanante.notna().sum() == 1
+    assert "Car repairs" in URGENTES and "Repairs" not in URGENTES
+    assert {"Car repairs", "Repairs", "XNA"} == set(dieciseis.NAME_CASH_LOAN_PURPOSE)
+    # el 19 declara una finalidad que no es urgente y el 18 una que sí, así que el 0 y el 1 se ven
+    assert prev[prev.SK_ID_CURR == 19].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).sum() == 0
+    assert prev[prev.SK_ID_CURR == 18].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).all()
 
 
 @pytest.mark.parametrize("cliente", sorted(ESPERADO))
@@ -320,6 +386,64 @@ def test_la_relacion_entre_cifras_de_cada_cliente_es_la_calculada_a_mano(prev, c
     for clave, esperado in ESPERADO_CIFRAS[cliente].items():
         columna = COLUMNA_CIFRAS[clave]
         assert fila[columna] == pytest.approx(esperado, nan_ok=True), f"{columna}: {fila}"
+
+
+@pytest.mark.parametrize("cliente", sorted(ESPERADO_CAPTACION))
+def test_la_captacion_y_la_finalidad_de_cada_cliente_son_las_calculadas_a_mano(prev, cliente):
+    fila = agregar(prev).loc[cliente]
+    for clave, esperado in ESPERADO_CAPTACION[cliente].items():
+        columna = COLUMNA_CAPTACION[clave]
+        assert fila[columna] == pytest.approx(esperado, nan_ok=True), f"{columna}: {fila}"
+
+
+def test_la_hora_temprana_deja_dentro_el_borde(prev):
+    """En las dos direcciones: el 16 tiene una hora justo en el corte y otra una más arriba, y el
+    corte una hora por debajo la saca, o una por encima mete la otra."""
+    assert agregar(prev).loc[16, "PREV_EARLY_HOUR_RATIO"] == pytest.approx(1 / 3)
+    assert agregar(prev, {"prev_hora_temprana_max": HORA - 1}).loc[16, "PREV_EARLY_HOUR_RATIO"] == 0
+    subida = agregar(prev, {"prev_hora_temprana_max": HORA + 1})
+    assert subida.loc[16, "PREV_EARLY_HOUR_RATIO"] == pytest.approx(2 / 3)
+
+
+def test_la_finalidad_urgente_es_una_lista_exacta_y_no_un_contiene(prev):
+    """"Repairs" no es "Car repairs": con la lista ampliada la proporción del 16 sube, con otra
+    lista la del 19 pasa de 0 a 1, y una subcadena de una finalidad real no marca nada."""
+    assert agregar(prev).loc[16, "PREV_URGENT_PURPOSE_RATIO"] == pytest.approx(1 / 2)
+    ampliada = agregar(prev, {"prev_finalidades_urgentes": (*URGENTES, "Repairs")})
+    assert ampliada.loc[16, "PREV_URGENT_PURPOSE_RATIO"] == 1
+    otra = agregar(prev, {"prev_finalidades_urgentes": ("Medicine",)})
+    assert otra.loc[[16, 19], "PREV_URGENT_PURPOSE_RATIO"].tolist() == [0.0, 1.0]
+    subcadena = agregar(prev, {"prev_finalidades_urgentes": ("repairs",)})
+    assert subcadena.loc[16, "PREV_URGENT_PURPOSE_RATIO"] == 0
+
+
+def test_la_calle_y_la_finalidad_solo_cuentan_sobre_su_denominador(prev):
+    """En las dos direcciones: con la combinación del 16 rellena su fila fantasma entra en el
+    denominador de la calle (1/3), y con una finalidad real en la XNA entra en el de la urgente."""
+    base = agregar(prev)
+    assert base.loc[16, ["PREV_STREET_RATIO", "PREV_URGENT_PURPOSE_RATIO"]].tolist() == [0.5, 0.5]
+    llena = prev.copy()
+    fila = llena.index[(llena.SK_ID_CURR == 16) & llena.PRODUCT_COMBINATION.isna()]
+    llena.loc[fila, "PRODUCT_COMBINATION"] = "Cash X-Sell: low"
+    assert agregar(llena).loc[16, "PREV_STREET_RATIO"] == pytest.approx(1 / 3)
+    llena.loc[fila, "NAME_CASH_LOAN_PURPOSE"] = "Repairs"
+    assert agregar(llena).loc[16, "PREV_URGENT_PURPOSE_RATIO"] == pytest.approx(1 / 3)
+
+
+def test_las_categoricas_como_category_dan_lo_mismo_que_como_texto(prev):
+    """`load_table` puede traerlas como category, y un `str.contains` o un `isin` sobre ellas no
+    tiene por qué dar lo mismo."""
+    columnas = ["PRODUCT_COMBINATION", "NAME_TYPE_SUITE", "NAME_CASH_LOAN_PURPOSE"]
+    categorica = prev.astype(dict.fromkeys(columnas, "category"))
+    pd.testing.assert_frame_equal(agregar(categorica), agregar(prev))
+
+
+def test_la_lista_de_finalidades_urgentes_es_medida_y_revienta_sin_fijar(prev):
+    """Sale de ordenar las finalidades por tasa de default: no se consume sin refijarla."""
+    assert parametro("prev_finalidades_urgentes").procedencia == "medido"
+    sin_ella = {n: v for n, v in REFERENCIA.items() if n != "prev_finalidades_urgentes"}
+    with pytest.raises(ValueError, match="prev_finalidades_urgentes"):
+        agregar_previous(prev, sin_ella)
 
 
 def test_la_sobreconcesion_deja_fuera_el_borde(prev):
@@ -492,6 +616,11 @@ ESQUEMA = {
     "PREV_DOWN_PAYMENT_RATE_MEAN": "float64",
     "PREV_EARLY_SETTLED_FLAG": "float64",
     "PREV_FUTURE_DUE_MAX": "float64",
+    "PREV_STREET_RATIO": "float64",
+    "PREV_EARLY_HOUR_RATIO": "float64",
+    "PREV_NO_SUITE_RATIO": "float64",
+    "PREV_URGENT_PURPOSE_RATIO": "float64",
+    "PREV_PHANTOM_FLAG": "int8",
 }
 
 
@@ -614,7 +743,7 @@ sin_dato_real = pytest.mark.skipif(
     reason="data/raw y el split no viajan con el repo",
 )
 
-# La parte del 4.2 al 4.5 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
+# La parte del 4.2 al 4.6 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
 # es la del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto.
 PUERTA = {
     "crudo": {
@@ -631,6 +760,8 @@ PUERTA = {
         "con operación terminada": 267_623,
         "liquidación anticipada": 47_682,
         "algo por vencer": 147_954,
+        "finalidad informada": 35_917,
+        "registro fantasma": 284,
     },
     "modelado": {
         "con previas": 291_041,
@@ -646,6 +777,8 @@ PUERTA = {
         "con operación terminada": 267_608,
         "liquidación anticipada": 47_681,
         "algo por vencer": 147_944,
+        "finalidad informada": 35_914,
+        "registro fantasma": 284,
     },
 }
 # La tabla entera: 338.857 clientes, más que los de train porque incluye los de application_test
@@ -682,8 +815,13 @@ def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
         "con operación terminada": int(con.PREV_EARLY_SETTLED_FLAG.notna().sum()),
         "liquidación anticipada": int(con.PREV_EARLY_SETTLED_FLAG.eq(1).sum()),
         "algo por vencer": int(con.PREV_FUTURE_DUE_MAX.notna().sum()),
+        "finalidad informada": int(con.PREV_URGENT_PURPOSE_RATIO.notna().sum()),
+        "registro fantasma": int(con.PREV_PHANTOM_FLAG.sum()),
     }
-    assert con.PREV_REFUSED_RATIO.notna().all()
+    # la calle y las otras tres proporciones tienen dato en todo el que tiene previas
+    columnas_completas = ["PREV_REFUSED_RATIO", "PREV_STREET_RATIO", "PREV_EARLY_HOUR_RATIO",
+                          "PREV_NO_SUITE_RATIO", "PREV_PHANTOM_FLAG"]
+    assert con[columnas_completas].notna().all().all()
     assert medido == PUERTA[poblacion]
     assert len(unido) == len(poblaciones[poblacion])
 
@@ -703,7 +841,12 @@ def test_sobre_el_dato_real_el_agregado_es_de_la_tabla_entera(dato_real):
         "PREV_DOWN_PAYMENT_RATE_MEAN": 313_162,
         "PREV_EARLY_SETTLED_FLAG": 312_263,
         "PREV_FUTURE_DUE_MAX": 171_430,
+        "PREV_STREET_RATIO": 338_857,
+        "PREV_URGENT_PURPOSE_RATIO": 42_201,
     }
+    # 346 filas sin combinación de producto, de 315 clientes, y ninguno con todas sus filas así
+    assert prev.PRODUCT_COMBINATION.isna().sum() == 346
+    assert agregado.PREV_PHANTOM_FLAG.sum() == 315
 
 
 @sin_dato_real
@@ -714,7 +857,7 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
     una solicitud justo en -365, uno bajo el suelo del ritmo y el del identificador 365243. Del
     rechazo, uno con plazo largo solo en una solicitud Canceled, uno solo en Approved (que no
     marca), uno con todas sus solicitudes rechazadas, el de más rechazos y uno con scoring externo.
-    De la relación entre cifras y del ciclo de vida, los del comentario de abajo.
+    De la relación entre cifras, del ciclo de vida y de la captación, los del comentario de abajo.
     """
     prev, agregado, _ = dato_real
     perfiles = [
@@ -727,6 +870,10 @@ def test_sobre_el_dato_real_cada_cliente_solo_da_lo_mismo_que_acompanado(dato_re
         # del ciclo de vida: el adelanto justo en el corte y uno un día por encima, el centinela en
         # el fin previsto y en el efectivo, un por vencer ya cerrado y uno sin operación terminada
         *[341_999, 163_755, 100_011, 100_014, 100_002, 100_022],
+        # de la captación y la finalidad: un fantasma junto a solicitudes definidas, dos con
+        # finalidades urgentes poco frecuentes, uno con urgente, no urgente y sin declarar, y uno
+        # con horas a los dos lados del corte
+        *[222_844, 417_884, 200_835, 297_922, 100_356, 100_035],
     ]
     muestra = [*np.random.default_rng(0).choice(agregado.index, 300, replace=False), *perfiles]
     trozo = prev[prev.SK_ID_CURR.isin(muestra)]

@@ -30,6 +30,7 @@ NUMERICAS_ORIGEN: tuple[str, ...] = (
     "RATE_DOWN_PAYMENT",
     "DAYS_LAST_DUE_1ST_VERSION",
     "DAYS_LAST_DUE",
+    "HOUR_APPR_PROCESS_START",
 )
 COLUMNAS_ORIGEN: tuple[str, ...] = (
     "SK_ID_CURR",
@@ -37,6 +38,9 @@ COLUMNAS_ORIGEN: tuple[str, ...] = (
     "NAME_CONTRACT_STATUS",
     "NAME_CONTRACT_TYPE",
     "CODE_REJECT_REASON",
+    "PRODUCT_COMBINATION",
+    "NAME_TYPE_SUITE",
+    "NAME_CASH_LOAN_PURPOSE",
     *NUMERICAS_ORIGEN,
 )
 
@@ -49,10 +53,17 @@ CORTES: tuple[str, ...] = (
     "prev_plazo_largo_cuotas",
     "prev_sobreconcesion_corte",
     "prev_adelanto_liquidacion_dias",
+    "prev_hora_temprana_max",
+    "prev_finalidades_urgentes",
 )
 
 # El tipo de cliente que delata solicitudes anteriores a la ventana de la tabla.
 TIPOS_RECURRENTES: tuple[str, ...] = ("Repeater", "Refreshed")
+
+# El canal de captación que la combinación de producto lleva escrito, y las dos etiquetas con las
+# que la tabla dice que la finalidad no se declaró. Son etiquetas del dato, sin nada que refijar.
+CAPTACION_CALLE = "Street"
+FINALIDAD_NO_DECLARADA: tuple[str, ...] = ("XNA", "XAP")
 
 # Las features que no se agregan sobre todas las solicitudes del cliente sino sobre las que la
 # variable tiene sentido; fuera de ese denominador la solicitud no cuenta, y sin ninguna dentro
@@ -66,6 +77,8 @@ DENOMINADOR: dict[str, str] = {
     "PREV_IMPLIED_COST_MEAN": "aprobadas con cuota, plazo y crédito positivos",
     "PREV_EARLY_SETTLED_FLAG": "con operación terminada, las dos fechas de fin",
     "PREV_FUTURE_DUE_MAX": "fin previsto por vencer",
+    "PREV_STREET_RATIO": "combinación de producto definida",
+    "PREV_URGENT_PURPOSE_RATIO": "finalidad declarada",
 }
 
 
@@ -83,6 +96,10 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     se midió sobre los que tienen alguna. `PREV_FUTURE_DUE_MAX` lee el fin **previsto**, como el
     notebook, así que cuenta también las operaciones ya liquidadas antes de ese fin: es el plan
     pactado y no la deuda viva (84.673 de las 224.392 solicitudes por vencer ya se cerraron).
+
+    `PREV_URGENT_PURPOSE_RATIO` es una proporción y nunca un conteo, y la lista de finalidades
+    urgentes es `medido`: entra por `cortes` y revienta hasta que se refija sobre train.
+    `PREV_PHANTOM_FLAG` vale 0 en quien tiene previas y ninguna sin combinación de producto.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in prev.columns]
     if faltan:
@@ -111,6 +128,12 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         & p["AMT_CREDIT"].gt(0)
     )
     coste = (p["AMT_ANNUITY"] * p["CNT_PAYMENT"] / p["AMT_CREDIT"]).where(valida)
+    # la combinación de producto sin definir es el registro fantasma, y va aparte de la calle
+    combinacion = p["PRODUCT_COMBINATION"]
+    definida = combinacion.notna()
+    # la finalidad solo existe donde el cliente la declara, y ese es el denominador honesto
+    finalidad = p["NAME_CASH_LOAN_PURPOSE"]
+    declarada = finalidad.notna() & ~finalidad.isin(FINALIDAD_NO_DECLARADA)
     # el fin previsto frente al efectivo; sin el segundo la operación no ha terminado
     previsto = p["DAYS_LAST_DUE_1ST_VERSION"]
     adelanto = previsto - p["DAYS_LAST_DUE"]
@@ -132,6 +155,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         .astype(float)
         .where(adelanto.notna()),
         _por_vencer=previsto.where(previsto.gt(0)),
+        _calle=combinacion.str.contains(CAPTACION_CALLE, na=False).astype(float).where(definida),
+        _temprana=p["HOUR_APPR_PROCESS_START"].le(c["prev_hora_temprana_max"]),
+        _sin_acompanante=p["NAME_TYPE_SUITE"].isna(),
+        _urgente=finalidad.isin(c["prev_finalidades_urgentes"]).astype(float).where(declarada),
+        _fantasma=~definida,
     )
     # el motivo va como bandera y no como conteo: está a cero en casi todos
     agregado = f.groupby("SK_ID_CURR").agg(
@@ -151,6 +179,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         PREV_DOWN_PAYMENT_RATE_MEAN=("_entrada", "mean"),
         PREV_EARLY_SETTLED_FLAG=("_liquidada", "max"),
         PREV_FUTURE_DUE_MAX=("_por_vencer", "max"),
+        PREV_STREET_RATIO=("_calle", "mean"),
+        PREV_EARLY_HOUR_RATIO=("_temprana", "mean"),
+        PREV_NO_SUITE_RATIO=("_sin_acompanante", "mean"),
+        PREV_URGENT_PURPOSE_RATIO=("_urgente", "mean"),
+        PREV_PHANTOM_FLAG=("_fantasma", "max"),
     )
     # el conteo está censurado por la ventana de ocho años de la tabla: se normaliza por los años
     # de relación, con suelo para no dividir por casi cero
@@ -169,6 +202,9 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
             "PREV_REFUSED_RATIO": "float64",
             "PREV_REFUSED_SCOFR_FLAG": "int8",
             "PREV_REFUSED_LONG_TERM_FLAG": "int8",
+            "PREV_EARLY_HOUR_RATIO": "float64",
+            "PREV_NO_SUITE_RATIO": "float64",
+            "PREV_PHANTOM_FLAG": "int8",
         }
     )
 
