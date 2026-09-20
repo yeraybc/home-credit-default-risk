@@ -19,12 +19,14 @@ from src.features.agg_previous import (
     NUMERICAS_ORIGEN,
     agregar_previous,
     cociente_de_concesion,
+    finalidad_declarada,
     unir_previous,
 )
 from src.features.build_features import (
     REJILLA_SOBRECONCESION,
     ajustar_actividad_previous,
     ajustar_cola_previous,
+    ajustar_finalidades_previous,
     ajustar_sobreconcesion_previous,
 )
 from src.features.cleaning import limpiar_previous
@@ -1108,6 +1110,118 @@ def test_el_cociente_de_concesion_deja_fuera_las_dos_cifras_a_cero():
     assert cociente.dtype == "float64"
 
 
+# --- el 4.8, el refijado de las finalidades urgentes sobre train -------------------------------
+
+
+def escenario_finalidad(*grupos):
+    """Cada grupo es (finalidad, targets, parte); una solicitud por cliente."""
+    filas, clientes = [], []
+    for finalidad, targets, parte in grupos:
+        for target in targets:
+            cliente = len(clientes) + 1
+            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
+            filas.append(solicitud(cliente, -100, NAME_CASH_LOAN_PURPOSE=finalidad))
+    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+
+def refijar_finalidad(*grupos, sobrescribir=False):
+    """La lista que sale de refijar sobre el escenario, y el barrido."""
+    prev, clientes = escenario_finalidad(*grupos)
+    informe = ajustar_finalidades_previous(prev, clientes, clientes, sobrescribir)
+    return valor("prev_finalidades_urgentes"), informe
+
+
+def con_tasa(n, morosos):
+    return [1] * morosos + [0] * (n - morosos)
+
+
+# La global de las declaradas es 22,08%. Alta (+7,9pp) y Beta (+11,9pp) la superan por mucho, y Beta
+# tiene exactamente la n mínima. Justa la supera en +0,9pp y no cruza los 2pp. Rara tiene la tasa
+# más alta y solo 20 solicitudes. Las tres de abajo no cuentan como declaradas: contadas, la global
+# pasaría del 22,08% al 40% y entrarían XNA y XAP, con la n mínima y todas morosas
+GRUPOS_FINALIDAD = [
+    ("Repairs", con_tasa(300, 30), "train"),
+    ("Alta", con_tasa(150, 45), "train"),
+    ("Beta", con_tasa(100, 34), "train"),
+    ("Justa", con_tasa(200, 46), "train"),
+    ("Rara", con_tasa(20, 15), "train"),
+    ("XNA", [1] * 100, "train"),
+    ("XAP", [1] * 100, "train"),
+    (np.nan, [1] * 30, "train"),
+]
+# cuatrocientos clientes de Justa, todos morosos: contados en train la llevarían sobre los 2pp
+FINALIDAD_VALID = ("Justa", [1] * 400, "valid")
+
+
+def test_las_finalidades_urgentes_son_las_que_superan_la_n_minima_y_los_2pp():
+    """Beta en la n mínima exacta entra; Rara, con la mejor tasa y n de 20, no; Justa, encima de la
+    global pero por debajo de los 2pp, tampoco."""
+    assert valor("n_min_categoria") == 100, "el escenario pone a Beta en la n mínima"
+    lista, informe = refijar_finalidad(*GRUPOS_FINALIDAD)
+    assert lista == ("Alta", "Beta")
+    assert informe.elegida.sum() == 2
+    assert 0 < informe.loc["Justa", "delta_pp"] < valor("umbral_flags_pp")
+    assert informe.loc["Rara", "n"] < valor("n_min_categoria")
+    assert informe.tasa.idxmax() == "Rara"
+
+
+def test_las_finalidades_sin_declarar_no_cuentan_ni_en_la_tasa_global():
+    """XNA, XAP y el NaN no son finalidades y no entran en el barrido ni en la global."""
+    lista, informe = refijar_finalidad(*GRUPOS_FINALIDAD)
+    assert not {"XNA", "XAP"} & set(informe.index) and "XNA" not in lista
+    declaradas = [g for g in GRUPOS_FINALIDAD if g[0] not in ("XNA", "XAP") and g[0] == g[0]]
+    global_ = np.mean(sum((g[1] for g in declaradas), []))
+    esperado = (informe.loc["Alta", "tasa"] / 100 - global_) * 100
+    assert informe.loc["Alta", "delta_pp"] == pytest.approx(esperado)
+
+
+def test_la_lista_sale_ordenada_y_como_tupla_aunque_la_categorica_no_lo_este():
+    """`groupby` ordena las claves de una categórica por sus categorías, y `load_table` las deja en
+    el orden que traiga el dato: con las categorías al revés, la lista saldría al revés."""
+    prev, clientes = escenario_finalidad(*GRUPOS_FINALIDAD)
+    niveles = sorted(prev.NAME_CASH_LOAN_PURPOSE.dropna().unique(), reverse=True)
+    prev["NAME_CASH_LOAN_PURPOSE"] = pd.Categorical(
+        prev.NAME_CASH_LOAN_PURPOSE, categories=niveles
+    )
+    ajustar_finalidades_previous(prev, clientes, clientes)
+    lista = valor("prev_finalidades_urgentes")
+    assert isinstance(lista, tuple) and len(lista) == 2 and list(lista) == sorted(lista)
+
+
+def test_valid_no_mueve_las_finalidades():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train Justa entraría."""
+    assert refijar_finalidad(*GRUPOS_FINALIDAD, FINALIDAD_VALID)[0] == ("Alta", "Beta")
+    en_train = (*FINALIDAD_VALID[:2], "train")
+    lista, _ = refijar_finalidad(*GRUPOS_FINALIDAD, en_train, sobrescribir=True)
+    assert "Justa" in lista
+
+
+def test_n_train_de_las_finalidades_son_los_clientes_de_train_con_finalidad_declarada():
+    """Ni las sin declarar ni los de valid ni el cliente sin previas."""
+    prev, clientes = escenario_finalidad(*GRUPOS_FINALIDAD, FINALIDAD_VALID)
+    sin_previas = pd.DataFrame([{"SK_ID_CURR": 9999, "TARGET": 1, "split": "train"}])
+    clientes = pd.concat([clientes, sin_previas], ignore_index=True)
+    ajustar_finalidades_previous(prev, clientes, clientes)
+    assert parametro("prev_finalidades_urgentes").n_train_operativo == 300 + 150 + 100 + 200 + 20
+
+
+def test_unas_finalidades_sin_senal_revientan():
+    planas = [("A", con_tasa(200, 20), "train"), ("B", con_tasa(200, 20), "train")]
+    with pytest.raises(ValueError, match="ninguna finalidad"):
+        refijar_finalidad(*planas)
+
+
+def test_refijar_las_finalidades_otra_vez_exige_sobrescribir():
+    refijar_finalidad(*GRUPOS_FINALIDAD)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar_finalidad(*GRUPOS_FINALIDAD)
+
+
+def test_la_finalidad_declarada_deja_fuera_el_nan_y_las_dos_etiquetas_de_no_declarada():
+    p = pd.DataFrame({"NAME_CASH_LOAN_PURPOSE": ["Repairs", "XNA", "XAP", np.nan, "Urgent needs"]})
+    assert finalidad_declarada(p).tolist() == [True, False, False, False, True]
+
+
 # --- la puerta contra el dato real -----------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -1423,3 +1537,54 @@ def test_sobre_el_split_la_sobreconcesion_se_queda_en_1_1(dato_real):
     assert parametro("prev_sobreconcesion_corte").n_train_operativo == 231_992
     assert informe.r_rb.round(4).tolist() == [0.0837, 0.1208, 0.0820, 0.0465, 0.0231, 0.0096]
     assert informe.delta_bandera_pp.idxmax() == 1.5
+
+
+# La celda 92 sobre los 307.511, por solicitud: n y tasa de las finalidades con n de 100 o más que
+# quedan por encima de la global de las declaradas (13,03% sobre 59.413), de mayor a menor tasa
+FINALIDADES_EDA = {
+    "Car repairs": (691, 18.38),
+    "Gasification / water supply": (251, 17.93),
+    "Payments on other loans": (1_573, 16.02),
+    "Urgent needs": (7_236, 14.95),
+    "Building a house or an annex": (2_344, 13.82),
+    "Medicine": (1_871, 13.42),
+    "Repairs": (20_117, 13.00),
+}
+
+
+@sin_dato_real
+def test_las_finalidades_reproducen_la_celda_92_del_eda(dato_real):
+    """Las cinco con n de 100 o más son las cinco primeras por tasa, con Medicine y Repairs justo
+    detrás, y esas son las siete cifras del EDA. La lista que registró es la de las cinco más las
+    dos de menos de 100 solicitudes."""
+    prev, _, _ = dato_real
+    crudo = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    informe = ajustar_finalidades_previous(prev, crudo, crudo.assign(split="train"))
+    grandes = informe[informe.n >= valor("n_min_categoria")].head(7)
+    assert grandes.index.tolist() == list(FINALIDADES_EDA)
+    medido = dict(zip(grandes.index, zip(grandes.n, grandes.tasa.round(2))))
+    assert medido == FINALIDADES_EDA
+    assert informe.n.sum() == 59_413
+    assert set(grandes.index[:5]) <= set(parametro("prev_finalidades_urgentes").valor_referencia)
+
+
+@sin_dato_real
+def test_sobre_el_split_las_finalidades_urgentes_son_tres(dato_real):
+    """Car repairs, Gasification y Payments, sobre los 28.564 de train, con Urgent needs a 0,15pp.
+
+    Con el crudo la regla da lo mismo: son las tres que pasan los 2pp, y la cuarta se queda en
+    +1,93pp. El 4.11 remide el efecto con esta lista y no con la del EDA.
+    """
+    split = cargar_split()
+    informe = ajustar_finalidades_previous(dato_real[0], split, split)
+    assert valor("prev_finalidades_urgentes") == (
+        "Car repairs",
+        "Gasification / water supply",
+        "Payments on other loans",
+    )
+    assert parametro("prev_finalidades_urgentes").n_train_operativo == 28_564
+    urgentes = informe.loc[list(valor("prev_finalidades_urgentes"))]
+    assert urgentes.n.tolist() == [565, 192, 1_277]
+    assert urgentes.delta_pp.round(2).tolist() == [4.18, 5.76, 3.85]
+    assert informe.loc["Urgent needs", "n"] == 5_803
+    assert informe.loc["Urgent needs", "delta_pp"].round(2) == 1.85

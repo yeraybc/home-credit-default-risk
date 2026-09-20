@@ -116,6 +116,17 @@ def cociente_de_concesion(p: pd.DataFrame) -> pd.Series:
     return (concedido / solicitado).where(solicitado.gt(0) & concedido.gt(0))
 
 
+def finalidad_declarada(p: pd.DataFrame) -> pd.Series:
+    """Máscara de las solicitudes con finalidad declarada, que es el denominador de la urgente.
+
+    La finalidad solo existe donde el cliente la declara: ni el NaN ni las dos etiquetas con las
+    que la tabla dice que no se declaró cuentan. La comparten la agregación y el refijado de
+    `prev_finalidades_urgentes`, que tienen que medir sobre la misma población.
+    """
+    finalidad = p["NAME_CASH_LOAN_PURPOSE"]
+    return finalidad.notna() & ~finalidad.isin(FINALIDAD_NO_DECLARADA)
+
+
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
@@ -168,7 +179,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     definida = combinacion.notna()
     # la finalidad solo existe donde el cliente la declara, y ese es el denominador honesto
     finalidad = p["NAME_CASH_LOAN_PURPOSE"]
-    declarada = finalidad.notna() & ~finalidad.isin(FINALIDAD_NO_DECLARADA)
+    declarada = finalidad_declarada(p)
     # el fin previsto frente al efectivo; sin el segundo la operación no ha terminado
     previsto = p["DAYS_LAST_DUE_1ST_VERSION"]
     adelanto = previsto - p["DAYS_LAST_DUE"]

@@ -32,7 +32,11 @@ from sklearn.pipeline import Pipeline
 from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
-from src.features.agg_previous import cociente_de_concesion, solicitudes_recientes
+from src.features.agg_previous import (
+    cociente_de_concesion,
+    finalidad_declarada,
+    solicitudes_recientes,
+)
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
@@ -379,6 +383,56 @@ def ajustar_sobreconcesion_previous(
         "sobreconcesion refijada en %s sobre %s clientes", elegido, f"{informe['n'].iloc[0]:,}"
     )
     return informe.assign(elegido=informe.index == elegido)
+
+
+def ajustar_finalidades_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train la lista de `PREV_URGENT_PURPOSE_RATIO`: las finalidades que destacan.
+
+    Entra la finalidad declarada con al menos `n_min_categoria` solicitudes de train y una tasa de
+    default que supera en `umbral_flags_pp` la global de las declaradas. Reutiliza los dos cortes
+    ya declarados y no fija ningún k: el EDA tomó las cinco primeras por tasa, y esa lista es la
+    misma con la que midió el efecto, así que no es evidencia independiente. La tasa es por
+    solicitud, como la celda 92, y la global es la de todas las declaradas.
+
+    Sobre train salen tres, Gasification, Car repairs y Payments on other loans. **`Urgent needs`
+    queda fuera**, con +1,85pp en train y +1,93pp en el crudo, y con ella `Building a house or an
+    annex`: la lista del EDA tenía cinco. Decidido con el usuario al ver la cifra. La regla es
+    más estricta que la del EDA a propósito, y el 4.11 remide el efecto con la lista refijada.
+
+    **Es la lista menos estable de las seis.** En 15 folds sobre la parte de entrenamiento, Car
+    repairs entra en 15, Gasification y Payments en 14 y Urgent needs en 6; la lista exacta se
+    repite en 5 de 15. Midiendo sobre la parte de validación, con cinco veces menos clientes, no se
+    repite ninguna. Va fuera del `Pipeline`, así que en el CV cada fold usa la elegida sobre todo
+    el 80%.
+
+    El `n_train` son los clientes de train con alguna solicitud con finalidad declarada. La tupla
+    sale ordenada, para que no dependa del orden de las filas ni de un empate en la tasa.
+
+    Devuelve el barrido: n, tasa y delta sobre la global por finalidad, con las elegidas marcadas.
+    Revienta si ninguna cruza.
+    """
+    filas = _previous_de_train(prev, base, split)
+    declaradas = filas[finalidad_declarada(filas)]
+    global_ = declaradas["TARGET"].mean()
+    por_finalidad = declaradas.groupby("NAME_CASH_LOAN_PURPOSE", observed=True)["TARGET"]
+    informe = por_finalidad.agg(n="size", tasa="mean")
+    informe["delta_pp"] = (informe["tasa"] - global_) * 100
+    informe["tasa"] *= 100
+    informe["elegida"] = informe["n"].ge(valor("n_min_categoria")) & informe["delta_pp"].ge(
+        valor("umbral_flags_pp")
+    )
+    if not informe["elegida"].any():
+        raise ValueError("ninguna finalidad cruza el umbral de banderas con la n mínima")
+    elegidas = tuple(sorted(informe.index[informe["elegida"]]))
+    n_train = declaradas["SK_ID_CURR"].nunique()
+    fijar_operativo("prev_finalidades_urgentes", elegidas, n_train, sobrescribir)
+    logger.info("finalidades urgentes refijadas en %s sobre %s clientes", elegidas, f"{n_train:,}")
+    return informe.sort_values("tasa", ascending=False)
 
 
 def _primer_corte_que_cruza(

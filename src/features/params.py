@@ -478,6 +478,9 @@ PARAMS: dict[str, Parametro] = {
     # después: Medicine (13,42%) y Repairs (13,00%) van sexta y séptima y se quedan fuera. Las otras
     # dos no llegan a las 100 solicitudes de train (13 y 23; sobre la tabla entera, 15 y 25). El 4.8
     # la refija sobre train con una regla declarada
+    # Refijada en el 4.8 con n de 100 o más y +2pp sobre la global de las declaradas: sale Car
+    # repairs, Gasification y Payments on other loans sobre 28.564 clientes. Urgent needs se queda
+    # fuera con +1,85pp en train (+1,93pp en el crudo), y con ella Building a house or an annex
     "prev_finalidades_urgentes": Parametro(
         (
             "Refusal to name the goal",
