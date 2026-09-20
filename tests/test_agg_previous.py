@@ -782,7 +782,39 @@ def test_un_frame_vacio_da_un_agregado_vacio_con_el_mismo_esquema(prev, sin_tipo
     assert unido[lleno.columns].isna().all().all()
 
 
-@pytest.mark.parametrize("columna", NUMERICAS_ORIGEN)
+# Las dos listas van escritas a mano y no salen de la constante que prueban: derivadas de ella,
+# quitar una columna del contrato **reduce** los tests en vez de romperlos, y la mutación pasa. Ya
+# mordió dos veces, con la hora (4.6) y antes en el 4.3.
+NUMERICAS_ESPERADAS = [
+    "DAYS_DECISION",
+    "CNT_PAYMENT",
+    "AMT_APPLICATION",
+    "AMT_CREDIT",
+    "AMT_ANNUITY",
+    "RATE_DOWN_PAYMENT",
+    "DAYS_LAST_DUE_1ST_VERSION",
+    "DAYS_LAST_DUE",
+    "HOUR_APPR_PROCESS_START",
+]
+CATEGORICAS_ESPERADAS = [
+    "SK_ID_CURR",
+    "NAME_CLIENT_TYPE",
+    "NAME_CONTRACT_STATUS",
+    "NAME_CONTRACT_TYPE",
+    "CODE_REJECT_REASON",
+    "PRODUCT_COMBINATION",
+    "NAME_TYPE_SUITE",
+    "NAME_CASH_LOAN_PURPOSE",
+]
+
+
+def test_el_contrato_de_columnas_de_origen_es_el_declarado():
+    """Lo que hace que quitar una columna del contrato rompa y no encoja la parametrizada."""
+    assert list(NUMERICAS_ORIGEN) == NUMERICAS_ESPERADAS
+    assert list(COLUMNAS_ORIGEN) == CATEGORICAS_ESPERADAS + NUMERICAS_ESPERADAS
+
+
+@pytest.mark.parametrize("columna", NUMERICAS_ESPERADAS)
 def test_una_numerica_que_no_es_numero_revienta_en_la_frontera(prev, columna):
     roto = prev.astype({columna: object})
     roto.loc[0, columna] = "ayer"
@@ -790,7 +822,7 @@ def test_una_numerica_que_no_es_numero_revienta_en_la_frontera(prev, columna):
         agregar(roto)
 
 
-@pytest.mark.parametrize("columna", COLUMNAS_ORIGEN)
+@pytest.mark.parametrize("columna", CATEGORICAS_ESPERADAS + NUMERICAS_ESPERADAS)
 def test_una_columna_de_origen_ausente_revienta_con_su_nombre(prev, columna):
     with pytest.raises(ValueError, match=columna):
         agregar(prev.drop(columns=columna))

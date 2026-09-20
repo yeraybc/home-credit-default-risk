@@ -1162,23 +1162,42 @@ def prev():
     )
 
 
+# Las dos listas van escritas a mano y no salen de las constantes que prueban: derivadas de ellas,
+# quitar una columna de la tupla **reduce** estos tests en vez de romperlos, y la mutación pasa.
+FECHAS_ESPERADAS = [
+    "DAYS_DECISION",
+    "DAYS_FIRST_DRAWING",
+    "DAYS_FIRST_DUE",
+    "DAYS_LAST_DUE_1ST_VERSION",
+    "DAYS_LAST_DUE",
+    "DAYS_TERMINATION",
+]
+ENTRADAS_ESPERADAS = ["AMT_DOWN_PAYMENT", "RATE_DOWN_PAYMENT"]
+
+
+def test_el_contrato_de_columnas_de_previous_es_el_declarado():
+    """Lo que hace que quitar una columna de las tuplas rompa y no encoja las parametrizadas."""
+    assert list(FECHAS_PREVIOUS) == FECHAS_ESPERADAS
+    assert list(ENTRADAS_PREVIOUS) == ENTRADAS_ESPERADAS
+
+
 def test_el_fixture_de_previous_ejercita_cada_rama(prev):
     """Guardián: si el fixture pierde un caso, los tests de abajo dejan de probar lo que dicen."""
-    for col in FECHAS_PREVIOUS:
+    for col in FECHAS_ESPERADAS:
         assert prev[col].eq(CENTINELA).any(), f"{col} no trae centinela"
         if col != "DAYS_DECISION":
             assert prev[col].isna().any(), f"{col} no trae el NaN nativo"
     assert prev.DAYS_LAST_DUE_1ST_VERSION.between(1, CENTINELA - 1).any(), "falta el futuro"
     assert prev.SK_ID_CURR.eq(CENTINELA).any(), "falta el cliente 365243"
-    for col in ENTRADAS_PREVIOUS:
+    for col in ENTRADAS_ESPERADAS:
         assert prev[col].lt(0).any() and prev[col].eq(0).any() and prev[col].gt(0).any()
         assert prev[col].isna().any(), f"{col} no trae NaN"
-    negativas = prev[list(ENTRADAS_PREVIOUS)].lt(0)
+    negativas = prev[ENTRADAS_ESPERADAS].lt(0)
     assert (negativas.sum(axis=1) == 1).any(), "falta la fila con una sola entrada negativa"
     assert set(prev.NAME_CONTRACT_STATUS) == set(ESTADOS_CONTRATO)
 
 
-@pytest.mark.parametrize("col", FECHAS_PREVIOUS)
+@pytest.mark.parametrize("col", FECHAS_ESPERADAS)
 def test_el_centinela_pasa_a_nan_y_el_resto_de_la_fecha_no_se_toca(prev, col):
     """El futuro legítimo y el NaN nativo sobreviven tal cual: solo cambia el centinela."""
     esperado = prev[col].mask(prev[col].eq(CENTINELA))
@@ -1187,7 +1206,7 @@ def test_el_centinela_pasa_a_nan_y_el_resto_de_la_fecha_no_se_toca(prev, col):
 
 def test_el_centinela_solo_se_toca_en_las_fechas(prev):
     """El cliente 365243 y el -1 del código de zona salen como entraron."""
-    tocadas = list(FECHAS_PREVIOUS) + list(ENTRADAS_PREVIOUS)
+    tocadas = FECHAS_ESPERADAS + ENTRADAS_ESPERADAS
     pd.testing.assert_frame_equal(
         limpiar_previous(prev).drop(columns=tocadas), prev.drop(columns=tocadas)
     )
@@ -1203,7 +1222,7 @@ def test_el_centinela_de_previous_lee_params_y_no_un_literal(prev):
     assert limpio.DAYS_LAST_DUE_1ST_VERSION.eq(CENTINELA).any(), "el 365243 se anuló igual"
 
 
-@pytest.mark.parametrize("col", ENTRADAS_PREVIOUS)
+@pytest.mark.parametrize("col", ENTRADAS_ESPERADAS)
 def test_la_entrada_negativa_va_a_cero_y_nada_mas_se_mueve(prev, col):
     """Cada columna por su cuenta: la 5 solo trae negativo el importe y su tasa de 0,2 se queda.
 
@@ -1258,7 +1277,7 @@ def test_la_limpieza_de_previous_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_ente
 
 
 @pytest.mark.parametrize(
-    "falta", [["NAME_CONTRACT_STATUS"], list(ENTRADAS_PREVIOUS), list(FECHAS_PREVIOUS)]
+    "falta", [["NAME_CONTRACT_STATUS"], ENTRADAS_ESPERADAS, FECHAS_ESPERADAS]
 )
 def test_la_limpieza_de_previous_no_revienta_si_faltan_columnas(prev, falta):
     """A la API puede llegar un frame parcial: quien exige el contrato es la agregación del 4.2."""
@@ -1325,7 +1344,7 @@ def previous_real():
 
 @sin_previous
 def test_la_puerta_del_4_1_sobre_el_dato_real(previous_real):
-    fechas, entradas = list(FECHAS_PREVIOUS), list(ENTRADAS_PREVIOUS)
+    fechas, entradas = FECHAS_ESPERADAS, ENTRADAS_ESPERADAS
     limpio = limpiar_previous(previous_real)
     medido = {
         "filas": len(limpio),
