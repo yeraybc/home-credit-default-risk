@@ -4,6 +4,8 @@ Todos sobre un frame sintético, así que corren en CI sin los CSV, salvo la pue
 real del final, que se salta sin `previous_application.csv` y el split y solo corre en local.
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -21,16 +23,22 @@ from src.features.agg_previous import (
     agregar_previous,
     cociente_de_concesion,
     combinacion_definida,
+    fin_de_ventana,
     finalidad_declarada,
+    solicitudes_recientes,
     unir_previous,
 )
 from src.features.build_features import (
+    ESTRATOS_RECENCIA_PREVIOUS,
+    LECTURAS_RECENCIA_RELATIVA,
     REJILLA_SOBRECONCESION,
     ajustar_actividad_previous,
     ajustar_cola_previous,
     ajustar_finalidades_previous,
     ajustar_sobreconcesion_previous,
     informe_denominador_previous,
+    informe_recencia_relativa_previous,
+    lecturas_relativas_previous,
 )
 from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
@@ -146,6 +154,15 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 # 22 un conteo y una actividad por debajo de las dos colas, con la relación corta: las tres a 0
 # 23 la más antigua un día por debajo del corte de la relación larga, con la actividad justo en su
 #    cola: es corta con 365,25 días por año y sería larga con 365, así que el término vale 1
+# Y para la recencia relativa del 4.10, cuyo origen es la última solicitud del cliente:
+# 24 dos solicitudes el mismo día más reciente, una rechazada y otra aprobada: el empate del otro
+#    extremo del historial, que un idxmax resolvería con la primera fila
+# 25 una solicitud justo en el borde de la ventana relativa (a 365 días de la última, fuera) y otra
+#    un día por dentro, y la de fuera es la única de calle, temprana y sin acompañante: los tres
+#    ratios relativos valen 0 y los absolutos 1/3
+# 26 su única solicitud reciente no tiene combinación de producto y la vieja sí: el denominador
+#    relativo de la calle se queda vacío y el ratio es NaN donde el absoluto vale 0
+# 27 dos rechazos el mismo día más reciente: la salida es un `max` y no un `sum`
 CONSUMO = "Consumer loans"
 CENTINELA = 365243.0
 SOLICITUDES = [
@@ -208,6 +225,18 @@ SOLICITUDES = [
     *[solicitud(22, -400 - 60 * i) for i in range(COLA - ACTIVIDAD)],
     *[solicitud(23, -50 * (i + 1)) for i in range(ACTIVIDAD)],
     solicitud(23, -round(LARGA * DIAS) + 1),
+    solicitud(24, -600),
+    rechazo(24, -100),
+    solicitud(24, -100),
+    solicitud(25, -100),
+    solicitud(25, -100 - VENTANA + 1),
+    solicitud(25, -100 - VENTANA, PRODUCT_COMBINATION="Cash Street: low",
+              HOUR_APPR_PROCESS_START=HORA, NAME_TYPE_SUITE=np.nan),
+    solicitud(26, -50, PRODUCT_COMBINATION=np.nan),
+    solicitud(26, -1000),
+    solicitud(27, -900),
+    rechazo(27, -50),
+    rechazo(27, -50, motivo="SCOFR"),
 ]
 
 
@@ -1371,6 +1400,346 @@ def test_la_combinacion_definida_deja_fuera_solo_el_nan():
     assert combinacion_definida(p).tolist() == [True, False, True]
 
 
+# --- el 4.10, la recencia relativa -------------------------------------------------------------
+
+# Las seis lecturas a mano por cliente, con la ventana contada hacia atrás desde su última
+# solicitud. `salida` es que alguna de las del día más reciente esté rechazada, `rechazo` la
+# recencia del último rechazo contra ese mismo día, y las cuatro de abajo se cuentan solo sobre las
+# solicitudes de la ventana relativa. Los clientes sin caso propio no entran aquí.
+ESPERADO_RELATIVA = {
+    # una sola solicitud: es su propio fin de ventana y entra en ella
+    1: dict(salida=0.0, rechazo=NAN, c12=1.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # los dos rechazos del día más antiguo, a 1.490 días de la última
+    3: dict(salida=0.0, rechazo=-1490.0, c12=1.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # el rechazo de -365 no es el último día, y con la ventana relativa entran dos y no una
+    5: dict(salida=0.0, rechazo=-1.0, c12=2.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # su última solicitud es el rechazo: sale en rechazo y su recencia relativa es 0
+    7: dict(salida=1.0, rechazo=0.0, c12=2.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # todo su historial cabe en la ventana relativa, así que los tres ratios son los absolutos
+    16: dict(salida=0.0, rechazo=NAN, c12=3.0, calle=1 / 2, temprana=1 / 3, sin_acompanante=2 / 3),
+    # el empate del día más reciente, una rechazada y otra no
+    24: dict(salida=1.0, rechazo=0.0, c12=2.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # el borde: la de fuera es la única de calle, temprana y sin acompañante
+    25: dict(salida=0.0, rechazo=NAN, c12=2.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+    # su única reciente no tiene combinación: el denominador relativo de la calle queda vacío
+    26: dict(salida=0.0, rechazo=NAN, c12=1.0, calle=NAN, temprana=0.0, sin_acompanante=0.0),
+    # dos rechazos el mismo día más reciente: la bandera vale 1 y no 2
+    27: dict(salida=1.0, rechazo=0.0, c12=2.0, calle=0.0, temprana=0.0, sin_acompanante=0.0),
+}
+COLUMNA_RELATIVA = {
+    "salida": "PREV_EXIT_REFUSED_FLAG",
+    "rechazo": "PREV_DAYS_SINCE_REFUSED_REL",
+    "c12": "PREV_COUNT_12M_REL",
+    "calle": "PREV_STREET_RATIO_REL",
+    "temprana": "PREV_EARLY_HOUR_RATIO_REL",
+    "sin_acompanante": "PREV_NO_SUITE_RATIO_REL",
+}
+# La contraparte de cada una de las cuatro que la ventana decide, con la máscara que la reproduce.
+# **No es la misma ventana en las dos familias:** el conteo se compara contra la de doce meses desde
+# hoy, y los tres ratios contra el historial entero, que es sobre lo que los construye la matriz.
+CONTRAPARTE_ABSOLUTA = {
+    "PREV_COUNT_12M_REL": ("PREV_COUNT_12M", lambda f: solicitudes_recientes(f, VENTANA)),
+    "PREV_STREET_RATIO_REL": ("PREV_STREET_RATIO", lambda f: pd.Series(True, index=f.index)),
+    "PREV_EARLY_HOUR_RATIO_REL": ("PREV_EARLY_HOUR_RATIO", lambda f: pd.Series(True, f.index)),
+    "PREV_NO_SUITE_RATIO_REL": ("PREV_NO_SUITE_RATIO", lambda f: pd.Series(True, f.index)),
+}
+
+
+def relativas(prev, ventana=None):
+    """Las lecturas del 4.10 sobre el frame ya limpio.
+
+    Sin `ventana` usa la relativa al fin de ventana del cliente, que es la del punto; con ella,
+    la máscara que se le pase, para comprobar que reproduce lo que ya construye la agregación.
+    """
+    filas = limpiar_previous(prev)
+    reciente = (
+        solicitudes_recientes(filas, VENTANA, fin_de_ventana(filas))
+        if ventana is None
+        else ventana(filas)
+    )
+    return lecturas_relativas_previous(filas, reciente, HORA)
+
+
+@pytest.mark.parametrize("cliente", sorted(ESPERADO_RELATIVA))
+def test_cada_lectura_relativa_de_cada_cliente_es_la_calculada_a_mano(prev, cliente):
+    fila = relativas(prev).loc[cliente]
+    for clave, esperado in ESPERADO_RELATIVA[cliente].items():
+        columna = COLUMNA_RELATIVA[clave]
+        assert fila[columna] == pytest.approx(esperado, nan_ok=True), f"{columna}: {fila}"
+
+
+def test_el_fixture_ejercita_cada_rama_de_la_recencia_relativa(prev):
+    """El guardián del 4.10: sin uno de estos casos su test pasa sin mirar lo que dice mirar."""
+    ultima = prev.DAYS_DECISION.eq(prev.groupby("SK_ID_CURR").DAYS_DECISION.transform("max"))
+    estados = prev[ultima].groupby("SK_ID_CURR").NAME_CONTRACT_STATUS
+    # el empate del día más reciente, con un estado de cada uno, y una salida en rechazo limpia
+    assert sorted(estados.get_group(24)) == ["Approved", "Refused"]
+    assert estados.get_group(7).tolist() == ["Refused"]
+    # un rechazo que no es la última solicitud, y un cliente sin ninguno
+    cinco = prev[prev.SK_ID_CURR == 5]
+    assert cinco[cinco.NAME_CONTRACT_STATUS.eq("Refused")].DAYS_DECISION.max() < -364
+    assert (prev[prev.SK_ID_CURR == 25].NAME_CONTRACT_STATUS != "Refused").all()
+    # el borde de la ventana relativa a los dos lados, que no es el de la absoluta
+    veinticinco = prev[prev.SK_ID_CURR == 25].DAYS_DECISION
+    desde_el_fin = veinticinco - veinticinco.max()
+    assert {-VENTANA, -VENTANA + 1} <= set(desde_el_fin)
+    assert veinticinco.min() < -VENTANA, "sin esto el borde relativo sería el absoluto"
+    # la de fuera de la ventana relativa es la única con calle, hora temprana y sin acompañante
+    fuera = prev[prev.SK_ID_CURR.eq(25) & prev.DAYS_DECISION.eq(veinticinco.min())]
+    assert fuera.PRODUCT_COMBINATION.str.contains("Street").all()
+    assert fuera.HOUR_APPR_PROCESS_START.le(HORA).all() and fuera.NAME_TYPE_SUITE.isna().all()
+    # el 26: la reciente sin combinación y la vieja con ella, que es el denominador que se vacía
+    veintiseis = prev[prev.SK_ID_CURR == 26].set_index("DAYS_DECISION").PRODUCT_COMBINATION
+    assert pd.isna(veintiseis.loc[-50]) and pd.notna(veintiseis.loc[-1000])
+    # el 27: dos rechazos el mismo día más reciente, que es lo que separa un `max` de un `sum`
+    veintisiete = prev[prev.SK_ID_CURR == 27]
+    ultimos = veintisiete[veintisiete.DAYS_DECISION.eq(veintisiete.DAYS_DECISION.max())]
+    assert len(ultimos) == 2 and ultimos.NAME_CONTRACT_STATUS.eq("Refused").all()
+
+
+def test_con_la_ventana_absoluta_las_lecturas_dan_las_columnas_de_la_agregacion(prev):
+    """La relativa y la absoluta son la misma cuenta con otra ventana, y eso no se supone.
+
+    Es la guarda contra que las dos se separen por una diferencia de escritura: con la ventana de
+    su contraparte, las cuatro tienen que salir clavadas a las columnas de la matriz.
+    """
+    agregado = agregar(prev)
+    for lectura, (columna, ventana) in CONTRAPARTE_ABSOLUTA.items():
+        pd.testing.assert_series_equal(
+            relativas(prev, ventana)[lectura], agregado[columna].astype(float), check_names=False
+        )
+
+
+def test_el_borde_de_la_ventana_relativa_queda_fuera(prev):
+    """Las dos direcciones: a 365 días de la última no entra y a 364 sí.
+
+    Con `>=` el 25 contaría tres solicitudes y sus tres ratios pasarían de 0 a 1/3, que es
+    justo lo que la ventana absoluta ya ve.
+    """
+    fila = relativas(prev).loc[25]
+    assert fila["PREV_COUNT_12M_REL"] == 2
+    filas = limpiar_previous(prev)
+    reciente = solicitudes_recientes(filas, VENTANA, fin_de_ventana(filas))
+    del_25 = filas[filas.SK_ID_CURR.eq(25)].assign(dentro=reciente)
+    assert del_25.set_index("DAYS_DECISION").dentro.to_dict() == {
+        -100: True,
+        -100 - VENTANA + 1: True,
+        -100 - VENTANA: False,
+    }
+
+
+def escenario_relativa(*grupos):
+    """Cada grupo es (solicitudes como (días, si va rechazada[, campos]), targets, parte)."""
+
+    def filas_de(cliente, solicitudes):
+        return [
+            (rechazo if rechazada else solicitud)(cliente, dias, **(campos[0] if campos else {}))
+            for dias, rechazada, *campos in solicitudes
+        ]
+
+    return armar(grupos, filas_de)
+
+
+# De calle, a hora temprana y sin acompañante a la vez: las tres proporciones de captación en una
+# sola solicitud, para que las tres varíen entre clientes en vez de quedarse a cero.
+CAPTADA = dict(
+    PRODUCT_COMBINATION="Cash Street: low", HOUR_APPR_PROCESS_START=HORA, NAME_TYPE_SUITE=np.nan
+)
+# Un grupo por estrato de recencia, con la última solicitud dentro de cada uno, más un cliente sin
+# ningún rechazo (la recencia del rechazo es NaN en los dos lados) y un grupo de valid. El segundo
+# grupo tiene su solicitud captada fuera de la ventana relativa y el cuarto dentro, que es la
+# diferencia que el informe tiene que ver.
+GRUPOS_RELATIVA = [
+    ([(-50, True, CAPTADA)], [1, 0, 0], "train"),
+    ([(-50, False), (-500, True, CAPTADA)], [0] * 4, "train"),
+    ([(-200, True, dict(motivo="SCOFR"))], [1, 0], "train"),
+    ([(-400, True), (-410, False, CAPTADA)], [1, 0, 0], "train"),
+    ([(-1000, True)], [0, 0], "train"),
+    ([(-50, False)], [0, 0], "train"),
+    ([(-50, True)], [1] * 5, "valid"),
+]
+CLIENTES_RELATIVA = sum(len(g[1]) for g in GRUPOS_RELATIVA if g[2] == "train")
+
+
+def informe_relativa(*grupos):
+    prev, clientes = escenario_relativa(*grupos)
+    return informe_recencia_relativa_previous(prev, clientes, clientes, REFERENCIA)
+
+
+def test_el_informe_mide_cada_lectura_contra_las_contrapartes_declaradas():
+    informe = informe_relativa(*GRUPOS_RELATIVA)
+    assert informe.index.names == ["lectura", "contraparte", "estrato"]
+    emitidos = {(lectura, contraparte) for lectura, contraparte, _ in informe.index}
+    assert emitidos == {
+        (lectura, contraparte)
+        for lectura, contrapartes in LECTURAS_RECENCIA_RELATIVA.items()
+        for contraparte in contrapartes
+    }
+    assert informe.xs("todos", level="estrato")["tipo"].eq("flag").sum() == 2, "solo la salida"
+
+
+def test_los_estratos_de_recencia_parten_la_poblacion_de_cada_lectura():
+    """Los cuatro estratos suman el total, o sea que ninguno se solapa y ninguno se queda fuera."""
+    informe = informe_relativa(*GRUPOS_RELATIVA)
+    for clave, filas in informe.groupby(level=["lectura", "contraparte"]):
+        total = filas.xs("todos", level="estrato")["n"].item()
+        por_estrato = filas.drop("todos", level="estrato")["n"]
+        assert por_estrato.sum() == total, clave
+        assert len(por_estrato) == len(ESTRATOS_RECENCIA_PREVIOUS), clave
+
+
+def test_el_informe_solo_mide_sobre_train():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train sumaría cinco."""
+    informe = informe_relativa(*GRUPOS_RELATIVA)
+    n = informe.loc[("PREV_COUNT_12M_REL", "PREV_COUNT_12M", "todos"), "n"]
+    assert n == CLIENTES_RELATIVA
+    en_train = (*GRUPOS_RELATIVA[-1][:2], "train")
+    crecido = informe_relativa(*GRUPOS_RELATIVA[:-1], en_train)
+    assert crecido.loc[("PREV_COUNT_12M_REL", "PREV_COUNT_12M", "todos"), "n"] == n + 5
+
+
+def test_la_redundancia_va_solo_en_la_fila_global():
+    """Por estrato es ruido, y una columna a medias sin declarar se leería como un 0."""
+    informe = informe_relativa(*GRUPOS_RELATIVA)
+    assert informe.xs("todos", level="estrato")["redundancia"].notna().all()
+    assert informe.drop("todos", level="estrato")["redundancia"].isna().all()
+
+
+def test_la_bandera_declara_sus_marcados_y_la_continua_no():
+    """En las banderas la n son los marcados, la lección que el 2.3 dejó escrita."""
+    informe = informe_relativa(*GRUPOS_RELATIVA).xs("todos", level="estrato")
+    salida = informe.loc[("PREV_EXIT_REFUSED_FLAG", "PREV_REFUSED_RATIO > 0")]
+    assert salida["n"] == CLIENTES_RELATIVA and salida["n_marcados"] == 3 + 2 + 3 + 2
+    assert informe.loc[("PREV_COUNT_12M_REL", "PREV_COUNT_12M"), "n_marcados"] != (
+        informe.loc[("PREV_COUNT_12M_REL", "PREV_COUNT_12M"), "n_marcados"]
+    ), "una continua no tiene marcados"
+
+
+def test_la_cobertura_que_pierde_la_relativa_va_contada(prev):
+    """`n_solo_abs` son los clientes que la absoluta mide y la relativa no, como el 26."""
+    clientes = pd.DataFrame(
+        {"SK_ID_CURR": sorted(prev.SK_ID_CURR.unique()), "TARGET": 0, "split": "train"}
+    )
+    clientes.loc[clientes.SK_ID_CURR.eq(26), "TARGET"] = 1
+    informe = informe_recencia_relativa_previous(prev, clientes, clientes, REFERENCIA)
+    calle = informe.loc[("PREV_STREET_RATIO_REL", "PREV_STREET_RATIO", "todos")]
+    assert calle["n_solo_abs"] == 1
+    assert pd.isna(relativas(prev).loc[26, "PREV_STREET_RATIO_REL"])
+    assert agregar(prev).loc[26, "PREV_STREET_RATIO"] == 0.0
+
+
+def test_el_informe_no_cuenta_a_los_clientes_de_valid():
+    """`n_solo_abs` es la cobertura que pierde train, así que valid no puede sumarle: 0 aquí.
+
+    Sin `reindex` del agregado a los clientes de train, los cinco de valid contarían como "solo la
+    absoluta los mide".
+    """
+    assert informe_relativa(*GRUPOS_RELATIVA)["n_solo_abs"].eq(0).all()
+
+
+def test_una_contraparte_constante_da_redundancia_nan_sin_avisos():
+    """Sin ningún rechazo por scoring externo esa bandera es constante y no hay Pearson que medir.
+
+    `np.corrcoef` avisa de una división inválida con una columna constante, y los avisos se
+    corrigen en origen. Es el único caso del escenario en el que la guarda tiene algo que guardar.
+    """
+    sin_scofr = [
+        (([(-200, True)], *g[1:]) if g[0] == [(-200, True, {"motivo": "SCOFR"})] else g)
+        for g in GRUPOS_RELATIVA
+    ]
+    assert sin_scofr != GRUPOS_RELATIVA
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        informe = informe_relativa(*sin_scofr).xs("todos", level="estrato")
+    salida = informe.loc["PREV_EXIT_REFUSED_FLAG", "redundancia"]
+    assert pd.isna(salida["PREV_REFUSED_SCOFR_FLAG"]) and salida["PREV_REFUSED_RATIO > 0"] > 0
+
+
+def test_el_delta_de_las_banderas_es_el_calculado_a_mano():
+    """Salen en rechazo 10 de 16: tres positivos, 30% frente al 0% de los otros seis.
+
+    La contraparte de "algún rechazo" marca a 14, con los mismos tres positivos: 21,4286pp. Con
+    la bandera leída como r_rb, o la contraparte como el ratio (que vale 0,5 en el cliente que
+    se queda a medias y rompe el 0 y el 1), estas dos cifras no salen.
+    """
+    informe = informe_relativa(*GRUPOS_RELATIVA).xs("todos", level="estrato")
+    salida = informe.loc["PREV_EXIT_REFUSED_FLAG"]
+    assert salida.loc["PREV_REFUSED_RATIO > 0", "efecto"] == pytest.approx(30.0)
+    assert salida.loc["PREV_REFUSED_RATIO > 0", "efecto_abs"] == pytest.approx(300 / 14)
+
+
+def r_rb_a_mano(valores, target):
+    """La r_rb en valor absoluto de `valores` contra `target`, sin pasar por el informe."""
+    sanos, morosos = valores[target == 0], valores[target == 1]
+    u, _ = mannwhitneyu(sanos, morosos)
+    return abs(2 * u / (len(sanos) * len(morosos)) - 1)
+
+
+def test_el_efecto_de_las_continuas_y_de_su_contraparte_es_el_calculado_a_mano():
+    """La contraparte sale de `agregar_previous()` y la relativa de la lectura, cada una su r_rb.
+
+    Con la contraparte igual a la propia lectura, las dos columnas serían la misma y el informe
+    daría siempre un empate, que es la lectura de "no gana" sin haber medido nada.
+    """
+    prev, clientes = escenario_relativa(*GRUPOS_RELATIVA)
+    train = clientes[clientes["split"] == "train"].set_index("SK_ID_CURR")["TARGET"]
+    rel, agregado = relativas(prev).loc[train.index], agregar(prev).loc[train.index]
+    ultimo_rechazo = (
+        prev[prev.NAME_CONTRACT_STATUS.eq("Refused")].groupby("SK_ID_CURR").DAYS_DECISION.max()
+    )
+    contrapartes = {
+        "PREV_COUNT_12M_REL": {
+            "PREV_COUNT_12M": agregado["PREV_COUNT_12M"],
+            "PREV_APPLICATIONS_PER_YEAR": agregado["PREV_APPLICATIONS_PER_YEAR"],
+        },
+        "PREV_STREET_RATIO_REL": {"PREV_STREET_RATIO": agregado["PREV_STREET_RATIO"]},
+        "PREV_EARLY_HOUR_RATIO_REL": {"PREV_EARLY_HOUR_RATIO": agregado["PREV_EARLY_HOUR_RATIO"]},
+        "PREV_NO_SUITE_RATIO_REL": {"PREV_NO_SUITE_RATIO": agregado["PREV_NO_SUITE_RATIO"]},
+        "PREV_DAYS_SINCE_REFUSED_REL": {"PREV_DAYS_SINCE_REFUSED": ultimo_rechazo},
+    }
+    informe = informe_relativa(*GRUPOS_RELATIVA).xs("todos", level="estrato")
+    medidos = 0
+    for lectura, cs in contrapartes.items():
+        for nombre, absoluta in cs.items():
+            juntos = pd.DataFrame({"rel": rel[lectura], "abs": absoluta, "t": train}).dropna()
+            fila = informe.loc[(lectura, nombre)]
+            if juntos["rel"].nunique() < 2 or juntos["abs"].nunique() < 2:
+                continue
+            medidos += 1
+            assert fila["efecto"] == pytest.approx(r_rb_a_mano(juntos["rel"], juntos["t"]))
+            assert fila["efecto_abs"] == pytest.approx(r_rb_a_mano(juntos["abs"], juntos["t"]))
+    assert medidos >= 4, "el escenario dejó casi todas las lecturas constantes"
+
+
+# Un cliente a cada lado de cada borde de los estratos, todos con una solicitud muy antigua para
+# que la recencia sea la de la última y no la de la primera. Los estratos son (desde, hasta]: el
+# borde superior está dentro, así que -180 es de "6 a 12m" y -730 de "mas de 24m".
+BORDES_ESTRATOS = {
+    -179: "hasta 6m",
+    -180: "6 a 12m",
+    -364: "6 a 12m",
+    -365: "12 a 24m",
+    -729: "12 a 24m",
+    -730: "mas de 24m",
+}
+
+
+def test_cada_borde_de_los_estratos_cae_en_su_lado():
+    """La recencia es la de la última solicitud y el borde superior de cada estrato está dentro.
+
+    Con `>=` en el inferior el -180 contaría en dos, y con `<` en el superior no contaría en
+    ninguno; con la primera solicitud como recencia todos caerían en "mas de 24m".
+    """
+    grupos = [([(-2000, False), (dias, False)], [0, 1], "train") for dias in BORDES_ESTRATOS]
+    informe = informe_relativa(*grupos)
+    n = informe.xs(("PREV_COUNT_12M_REL", "PREV_COUNT_12M"), level=("lectura", "contraparte"))["n"]
+    esperado = {estrato: 2 * sum(e == estrato for e in BORDES_ESTRATOS.values())
+                for estrato in ESTRATOS_RECENCIA_PREVIOUS}
+    assert n.drop("todos").to_dict() == esperado
+    assert n["todos"] == 2 * len(BORDES_ESTRATOS)
+    assert set(BORDES_ESTRATOS.values()) == set(ESTRATOS_RECENCIA_PREVIOUS), "un estrato sin borde"
+
+
 sin_dato_real = pytest.mark.skipif(
     not (ruta("raw_data") / TABLE_FILES["previous_application"]).exists()
     or not (ruta("processed_data") / NOMBRE_FICHERO).exists(),
@@ -2022,3 +2391,57 @@ def test_sobre_el_split_ninguna_proporcion_gana_con_un_minimo_de_denominador(dat
     assert con_2.loc["PREV_URGENT_PURPOSE_RATIO", "delta_fuera_pp"] == pytest.approx(
         2.0062, abs=5e-5
     )
+
+
+# --- el 4.10 contra el dato real --------------------------------------------------------------
+
+# La fila global del informe sobre los 232.793 clientes de train con previas, con los cuatro cortes
+# refijados: n, efecto de la lectura relativa (delta en pp la bandera, r_rb las continuas), efecto
+# de su contraparte absoluta y redundancia entre las dos. Es la definición recomputable que el 2.3
+# no dejó, y con ella la decisión: ninguna gana.
+RECENCIA_RELATIVA_TRAIN = {
+    ("PREV_EXIT_REFUSED_FLAG", "PREV_REFUSED_RATIO > 0"): (232_793, 4.3999, 3.3084, 0.5915),
+    ("PREV_EXIT_REFUSED_FLAG", "PREV_REFUSED_SCOFR_FLAG"): (232_793, 4.3999, 11.5758, 0.1865),
+    ("PREV_DAYS_SINCE_REFUSED_REL", "PREV_DAYS_SINCE_REFUSED"): (80_195, 0.1081, 0.1204, 0.8455),
+    ("PREV_COUNT_12M_REL", "PREV_COUNT_12M"): (232_793, 0.0692, 0.0654, 0.8628),
+    ("PREV_COUNT_12M_REL", "PREV_APPLICATIONS_PER_YEAR"): (232_793, 0.0692, 0.1151, 0.6823),
+    ("PREV_STREET_RATIO_REL", "PREV_STREET_RATIO"): (232_785, 0.0912, 0.0925, 0.8315),
+    ("PREV_EARLY_HOUR_RATIO_REL", "PREV_EARLY_HOUR_RATIO"): (232_793, 0.0467, 0.0522, 0.9024),
+    ("PREV_NO_SUITE_RATIO_REL", "PREV_NO_SUITE_RATIO"): (232_793, 0.0329, 0.0714, 0.7962),
+}
+
+
+@sin_dato_real
+def test_sobre_el_split_ninguna_lectura_de_recencia_relativa_gana(dato_real):
+    """El pendiente 6 en `previous_application`: ninguna de las seis entra.
+
+    Con el criterio escrito antes de medir. La salida en rechazo pasa el 0,50 de V de Cramér contra
+    `PREV_REFUSED_RATIO > 0` (0,5915, está contenida en tener algún rechazo) y sube solo 1,09pp; la
+    recencia del rechazo pierde contra la absoluta (0,1081 frente a 0,1204) y son la misma variable
+    (0,8455); el conteo le gana 0,0038 al absoluto pero el ritmo, que ya está en la matriz, rinde
+    0,1151; y ninguna de las tres de captación supera a la suya.
+    """
+    prev = dato_real[0]
+    split = cargar_split()
+    for ajustar in (
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ):
+        ajustar(prev, split, split)
+    informe = informe_recencia_relativa_previous(prev, split, split, {n: valor(n) for n in CORTES})
+    global_ = informe.xs("todos", level="estrato")
+    for clave, (n, efecto, efecto_abs, redundancia) in RECENCIA_RELATIVA_TRAIN.items():
+        fila = global_.loc[clave]
+        assert fila["n"] == n, clave
+        assert fila["efecto"] == pytest.approx(efecto, abs=5e-5), clave
+        assert fila["efecto_abs"] == pytest.approx(efecto_abs, abs=5e-5), clave
+        assert fila["redundancia"] == pytest.approx(redundancia, abs=5e-5), clave
+    salida = global_.loc[("PREV_EXIT_REFUSED_FLAG", "PREV_REFUSED_RATIO > 0")]
+    assert salida["n_marcados"] == 36_159
+    assert salida["redundancia"] > valor("redundancia_cramer")
+    # solo el conteo supera a su contraparte, y pierde con el ritmo
+    continuas = global_[global_["tipo"].eq("continua")]
+    ganan = continuas[continuas["efecto"] > continuas["efecto_abs"]]
+    assert list(ganan.index) == [("PREV_COUNT_12M_REL", "PREV_COUNT_12M")]

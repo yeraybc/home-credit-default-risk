@@ -33,9 +33,11 @@ from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
 from src.features.agg_previous import (
+    CAPTACION_CALLE,
     agregar_previous,
     cociente_de_concesion,
     combinacion_definida,
+    fin_de_ventana,
     finalidad_declarada,
     solicitudes_recientes,
 )
@@ -75,6 +77,31 @@ REJILLA_SOBRECONCESION = (1.05, 1.1, 1.2, 1.3, 1.4, 1.5)
 
 # Los mínimos de denominador que barrió el EDA (notebook 04, celda 155): con uno no hay mínimo.
 MINIMOS_DENOMINADOR = (1, 2, 3, 5)
+
+# Los estratos de recencia de la última solicitud con los que el EDA controló la captación de
+# previous_application (5C.11), en días con signo y con el borde superior dentro. Son el control
+# obligatorio del 4.10: si una lectura relativa solo gana porque codifica "tu última solicitud es
+# reciente", dentro de estos estratos su ventaja desaparece.
+ESTRATOS_RECENCIA_PREVIOUS: dict[str, tuple[float, float]] = {
+    "hasta 6m": (-180, 0),
+    "6 a 12m": (-365, -180),
+    "12 a 24m": (-730, -365),
+    "mas de 24m": (-np.inf, -730),
+}
+
+# Las lecturas de recencia relativa del 4.10 con las contrapartes contra las que se comparan, todas
+# escritas antes de medir. La recencia del último rechazo y las tres de captación se miden contra su
+# propia versión absoluta; la salida en rechazo, contra las dos banderas de rechazo que ya existen;
+# y el conteo de la ventana propia, además de contra el absoluto, contra el ritmo, que es la vía por
+# la que puede ser la longitud de la relación con otro nombre.
+LECTURAS_RECENCIA_RELATIVA: dict[str, tuple[str, ...]] = {
+    "PREV_EXIT_REFUSED_FLAG": ("PREV_REFUSED_RATIO > 0", "PREV_REFUSED_SCOFR_FLAG"),
+    "PREV_DAYS_SINCE_REFUSED_REL": ("PREV_DAYS_SINCE_REFUSED",),
+    "PREV_COUNT_12M_REL": ("PREV_COUNT_12M", "PREV_APPLICATIONS_PER_YEAR"),
+    "PREV_STREET_RATIO_REL": ("PREV_STREET_RATIO",),
+    "PREV_EARLY_HOUR_RATIO_REL": ("PREV_EARLY_HOUR_RATIO",),
+    "PREV_NO_SUITE_RATIO_REL": ("PREV_NO_SUITE_RATIO",),
+}
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -496,6 +523,139 @@ def informe_denominador_previous(
                 }
             )
     return pd.DataFrame(informe).set_index(["feature", "minimo"])
+
+
+def lecturas_relativas_previous(
+    filas: pd.DataFrame, reciente: pd.Series, hora_max: float
+) -> pd.DataFrame:
+    """Las seis lecturas de recencia relativa del 4.10, una columna por cliente.
+
+    `reciente` es la máscara de la ventana. El informe se la pasa relativa al fin de ventana de
+    cada cliente; con la absoluta, el conteo y las tres de captación tienen que dar exactamente
+    las columnas que construye `agregar_previous()`, y eso lo fija un test, que es lo que impide
+    que la relativa y la absoluta se separen por una diferencia de escritura.
+
+    Ninguna se guarda en la matriz: el 4.10 es exploratorio y solo construye lo que gane.
+    """
+    cliente = filas["SK_ID_CURR"]
+    fin = fin_de_ventana(filas)
+    rechazada = filas["NAME_CONTRACT_STATUS"].eq("Refused")
+    # alguna de las del día más reciente, no la primera fila de ese día: el orden no decide, como
+    # en PREV_HISTORIAL_RECORTADO en el otro extremo del historial
+    ultima = filas["DAYS_DECISION"].eq(fin)
+    calle = (
+        filas["PRODUCT_COMBINATION"]
+        .str.contains(CAPTACION_CALLE, na=False)
+        .astype(float)
+        .where(combinacion_definida(filas))
+    )
+    temprana = filas["HOUR_APPR_PROCESS_START"].le(hora_max).astype(float)
+    sin_acompanante = filas["NAME_TYPE_SUITE"].isna().astype(float)
+    return pd.DataFrame(
+        {
+            "PREV_EXIT_REFUSED_FLAG": (rechazada & ultima).groupby(cliente).max().astype(float),
+            # el último rechazo contra el fin de ventana del cliente: 0 es salir en rechazo
+            "PREV_DAYS_SINCE_REFUSED_REL": (filas["DAYS_DECISION"] - fin)
+            .where(rechazada)
+            .groupby(cliente)
+            .max(),
+            "PREV_COUNT_12M_REL": reciente.groupby(cliente).sum().astype(float),
+            "PREV_STREET_RATIO_REL": calle.where(reciente).groupby(cliente).mean(),
+            "PREV_EARLY_HOUR_RATIO_REL": temprana.where(reciente).groupby(cliente).mean(),
+            "PREV_NO_SUITE_RATIO_REL": sin_acompanante.where(reciente).groupby(cliente).mean(),
+        }
+    )
+
+
+def informe_recencia_relativa_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    cortes: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Mide las seis lecturas de recencia relativa del 4.10 contra sus contrapartes absolutas.
+
+    El pendiente 6 de la auditoría transversal: en `bureau_balance` la recencia contra el fin de
+    ventana propio ganó a la absoluta, y aquí el fin de ventana de cada cliente es su última
+    solicitud. Solo informa, no fija nada y no construye ninguna columna de la matriz.
+
+    Una fila por lectura, contraparte y estrato de recencia, con el estrato `todos` como fila
+    global. En las banderas el efecto es el delta en pp y en las continuas el rank-biserial en
+    valor absoluto, los dos sobre la misma población: los clientes de train donde la lectura
+    relativa está definida. `n_solo_abs` son los que pierde frente a su contraparte, que es la
+    cobertura que cuesta relativizar. La `p` sale de Mann-Whitney también en las banderas, como en
+    el grupo excluido de `informe_denominador_previous()`.
+
+    La redundancia va solo en la fila global, porque por estrato es ruido: Pearson entre las dos
+    continuas, y entre dos banderas el mismo número es la V de Cramér de su tabla 2x2.
+
+    La familia de Bonferroni son los contrastes que emite, dos por fila.
+    """
+    filas = _previous_de_train(prev, base, split)
+    hora_max = valor("prev_hora_temprana_max")
+    relativa = lecturas_relativas_previous(
+        filas,
+        solicitudes_recientes(filas, valor("prev_ventana_reciente_dias"), fin_de_ventana(filas)),
+        hora_max,
+    )
+    rechazada = filas["NAME_CONTRACT_STATUS"].eq("Refused")
+    agregado = agregar_previous(prev, cortes).reindex(relativa.index)
+    absoluta = agregado.assign(
+        **{
+            "PREV_REFUSED_RATIO > 0": agregado["PREV_REFUSED_RATIO"].gt(0).astype(float),
+            "PREV_DAYS_SINCE_REFUSED": filas["DAYS_DECISION"]
+            .where(rechazada)
+            .groupby(filas["SK_ID_CURR"])
+            .max(),
+        }
+    )
+    target = filas.groupby("SK_ID_CURR")["TARGET"].first().reindex(relativa.index)
+    recencia = agregado["PREV_DAYS_DECISION_MAX"]
+    estratos = {"todos": (-np.inf, np.inf), **ESTRATOS_RECENCIA_PREVIOUS}
+    informe = []
+    for lectura, contrapartes in LECTURAS_RECENCIA_RELATIVA.items():
+        flag = lectura.endswith("_FLAG")
+        for contraparte in contrapartes:
+            datos = pd.DataFrame(
+                {
+                    "valor": relativa[lectura],
+                    "abs": absoluta[contraparte],
+                    "TARGET": target,
+                    "recencia": recencia,
+                }
+            )
+            for estrato, (desde, hasta) in estratos.items():
+                dentro = datos[datos["recencia"].gt(desde) & datos["recencia"].le(hasta)]
+                d = dentro[dentro["valor"].notna()]
+                contra = d.assign(valor=d["abs"]).dropna(subset=["valor"])
+                efecto, p = _r_rb(d)
+                efecto_abs, p_abs = _r_rb(contra)
+                informe.append(
+                    {
+                        "lectura": lectura,
+                        "contraparte": contraparte,
+                        "estrato": estrato,
+                        "tipo": "flag" if flag else "continua",
+                        "n": len(d),
+                        "n_marcados": int(d["valor"].sum()) if flag else np.nan,
+                        "n_solo_abs": int(
+                            (dentro["valor"].isna() & dentro["abs"].notna()).sum()
+                        ),
+                        "efecto": _delta_bandera(d) if flag else efecto,
+                        "p": p,
+                        "efecto_abs": _delta_bandera(contra) if flag else efecto_abs,
+                        "p_abs": p_abs,
+                        "redundancia": _redundancia(d) if estrato == "todos" else np.nan,
+                    }
+                )
+    return pd.DataFrame(informe).set_index(["lectura", "contraparte", "estrato"])
+
+
+def _redundancia(d: pd.DataFrame) -> float:
+    """Pearson en valor absoluto entre la lectura y su contraparte; NaN si alguna es constante."""
+    if d["valor"].nunique() < 2 or d["abs"].nunique() < 2:
+        return np.nan
+    return abs(d["valor"].corr(d["abs"]))
 
 
 def _r_rb(clientes: pd.DataFrame) -> tuple[float, float]:

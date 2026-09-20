@@ -94,14 +94,30 @@ COLUMNAS_SIN_RECETA: dict[str, str] = {
 }
 
 
-def solicitudes_recientes(p: pd.DataFrame, ventana: float) -> pd.Series:
+def fin_de_ventana(p: pd.DataFrame) -> pd.Series:
+    """La fecha de la última solicitud del cliente, repetida en cada una de sus filas.
+
+    Es el fin de ventana propio de cada cliente, el equivalente aquí del último mes reportado de
+    cada crédito en `bureau_balance`. Lo usa la recencia relativa del 4.10.
+    """
+    return p.groupby("SK_ID_CURR")["DAYS_DECISION"].transform("max")
+
+
+def solicitudes_recientes(
+    p: pd.DataFrame, ventana: float, origen: pd.Series | None = None
+) -> pd.Series:
     """Máscara de las solicitudes decididas dentro de la ventana, con el borde fuera.
 
     Vive aquí y no en el refijado del 4.8 porque la cola de actividad se barre sobre la misma
     población que después cuenta la feature: escrita dos veces, un `>=` en una de las dos elige
     el corte sobre un conteo distinto del que entra en la matriz.
+
+    Sin `origen` la ventana se cuenta desde hoy, que es lo que entra en la matriz. Con él se
+    cuenta hacia atrás desde esa fecha por fila, que es la ventana relativa del 4.10: el mismo
+    borde y la misma comparación, y por eso no se escribe dos veces.
     """
-    return p["DAYS_DECISION"] > -ventana
+    desde = 0 if origen is None else origen
+    return p["DAYS_DECISION"] - desde > -ventana
 
 
 def cociente_de_concesion(p: pd.DataFrame) -> pd.Series:
