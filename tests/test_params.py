@@ -389,6 +389,17 @@ def test_el_denominador_y_la_mora_reciente_de_bb_son_dominio_con_su_contraste(no
     assert nombre in con_contraste_pendiente()
 
 
+@pytest.mark.parametrize(
+    ("nombre", "referencia"),
+    [("prev_adelanto_liquidacion_dias", 365), ("prev_plazo_largo_cuotas", 60)],
+)
+def test_el_adelanto_y_el_plazo_largo_son_dominio_con_su_contraste(nombre, referencia):
+    """Ni el adelanto ni el plazo tienen pico que barrer sobre train, así que no se refijan."""
+    assert parametro(nombre).procedencia == "dominio"
+    assert valor(nombre) == referencia
+    assert nombre in con_contraste_pendiente()
+
+
 def test_el_cap_de_la_antiguedad_del_coche_es_estimado():
     """64 era exactamente el p99, así que el criterio de negocio no sostenía el valor."""
     assert parametro("app_cap_p99_own_car_age").procedencia == "estimado"
@@ -479,8 +490,8 @@ def test_valor_operativo_sin_n_train_asociado_revienta():
 
 def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train():
     """El número que ya vivía en PARAMS no basta solo, aunque sea el mismo que se acabe fijando."""
-    referencia = parametro("prev_plazo_largo_cuotas").valor_referencia
+    referencia = parametro("prev_count_cola").valor_referencia
     with pytest.raises(ValueError, match="sin fijar"):
-        valor("prev_plazo_largo_cuotas")
-    fijar_operativo("prev_plazo_largo_cuotas", referencia, n_train=245_993)
-    assert valor("prev_plazo_largo_cuotas") == referencia
+        valor("prev_count_cola")
+    fijar_operativo("prev_count_cola", referencia, n_train=245_993)
+    assert valor("prev_count_cola") == referencia

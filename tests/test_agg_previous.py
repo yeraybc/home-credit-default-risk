@@ -38,14 +38,14 @@ from src.features.split import NOMBRE_FICHERO, cargar_split
 DIAS = valor("dias_por_anio")
 VENTANA = valor("prev_ventana_reciente_dias")
 SUELO_ANIOS = valor("suelo_anios_denominador")
-# El plazo largo es `medido` y `valor()` lo bloquea hasta refijarlo sobre train: aquí se pasa con su
-# referencia, porque solo se prueba el cómputo.
+# Los `medido` los bloquea `valor()` hasta refijarlos sobre train: aquí se pasan con su referencia,
+# porque solo se prueba el cómputo. El adelanto y el plazo largo son `dominio` desde el 4.8.
 REFERENCIA = {
     n: parametro(n).valor_referencia for n in CORTES if parametro(n).procedencia == "medido"
 }
-LARGO = REFERENCIA["prev_plazo_largo_cuotas"]
+LARGO = valor("prev_plazo_largo_cuotas")
 SOBRE = REFERENCIA["prev_sobreconcesion_corte"]
-ADELANTO = REFERENCIA["prev_adelanto_liquidacion_dias"]
+ADELANTO = valor("prev_adelanto_liquidacion_dias")
 URGENTES = REFERENCIA["prev_finalidades_urgentes"]
 HORA = valor("prev_hora_temprana_max")
 COLA = REFERENCIA["prev_count_cola"]
@@ -1588,3 +1588,78 @@ def test_sobre_el_split_las_finalidades_urgentes_son_tres(dato_real):
     assert urgentes.delta_pp.round(2).tolist() == [4.18, 5.76, 3.85]
     assert informe.loc["Urgent needs", "n"] == 5_803
     assert informe.loc["Urgent needs", "delta_pp"].round(2) == 1.85
+
+
+def delta_en_train(prev, cortes, columna, poblacion=None):
+    """Marcados y delta de la bandera en pp sobre los clientes de train, con el corte pasado.
+
+    `poblacion` es la columna que ha de ser no nula para entrar: la bandera de liquidación solo se
+    evalúa en quien tiene una operación terminada. Sin ella, todos los clientes con previas.
+    """
+    split = cargar_split()
+    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
+    unido = unir_previous(train, agregar(prev, cortes))
+    con = unido[unido.HAS_PREV_APPLICATION == 1]
+    if poblacion is not None:
+        con = con[con[poblacion].notna()]
+    marcados = con[columna] == 1
+    delta = (con.TARGET[marcados].mean() - con.TARGET[~marcados].mean()) * 100
+    return len(con), int(marcados.sum()), round(delta, 2)
+
+
+@sin_dato_real
+def test_contraste_del_adelanto_de_liquidacion(dato_real):
+    """La bandera cruza los 2pp con 365, 545, 730 y 1.095 días y no con 270: empieza en el año.
+
+    Por eso el corte es de dominio y no medido: el delta sube casi continuo con el corte, sin pico,
+    y el primer cruce dependería de la rejilla. Sobre los 214.134 clientes de train con operación
+    terminada: +1,83pp con 270, +2,26pp con 365, +2,52pp con 545, +3,00pp con 730 y +2,87pp con
+    1.095.
+    """
+    esperado = {
+        270: (48_512, 1.83),
+        365: (38_060, 2.26),
+        545: (26_898, 2.52),
+        730: (18_825, 3.00),
+        1_095: (8_758, 2.87),
+    }
+    medido = {}
+    for dias in esperado:
+        n, marcados, delta = delta_en_train(
+            dato_real[0],
+            {"prev_adelanto_liquidacion_dias": dias},
+            "PREV_EARLY_SETTLED_FLAG",
+            "PREV_EARLY_SETTLED_FLAG",
+        )
+        assert n == 214_134, dias
+        medido[dias] = (marcados, delta)
+    assert medido == esperado
+    umbral = valor("umbral_flags_pp")
+    assert medido[270][1] < umbral
+    assert all(delta >= umbral for dias, (_, delta) in medido.items() if dias >= 365)
+
+
+@sin_dato_real
+def test_contraste_del_plazo_largo(dato_real):
+    """Con 60 y con 66 cuotas la bandera separa más de 10pp; con 48 y 54 mide la masa de 60 cuotas.
+
+    Sobre los 232.793 clientes de train con previas: +14,62pp con 57 marcados en 60, +16,81pp con
+    52 en 66, y +2,35pp y +2,27pp con 12.832 y 12.669 en 48 y 54. El plazo solo toma valores
+    discretos, y el 60 es donde acaba la masa de solicitudes no aprobadas a exactamente 60 cuotas.
+    """
+    esperado = {
+        48: (12_832, 2.35),
+        54: (12_669, 2.27),
+        60: (57, 14.62),
+        66: (52, 16.81),
+    }
+    medido = {}
+    for cuotas in esperado:
+        n, marcados, delta = delta_en_train(
+            dato_real[0], {"prev_plazo_largo_cuotas": cuotas}, "PREV_REFUSED_LONG_TERM_FLAG"
+        )
+        assert n == 232_793, cuotas
+        medido[cuotas] = (marcados, delta)
+    assert medido == esperado
+    assert all(medido[c][1] > 10 for c in (60, 66))
+    assert all(medido[c][1] < 5 for c in (48, 54))

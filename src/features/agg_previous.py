@@ -131,8 +131,8 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
     Llama a `limpiar_previous()` antes de agregar, que es idempotente. `cortes` sustituye a los
-    de `params.py` para los contrastes; sin él, el plazo largo y la sobreconcesión, que son
-    `medido`, revientan hasta que se refijan sobre train.
+    de `params.py` para los contrastes; sin él, las dos colas, la sobreconcesión y la lista de
+    finalidades urgentes, que son `medido`, revientan hasta que se refijan sobre train.
 
     `PREV_REFUSED_LONG_TERM_FLAG` marca el plazo largo en una solicitud **no aprobada**, Canceled
     incluida, como la midió el notebook: con solo las Refused los 78 marcados de train son 59.

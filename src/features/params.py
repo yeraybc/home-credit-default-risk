@@ -511,17 +511,39 @@ PARAMS: dict[str, Parametro] = {
         "término de la interacción con la longitud de relación",
         "notebook 04 celda 153",
     ),
+    # Dominio y no medido, decidido en el 4.8 con el usuario: el año es la convención y el barrido
+    # no tiene pico. Sobre los 214.134 clientes de train con operación terminada el delta de la
+    # bandera sube casi continuo con el corte (+1,06pp con 180 días, +1,83pp con 270, +2,26pp con
+    # 365, +3,00pp con 730) y baja a +2,87pp con 1.095. El primer cruce de los 2pp depende de la
+    # rejilla, así que la rejilla y no el dato elegiría el corte, como en los 180 días de bureau
     "prev_adelanto_liquidacion_dias": Parametro(
         365,
-        "medido",
-        "adelanto sobre la fecha de fin prevista que marca liquidación anticipada",
+        "dominio",
+        "adelanto sobre la fecha de fin prevista que marca liquidación anticipada, con el borde "
+        "fuera",
         "notebook 04 celda 125",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_EARLY_SETTLED_FLAG cruza umbral_flags_pp con 365, "
+            "545, 730 y 1.095 días y no con 270, o sea que la señal empieza en el año y no "
+            "depende del valor por encima de él. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_del_adelanto_de_liquidacion"
+        ),
     ),
+    # Dominio y no medido, decidido en el 4.8 con el usuario: el plazo solo toma los valores 36, 42,
+    # 48, 54, 60, 66, 72 y 84, y el 60 es el borde del plazo estándar, donde acaba la masa de 35.487
+    # solicitudes no aprobadas a exactamente 60 cuotas. No hay pico que barrer: con cualquier corte
+    # hasta el 54 la bandera marca de 12.669 a 43.387 clientes de train con +2,3pp a +3,9pp, y el
+    # salto a +14,62pp con 57 marcados llega justo al pasar del 54 al 60
     "prev_plazo_largo_cuotas": Parametro(
         60,
-        "medido",
+        "dominio",
         "plazo por encima del cual la petición rechazada marca; el mismo plazo concedido no marca",
         "notebook 04 celda 153",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_REFUSED_LONG_TERM_FLAG separa más de 10pp con 60 y "
+            "con 66 cuotas, y que con 48 y 54 mide otra población, la masa de 60 cuotas, con "
+            "efectos de otro orden. Ejecutado en el 4.8 y fijado en test_contraste_del_plazo_largo"
+        ),
     ),
     # Refijado en el 4.8 con la rejilla del EDA: sobre train el 1,1 se queda en r_rb 0,1208 (0,1194
     # en el EDA) sobre 231.992 clientes, y el 1,05 y el 1,2 bajan a 0,0837 y 0,0820
