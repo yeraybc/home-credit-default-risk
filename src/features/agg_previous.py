@@ -104,6 +104,18 @@ def solicitudes_recientes(p: pd.DataFrame, ventana: float) -> pd.Series:
     return p["DAYS_DECISION"] > -ventana
 
 
+def cociente_de_concesion(p: pd.DataFrame) -> pd.Series:
+    """Lo concedido entre lo solicitado, solo donde las dos cifras son positivas.
+
+    Con la solicitud a 0 y el crédito positivo el cociente sería infinito, y con el crédito a 0
+    daría 0: ninguno es un dato. Pasa las dos cifras a `float` para no depender del tipo del lote,
+    que con `float32` mueve de lado las filas que caen justo en un corte. Lo usan la agregación y
+    el refijado de `prev_sobreconcesion_corte`, que tienen que barrer la misma población.
+    """
+    solicitado, concedido = p["AMT_APPLICATION"].astype(float), p["AMT_CREDIT"].astype(float)
+    return (concedido / solicitado).where(solicitado.gt(0) & concedido.gt(0))
+
+
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
@@ -142,9 +154,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     decision = p["DAYS_DECISION"]
     primera = decision.eq(decision.groupby(p["SK_ID_CURR"]).transform("min"))
     rechazada = p["NAME_CONTRACT_STATUS"].eq("Refused")
-    # con la solicitud a 0 y el crédito positivo el cociente sería infinito, no un dato
-    dos_cifras = p["AMT_APPLICATION"].gt(0) & p["AMT_CREDIT"].gt(0)
-    concesion = (p["AMT_CREDIT"] / p["AMT_APPLICATION"]).where(dos_cifras)
+    concesion = cociente_de_concesion(p)
     # lo que se devuelve frente a lo que se recibe, solo donde hay algo que devolver
     valida = (
         p["NAME_CONTRACT_STATUS"].eq("Approved")
@@ -168,7 +178,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         # proporción y no bandera: el corte se barrió sobre la proporción; el borde queda fuera
         _sobreconcedida=concesion.gt(c["prev_sobreconcesion_corte"])
         .astype(float)
-        .where(dos_cifras),
+        .where(concesion.notna()),
         _coste=coste,
         _entrada=p["RATE_DOWN_PAYMENT"].where(p["NAME_CONTRACT_TYPE"].eq("Consumer loans")),
         _plazo=p["CNT_PAYMENT"].where(p["CNT_PAYMENT"].gt(0)),

@@ -520,6 +520,8 @@ PARAMS: dict[str, Parametro] = {
         "plazo por encima del cual la petición rechazada marca; el mismo plazo concedido no marca",
         "notebook 04 celda 153",
     ),
+    # Refijado en el 4.8 con la rejilla del EDA: sobre train el 1,1 se queda en r_rb 0,1208 (0,1194
+    # en el EDA) sobre 231.992 clientes, y el 1,05 y el 1,2 bajan a 0,0837 y 0,0820
     "prev_sobreconcesion_corte": Parametro(
         1.1,
         "medido",

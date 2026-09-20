@@ -26,12 +26,13 @@ import logging
 
 import numpy as np
 import pandas as pd
+from scipy.stats import mannwhitneyu
 from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
-from src.features.agg_previous import solicitudes_recientes
+from src.features.agg_previous import cociente_de_concesion, solicitudes_recientes
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
@@ -60,6 +61,11 @@ REDUCIR_MEMORIA = False
 # frente a los +2,49pp sobre 71.580 del 2 a 5). Las dos se quedan con el tramo más estrecho que la
 # rejilla permita, así que el valor lo decidiría la rejilla y no el dato.
 REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
+
+# La rejilla con la que el EDA barrió la sobreconcesión de previous_application (notebook 04, celda
+# 160), en cociente concedido entre solicitado. El 1,3 heredado del binning no salió de un barrido
+# y perdía dos tercios de la señal de la proporción.
+REJILLA_SOBRECONCESION = (1.05, 1.1, 1.2, 1.3, 1.4, 1.5)
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -319,6 +325,60 @@ def ajustar_actividad_previous(
     return _primer_corte_que_cruza(
         clientes["n"], clientes["target"], "prev_actividad_12m_cola", sobrescribir, desde=1
     )
+
+
+def ajustar_sobreconcesion_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_OVERGRANTED_RATIO`, el de mayor r_rb de la proporción.
+
+    Se barre `REJILLA_SOBRECONCESION` sobre la proporción por cliente de solicitudes que superan el
+    corte, que es la codificación que entra en la matriz. Sobre la bandera el delta crece con el
+    corte (+1,65pp a +9,28pp en train) porque marca a cada vez menos gente, y elegiría el 1,5. Y no
+    es un primer cruce como en las colas: aquí el efecto tiene pico y se elige el máximo.
+
+    La población es la de la feature: los clientes de train con alguna solicitud con las dos cifras
+    positivas, y ese es el `n_train` que se declara. Sale 1,1 con r_rb 0,1208, y el borde queda
+    fuera como en la agregación. Con una rejilla más fina el pico es plano entre 1,1 y 1,125 (0,1208
+    y 0,1200), así que la rejilla del EDA decide el valor, como en el tramo de bureau.
+
+    Es el más estable de los seis: sale 1,1 en los 15 folds, tanto midiendo sobre la parte de
+    entrenamiento como sobre la de validación, y en el CV de la Fase 4 cada fold usa el elegido
+    sobre todo el 80%, como los de bureau.
+
+    Devuelve el barrido, n, r_rb y delta de la bandera por corte con el elegido marcado.
+    """
+    filas = _previous_de_train(prev, base, split)
+    concesion = cociente_de_concesion(filas)
+    objetivo = filas.groupby("SK_ID_CURR")["TARGET"].first()
+    barrido = []
+    for corte in REJILLA_SOBRECONCESION:
+        proporcion = (
+            concesion.gt(corte)
+            .astype(float)
+            .where(concesion.notna())
+            .groupby(filas["SK_ID_CURR"])
+            .mean()
+            .dropna()
+        )
+        target = objetivo.loc[proporcion.index]
+        sanos, morosos = proporcion[target == 0], proporcion[target == 1]
+        u, _ = mannwhitneyu(sanos, morosos)
+        r_rb = abs(2 * u / (len(sanos) * len(morosos)) - 1)
+        marcados = proporcion > 0
+        delta = (target[marcados].mean() - target[~marcados].mean()) * 100
+        barrido.append((corte, len(proporcion), r_rb, delta))
+    informe = pd.DataFrame(barrido, columns=["corte", "n", "r_rb", "delta_bandera_pp"])
+    informe = informe.set_index("corte")
+    elegido = informe["r_rb"].idxmax()
+    fijar_operativo("prev_sobreconcesion_corte", elegido, int(informe["n"].iloc[0]), sobrescribir)
+    logger.info(
+        "sobreconcesion refijada en %s sobre %s clientes", elegido, f"{informe['n'].iloc[0]:,}"
+    )
+    return informe.assign(elegido=informe.index == elegido)
 
 
 def _primer_corte_que_cruza(

@@ -18,9 +18,15 @@ from src.features.agg_previous import (
     DENOMINADOR,
     NUMERICAS_ORIGEN,
     agregar_previous,
+    cociente_de_concesion,
     unir_previous,
 )
-from src.features.build_features import ajustar_actividad_previous, ajustar_cola_previous
+from src.features.build_features import (
+    REJILLA_SOBRECONCESION,
+    ajustar_actividad_previous,
+    ajustar_cola_previous,
+    ajustar_sobreconcesion_previous,
+)
 from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -986,6 +992,122 @@ def test_n_train_de_la_cola_de_actividad_cuenta_al_que_no_tiene_ninguna_reciente
     assert parametro("prev_actividad_12m_cola").n_train_operativo == 20 + 20 + 40 + 5 + 2
 
 
+# --- el 4.8, el refijado de la sobreconcesion sobre train -------------------------------------
+
+
+def escenario_concesion(*grupos):
+    """Cada grupo es (cocientes de sus solicitudes, targets, parte); un número es una sola fila."""
+    filas, clientes = [], []
+    for cocientes, targets, parte in grupos:
+        for target in targets:
+            cliente = len(clientes) + 1
+            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
+            for cociente in np.atleast_1d(cocientes):
+                filas.append(
+                    solicitud(cliente, -100, AMT_APPLICATION=100.0, AMT_CREDIT=100.0 * cociente)
+                )
+    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+
+def refijar_concesion(*grupos, sobrescribir=False):
+    """El corte que sale de refijar sobre el escenario, y el barrido."""
+    prev, clientes = escenario_concesion(*grupos)
+    informe = ajustar_sobreconcesion_previous(prev, clientes, clientes, sobrescribir)
+    return valor("prev_sobreconcesion_corte"), informe
+
+
+# Con una sola fila por cliente el r_rb de la proporción es la fracción de morosos marcados menos la
+# de sanos: el 1,1 gana (0,50 frente a 0,41 del 1,05 y 0,12 del 1,2). El delta de la bandera es
+# otra cosa y crece con el corte, hasta el 87pp del 1,2, que solo marca a los pocos del 1,6
+GRUPOS_CONCESION = [
+    (1.0, [1] * 20 + [0] * 300, "train"),
+    (1.08, [1] * 5 + [0] * 60, "train"),
+    (1.15, [1] * 30 + [0] * 20, "train"),
+    (1.6, [1] * 8, "train"),
+]
+# cuatrocientos sanos con cociente 1,15, marcados por el 1,05 y el 1,1 y no por el 1,2: si contaran,
+# el corte pasaría a 1,2
+CONCESION_VALID = (1.15, [0] * 400, "valid")
+
+
+def test_la_sobreconcesion_es_el_corte_de_mayor_rrb_y_no_el_de_mayor_delta():
+    corte, informe = refijar_concesion(*GRUPOS_CONCESION)
+    assert corte == 1.1
+    assert informe.r_rb.idxmax() == 1.1
+    assert informe.delta_bandera_pp.idxmax() != 1.1
+    assert informe.elegido.sum() == 1 and informe.loc[1.1, "elegido"]
+    assert informe.index.tolist() == list(REJILLA_SOBRECONCESION)
+
+
+def test_valid_no_mueve_la_sobreconcesion():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train el corte pasa a 1,2."""
+    assert refijar_concesion(*GRUPOS_CONCESION, CONCESION_VALID)[0] == 1.1
+    en_train = (*CONCESION_VALID[:2], "train")
+    corte, _ = refijar_concesion(*GRUPOS_CONCESION, en_train, sobrescribir=True)
+    assert corte == 1.2
+
+
+def test_n_train_de_la_sobreconcesion_son_los_clientes_de_train_con_cociente():
+    """Ni el de solicitud 0, que no tiene cociente, ni el de valid, ni el que no tiene previas."""
+    prev, clientes = escenario_concesion(*GRUPOS_CONCESION, CONCESION_VALID)
+    sin_cociente = solicitud(999, -100, AMT_APPLICATION=0.0, AMT_CREDIT=100.0)
+    sin_previas = {"SK_ID_CURR": 998, "TARGET": 1, "split": "train"}
+    prev = pd.concat([prev, pd.DataFrame([sin_cociente])], ignore_index=True)
+    clientes = pd.concat(
+        [clientes, pd.DataFrame([{**sin_previas, "SK_ID_CURR": 999}, sin_previas])],
+        ignore_index=True,
+    )
+    ajustar_sobreconcesion_previous(prev, clientes, clientes)
+    assert parametro("prev_sobreconcesion_corte").n_train_operativo == 320 + 65 + 50 + 8
+
+
+def test_la_sobreconcesion_mide_la_proporcion_del_cliente_y_no_la_bandera():
+    """Cada morosa tiene alguna solicitud sobre el corte y cada sana una sola sobre el corte entre
+    varias: con la proporción los morosos superan a los sanos (r_rb 1) y con un `max` empatarían."""
+    dos_filas = [
+        ([1.6, 1.0], [1], "train"),
+        ([1.6, 1.6], [1], "train"),
+        ([1.0], [0], "train"),
+        ([1.6, 1.0, 1.0, 1.0], [0], "train"),
+    ]
+    _, informe = refijar_concesion(*dos_filas)
+    assert informe.r_rb.round(6).eq(1.0).all()
+
+
+def test_la_sobreconcesion_deja_fuera_el_borde_del_corte():
+    """Un moroso justo en 1,1 no cuenta como sobreconcedido con el corte en 1,1 y sí con el 1,05.
+
+    En el dato real son siete filas en ese borde. El crédito va escrito a mano: 100 * 1,1 daría
+    110,00000000000001 y ya estaría por encima.
+    """
+    prev = pd.DataFrame(
+        [solicitud(1, -100, AMT_CREDIT=110.0), solicitud(2, -100, AMT_CREDIT=100.0)]
+    )
+    clientes = pd.DataFrame({"SK_ID_CURR": [1, 2], "TARGET": [1, 0], "split": "train"})
+    informe = ajustar_sobreconcesion_previous(prev, clientes, clientes)
+    assert informe.loc[1.05, "r_rb"] == pytest.approx(1.0)
+    assert informe.loc[1.1, "r_rb"] == pytest.approx(0.0)
+
+
+def test_refijar_la_sobreconcesion_otra_vez_exige_sobrescribir():
+    refijar_concesion(*GRUPOS_CONCESION)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar_concesion(*GRUPOS_CONCESION)
+
+
+def test_el_cociente_de_concesion_deja_fuera_las_dos_cifras_a_cero():
+    """La solicitud a 0 daría infinito y el crédito a 0 daría 0: ninguno es un dato."""
+    p = pd.DataFrame(
+        {
+            "AMT_APPLICATION": np.array([100.0, 0.0, 100.0, 0.0], dtype="float32"),
+            "AMT_CREDIT": np.array([110.0, 100.0, 0.0, 0.0], dtype="float32"),
+        }
+    )
+    cociente = cociente_de_concesion(p)
+    assert cociente.notna().tolist() == [True, False, False, False]
+    assert cociente.dtype == "float64"
+
+
 # --- la puerta contra el dato real -----------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -1269,3 +1391,35 @@ def test_sobre_el_split_las_dos_colas_se_refijan(dato_real, ajustar, nombre, esp
     cortes = sorted(vecinos)
     assert informe.loc[cortes, "marcados"].tolist() == [v[0] for v in vecinos.values()]
     assert informe.loc[cortes, "delta_pp"].round(2).tolist() == [v[1] for v in vecinos.values()]
+
+
+# El barrido de la celda 160 sobre los 307.511, r_rb de la proporción por corte de la rejilla
+BARRIDO_SOBRECONCESION_EDA = [0.0832, 0.1194, 0.0809, 0.0455, 0.0230, 0.0094]
+
+
+@sin_dato_real
+def test_el_barrido_de_la_sobreconcesion_reproduce_el_eda(dato_real):
+    """Las seis r_rb de la celda 160 sobre los 290.042 con las dos cifras positivas.
+
+    Va sobre la población del EDA y con el barrido de la función de ajuste, que sobre train solo
+    cambia la población: aquí tiene que salir clavado lo que salió en el notebook.
+    """
+    prev, _, _ = dato_real
+    crudo = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    informe = ajustar_sobreconcesion_previous(prev, crudo, crudo.assign(split="train"))
+    assert informe.n.eq(290_042).all()
+    assert informe.r_rb.round(4).tolist() == BARRIDO_SOBRECONCESION_EDA
+
+
+@sin_dato_real
+def test_sobre_el_split_la_sobreconcesion_se_queda_en_1_1(dato_real):
+    """El 1,1 con r_rb 0,1208 sobre los 231.992 de train, con el 1,05 y el 1,2 en 0,0837 y 0,0820.
+
+    La bandera daría otro corte: su delta crece con el corte hasta +9,28pp en 1,5.
+    """
+    split = cargar_split()
+    informe = ajustar_sobreconcesion_previous(dato_real[0], split, split)
+    assert valor("prev_sobreconcesion_corte") == 1.1
+    assert parametro("prev_sobreconcesion_corte").n_train_operativo == 231_992
+    assert informe.r_rb.round(4).tolist() == [0.0837, 0.1208, 0.0820, 0.0465, 0.0231, 0.0096]
+    assert informe.delta_bandera_pp.idxmax() == 1.5
