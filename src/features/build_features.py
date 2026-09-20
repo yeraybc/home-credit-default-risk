@@ -33,7 +33,9 @@ from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
 from src.features.agg_previous import (
+    agregar_previous,
     cociente_de_concesion,
+    combinacion_definida,
     finalidad_declarada,
     solicitudes_recientes,
 )
@@ -70,6 +72,9 @@ REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
 # 160), en cociente concedido entre solicitado. El 1,3 heredado del binning no salió de un barrido
 # y perdía dos tercios de la señal de la proporción.
 REJILLA_SOBRECONCESION = (1.05, 1.1, 1.2, 1.3, 1.4, 1.5)
+
+# Los mínimos de denominador que barrió el EDA (notebook 04, celda 155): con uno no hay mínimo.
+MINIMOS_DENOMINADOR = (1, 2, 3, 5)
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -433,6 +438,80 @@ def ajustar_finalidades_previous(
     fijar_operativo("prev_finalidades_urgentes", elegidas, n_train, sobrescribir)
     logger.info("finalidades urgentes refijadas en %s sobre %s clientes", elegidas, f"{n_train:,}")
     return informe.sort_values("tasa", ascending=False)
+
+
+def informe_denominador_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    cortes: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Barre el mínimo de denominador de las seis proporciones de conteos de previous_application.
+
+    Cada proporción se cuenta sobre su propio denominador y no sobre el de solicitudes, y lo que
+    decide es la señal **dentro del grupo que el mínimo deja fuera**: exigir denominador sube
+    siempre el efecto, porque selecciona población. Solo informa, no fija nada: sobre train ninguna
+    de las seis lleva mínimo, y las tres medias de importes quedan fuera por el criterio del 2.3.
+
+    Una fila por proporción y mínimo, sobre los clientes de train con la proporción construida:
+    n y r_rb de los que quedan, n de los que se quedan fuera y su r_rb y su p. Cuando el grupo
+    excluido solo vale 0 o 1, que con mínimo 2 es siempre, añade su delta de bandera en pp. Los
+    `cortes` son los de la agregación, que la sobreconcesión y las finalidades urgentes necesitan.
+    """
+    filas = _previous_de_train(prev, base, split)
+    todas = pd.Series(True, index=filas.index)
+    denominador = pd.DataFrame(
+        {
+            feature: mascara.groupby(filas["SK_ID_CURR"]).sum()
+            for feature, mascara in {
+                "PREV_REFUSED_RATIO": todas,
+                "PREV_OVERGRANTED_RATIO": cociente_de_concesion(filas).notna(),
+                "PREV_STREET_RATIO": combinacion_definida(filas),
+                "PREV_NO_SUITE_RATIO": todas,
+                "PREV_EARLY_HOUR_RATIO": todas,
+                "PREV_URGENT_PURPOSE_RATIO": finalidad_declarada(filas),
+            }.items()
+        }
+    )
+    proporciones = agregar_previous(prev, cortes)[list(denominador.columns)]
+    target = filas.groupby("SK_ID_CURR")["TARGET"].first()
+    informe = []
+    for feature in denominador:
+        clientes = target.to_frame().join(proporciones[feature].rename("valor"), how="inner")
+        clientes = clientes.join(denominador[feature].rename("den"))[lambda d: d["valor"].notna()]
+        for minimo in MINIMOS_DENOMINADOR:
+            dentro, fuera = clientes[clientes["den"] >= minimo], clientes[clientes["den"] < minimo]
+            r_dentro, _ = _r_rb(dentro)
+            r_fuera, p_fuera = _r_rb(fuera)
+            informe.append(
+                {
+                    "feature": feature,
+                    "minimo": minimo,
+                    "n": len(dentro),
+                    "r_rb": r_dentro,
+                    "n_fuera": len(fuera),
+                    "r_rb_fuera": r_fuera,
+                    "p_fuera": p_fuera,
+                    "delta_fuera_pp": _delta_bandera(fuera),
+                }
+            )
+    return pd.DataFrame(informe).set_index(["feature", "minimo"])
+
+
+def _r_rb(clientes: pd.DataFrame) -> tuple[float, float]:
+    """Rank-biserial en valor absoluto y p de una proporción contra el TARGET; NaN si no separa."""
+    sanos = clientes.loc[clientes["TARGET"] == 0, "valor"]
+    morosos = clientes.loc[clientes["TARGET"] == 1, "valor"]
+    if sanos.empty or morosos.empty or clientes["valor"].nunique() < 2:
+        return np.nan, np.nan
+    u, p = mannwhitneyu(sanos, morosos)
+    return abs(2 * u / (len(sanos) * len(morosos)) - 1), p
+
+
+def _delta_bandera(clientes: pd.DataFrame) -> float:
+    """Tasa de default con la proporción a 1 menos con ella a 0, en pp; NaN si no es solo 0 o 1."""
+    tasa = clientes.groupby("valor")["TARGET"].mean()
+    return (tasa[1] - tasa[0]) * 100 if set(tasa.index) == {0, 1} else np.nan
 
 
 def _primer_corte_que_cruza(

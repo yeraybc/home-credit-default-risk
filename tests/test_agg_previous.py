@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, norm
 
 from src.config import RAIZ, ruta
 from src.data.loader import TABLE_FILES, load_table
@@ -20,6 +20,7 @@ from src.features.agg_previous import (
     NUMERICAS_ORIGEN,
     agregar_previous,
     cociente_de_concesion,
+    combinacion_definida,
     finalidad_declarada,
     unir_previous,
 )
@@ -29,6 +30,7 @@ from src.features.build_features import (
     ajustar_cola_previous,
     ajustar_finalidades_previous,
     ajustar_sobreconcesion_previous,
+    informe_denominador_previous,
 )
 from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
@@ -777,8 +779,8 @@ def test_un_corte_que_la_agregacion_no_lee_revienta(prev):
     """Ni uno mal escrito ni uno del registro que aún no se consume se ignoran en silencio."""
     with pytest.raises(KeyError, match="prev_ventana"):
         agregar(prev, {"prev_ventana": 90})
-    with pytest.raises(KeyError, match="prev_ratio_rechazo_min_solicitudes"):
-        agregar(prev, {"prev_ratio_rechazo_min_solicitudes": 2})
+    with pytest.raises(KeyError, match="bureau_count_cola"):
+        agregar(prev, {"bureau_count_cola": 18})
 
 
 def test_no_muta_el_frame_de_entrada(prev):
@@ -1019,13 +1021,14 @@ def test_n_train_de_la_cola_de_actividad_cuenta_al_que_no_tiene_ninguna_reciente
         ajustar_actividad_previous,
         ajustar_sobreconcesion_previous,
         ajustar_finalidades_previous,
+        informe_denominador_previous,
     ],
-    ids=["conteo", "actividad", "sobreconcesion", "finalidades"],
+    ids=["conteo", "actividad", "sobreconcesion", "finalidades", "denominador"],
 )
 def test_los_refijados_de_previous_limpian_por_dentro(ajustar):
     """Un estado fuera de dominio revienta desde el refijado, como desde la agregación.
 
-    Ninguna de las cuatro lecturas usa una columna que la limpieza cambie, así que sin esta guarda
+    Ninguna de las lecturas usa una columna que la limpieza cambie, así que sin esta guarda
     quitar la llamada no movería ninguna cifra y nadie lo vería.
     """
     prev, clientes = escenario(*GRUPOS_CONTEO)
@@ -1261,6 +1264,112 @@ def test_la_finalidad_declarada_deja_fuera_el_nan_y_las_dos_etiquetas_de_no_decl
 
 
 # --- la puerta contra el dato real -----------------------------------------------------------
+
+# --- el 4.9, el barrido del mínimo de denominador ----------------------------------------------
+
+RECHAZADA = {"NAME_CONTRACT_STATUS": "Refused", "CODE_REJECT_REASON": "HC"}
+SIN_COMBINACION = {"PRODUCT_COMBINATION": np.nan}
+
+
+def escenario_denominador(*grupos):
+    """Cada grupo es (solicitudes de cada cliente como campos a cambiar, targets, parte)."""
+
+    def filas_de(cliente, solicitudes):
+        return [solicitud(cliente, -100 - i, **campos) for i, campos in enumerate(solicitudes)]
+
+    return armar(grupos, filas_de)
+
+
+URGENTE = {"NAME_CASH_LOAN_PURPOSE": "Car repairs"}
+NO_URGENTE = {"NAME_CASH_LOAN_PURPOSE": "Repairs"}
+
+# Siete tipos de cliente, y tres de ellos separan los denominadores del conteo de solicitudes. El
+# tercero tiene dos solicitudes pero solo una con combinación de producto, así que el rechazo cuenta
+# dos y la calle una; el quinto tiene una con el crédito a 0, que no entra en la sobreconcesión, y
+# el sexto declara finalidad solo en una. Los cuatro primeros no declaran ninguna finalidad.
+GRUPOS_DENOMINADOR = [
+    ([RECHAZADA], [1, 0, 0, 0], "train"),
+    ([{}], [0] * 6, "train"),
+    ([RECHAZADA, SIN_COMBINACION], [1, 0, 0], "train"),
+    ([{}, {}], [1, 0, 0, 0, 0], "train"),
+    ([{"AMT_CREDIT": 0.0}, {}], [1, 0, 0], "train"),
+    ([URGENTE, {}], [1, 0, 0, 0], "train"),
+    ([URGENTE, NO_URGENTE], [1, 0, 0], "train"),
+]
+CLIENTES_DENOMINADOR = sum(len(g[1]) for g in GRUPOS_DENOMINADOR)
+# Los clientes con la proporción y los que tienen denominador de dos o más, escritos a mano por
+# proporción: uno solo derivado de las máscaras del código no se rompería si se equivocan las dos.
+N_ESPERADA = {
+    "PREV_REFUSED_RATIO": (28, 18),
+    "PREV_OVERGRANTED_RATIO": (28, 15),
+    "PREV_STREET_RATIO": (28, 15),
+    "PREV_NO_SUITE_RATIO": (28, 18),
+    "PREV_EARLY_HOUR_RATIO": (28, 18),
+    "PREV_URGENT_PURPOSE_RATIO": (7, 3),
+}
+
+
+def informe_de(*grupos):
+    prev, clientes = escenario_denominador(*grupos)
+    return informe_denominador_previous(prev, clientes, clientes, REFERENCIA)
+
+
+def test_cada_proporcion_cuenta_sobre_su_propio_denominador():
+    """Con el conteo de solicitudes las seis darían 18 con mínimo 2, y solo tres lo hacen."""
+    assert CLIENTES_DENOMINADOR == 28, "el escenario cambió y la tabla de abajo no"
+    informe = informe_de(*GRUPOS_DENOMINADOR)
+    for feature, (con_valor, con_dos) in N_ESPERADA.items():
+        assert informe.loc[(feature, 1), "n"] == con_valor, feature
+        assert informe.loc[(feature, 2), "n"] == con_dos, feature
+
+
+def test_lo_que_queda_y_lo_que_se_deja_fuera_suman_el_total_de_cada_proporcion():
+    informe = informe_de(*GRUPOS_DENOMINADOR)
+    for feature, filas in informe.groupby(level=0):
+        total = filas.loc[(feature, 1), "n"]
+        assert (filas["n"] + filas["n_fuera"] == total).all(), feature
+        assert filas.loc[(feature, 1), "n_fuera"] == 0, "con mínimo 1 no queda nadie fuera"
+        assert pd.isna(filas.loc[(feature, 1), "r_rb_fuera"]), feature
+
+
+def test_el_grupo_que_deja_fuera_el_minimo_de_dos_se_lee_como_bandera():
+    """Con denominador 1 la proporción vale 0 o 1: 25% de default con 1 frente al 0% con 0."""
+    informe = informe_de(*GRUPOS_DENOMINADOR)
+    assert informe.loc[("PREV_REFUSED_RATIO", 2), "delta_fuera_pp"] == pytest.approx(25.0)
+    assert informe.loc[("PREV_REFUSED_RATIO", 2), "r_rb_fuera"] > 0
+    # la calle vale 0 en todo el que se queda fuera, así que no hay delta que leer, y con mínimo 3
+    # el grupo excluido ya tiene la mitad de un cliente y deja de ser una bandera
+    assert np.isnan(informe.loc[("PREV_STREET_RATIO", 2), "delta_fuera_pp"])
+    assert np.isnan(informe.loc[("PREV_STREET_RATIO", 2), "r_rb_fuera"]), "constante, no 0"
+    assert np.isnan(informe.loc[("PREV_REFUSED_RATIO", 3), "delta_fuera_pp"])
+
+
+def test_una_proporcion_sin_ninguna_solicitud_dentro_de_su_denominador_no_mide_nada():
+    """Sin finalidad declarada en ningún cliente: ni n, ni r_rb ni delta, y no revienta."""
+    sin_finalidad = GRUPOS_DENOMINADOR[:4]
+    prev, _ = escenario_denominador(*sin_finalidad)
+    assert not finalidad_declarada(prev).any(), "el escenario pierde el caso sin denominador"
+    filas = informe_de(*sin_finalidad).loc["PREV_URGENT_PURPOSE_RATIO"]
+    assert (filas["n"] == 0).all() and (filas["n_fuera"] == 0).all()
+    assert filas[["r_rb", "r_rb_fuera", "delta_fuera_pp"]].isna().all().all()
+
+
+def test_valid_no_entra_en_el_barrido_del_denominador():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train sumaría cinco."""
+    valid = ([RECHAZADA], [1] * 5, "valid")
+    pd.testing.assert_frame_equal(
+        informe_de(*GRUPOS_DENOMINADOR, valid), informe_de(*GRUPOS_DENOMINADOR)
+    )
+    en_train = (*valid[:2], "train")
+    assert informe_de(*GRUPOS_DENOMINADOR, en_train).loc[("PREV_REFUSED_RATIO", 1), "n"] == (
+        CLIENTES_DENOMINADOR + 5
+    )
+
+
+def test_la_combinacion_definida_deja_fuera_solo_el_nan():
+    p = pd.DataFrame({"PRODUCT_COMBINATION": ["Cash X-Sell: low", np.nan, "POS household: Street"]})
+    assert combinacion_definida(p).tolist() == [True, False, True]
+
 
 sin_dato_real = pytest.mark.skipif(
     not (ruta("raw_data") / TABLE_FILES["previous_application"]).exists()
@@ -1790,3 +1899,126 @@ def test_contraste_de_la_relacion_larga(dato_real):
         medido[anios] = (int(grupo.loc[(False, 1), "size"]), round(superaditividad, 2))
     assert medido == esperado
     assert all(s > 0 for _, s in medido.values())
+
+
+# --- el 4.9, el barrido del mínimo de denominador sobre el dato real --------------------------
+
+
+@sin_dato_real
+def test_el_barrido_del_denominador_del_rechazo_reproduce_el_eda(dato_real):
+    """Las cuatro r_rb de la celda 155 y la lectura de la 157, sobre los 291.057 de la tabla cruda.
+
+    Es la puerta del punto: aquí tiene que salir clavado lo del notebook. Los 52.533 de una sola
+    solicitud son el 18,05% de los que tienen previas, y su única rechazada da +1,63pp con p = 0,35.
+    """
+    _, agregado, _ = dato_real
+    crudo = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    unido = unir_previous(crudo, agregado)
+    con = unido[unido.HAS_PREV_APPLICATION == 1]
+    esperado = {
+        1: (0.1204, 291_057),
+        2: (0.1558, 238_524),
+        3: (0.1765, 192_725),
+        5: (0.1993, 119_789),
+    }
+    for minimo, (r_esperada, n) in esperado.items():
+        dentro = con[con.PREV_APPLICATION_COUNT >= minimo]
+        sanos, morosos = (dentro.PREV_REFUSED_RATIO[dentro.TARGET == t] for t in (0, 1))
+        u, _ = mannwhitneyu(sanos, morosos)
+        assert len(dentro) == n, minimo
+        assert round(abs(2 * u / (len(sanos) * len(morosos)) - 1), 4) == r_esperada, minimo
+    una = con[con.PREV_APPLICATION_COUNT == 1]
+    rechazada = una.TARGET[una.PREV_REFUSED_RATIO == 1]
+    resto = una.TARGET[una.PREV_REFUSED_RATIO == 0]
+    assert (len(una), round(len(una) / len(con) * 100, 2)) == (52_533, 18.05)
+    assert (len(rechazada), round(rechazada.mean() * 100, 2)) == (250, 10.00)
+    assert (len(resto), round(resto.mean() * 100, 2)) == (52_283, 8.37)
+    pp = una.TARGET.mean()
+    z = (rechazada.mean() - resto.mean()) / np.sqrt(
+        pp * (1 - pp) * (1 / len(rechazada) + 1 / len(resto))
+    )
+    assert round((rechazada.mean() - resto.mean()) * 100, 2) == 1.63
+    assert round(2 * norm.sf(abs(z)), 2) == 0.35
+
+
+# Por proporción y mínimo: n, r_rb de los que quedan, n de los que se quedan fuera y su r_rb, sobre
+# los 232.793 de train con previas y con los cuatro cortes refijados. El efecto sube siempre con el
+# mínimo porque selecciona población, y lo que decide es lo de la última columna
+BARRIDO_DENOMINADOR = {
+    "PREV_REFUSED_RATIO": [
+        (1, 232_793, 0.1221, 0, None),
+        (2, 190_837, 0.1555, 41_956, 0.0022),
+        (3, 154_115, 0.1762, 78_678, 0.0308),
+        (5, 95_715, 0.2012, 137_078, 0.0665),
+    ],
+    "PREV_OVERGRANTED_RATIO": [
+        (1, 231_992, 0.1208, 0, None),
+        (2, 180_821, 0.1486, 51_171, 0.0569),
+        (3, 133_717, 0.1690, 98_275, 0.0771),
+        (5, 67_332, 0.1946, 164_660, 0.0968),
+    ],
+    "PREV_STREET_RATIO": [
+        (1, 232_793, 0.0924, 0, None),
+        (2, 190_824, 0.1114, 41_969, 0.0227),
+        (3, 154_088, 0.1249, 78_705, 0.0352),
+        (5, 95_697, 0.1413, 137_096, 0.0550),
+    ],
+    "PREV_NO_SUITE_RATIO": [
+        (1, 232_793, 0.0714, 0, None),
+        (2, 190_837, 0.0843, 41_956, 0.0400),
+        (3, 154_115, 0.0935, 78_678, 0.0447),
+        (5, 95_715, 0.1050, 137_078, 0.0544),
+    ],
+    "PREV_EARLY_HOUR_RATIO": [
+        (1, 232_793, 0.0522, 0, None),
+        (2, 190_837, 0.0584, 41_956, 0.0261),
+        (3, 154_115, 0.0603, 78_678, 0.0341),
+        (5, 95_715, 0.0652, 137_078, 0.0389),
+    ],
+    "PREV_URGENT_PURPOSE_RATIO": [
+        (1, 28_564, 0.0216, 0, None),
+        (2, 9_444, 0.0361, 19_120, 0.0078),
+        (3, 4_173, 0.0424, 24_391, 0.0141),
+        (5, 1_110, 0.0544, 27_454, 0.0187),
+    ],
+}
+
+
+def redondeada(r_rb):
+    """La r_rb a cuatro decimales, o None si no había nada que medir."""
+    return None if pd.isna(r_rb) else round(r_rb, 4)
+
+
+@sin_dato_real
+def test_sobre_el_split_ninguna_proporcion_gana_con_un_minimo_de_denominador(dato_real):
+    """Ninguna de las seis lleva mínimo: con 3 y 5 el grupo excluido separa en todas.
+
+    Con 2 separa con significación en cuatro (calle, hora, acompañante y sobreconcesión) y en el
+    rechazo y en la finalidad urgente no llega (p de 0,065 y 0,083), pero el mínimo dejaría fuera
+    al 18% y al 67% de los clientes. La delta de bandera del grupo excluido con 2 es la de la celda
+    157: +3,67pp con 193 únicas rechazadas en train, frente a +1,63pp con 250 en la tabla cruda.
+    """
+    prev = dato_real[0]
+    split = cargar_split()
+    for ajustar in (
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ):
+        ajustar(prev, split, split)
+    informe = informe_denominador_previous(prev, split, split, {n: valor(n) for n in CORTES})
+    for feature, filas in BARRIDO_DENOMINADOR.items():
+        medido = [
+            (m, int(r.n), redondeada(r.r_rb), int(r.n_fuera), redondeada(r.r_rb_fuera))
+            for m, r in informe.loc[feature].iterrows()
+        ]
+        assert medido == filas, feature
+        assert (informe.loc[feature].loc[[3, 5], "p_fuera"] < 0.05).all(), feature
+        assert informe.loc[feature, "r_rb"].is_monotonic_increasing, feature
+    con_2 = informe.xs(2, level="minimo")
+    assert (con_2["p_fuera"] < 0.05).sum() == 4
+    assert con_2.loc["PREV_REFUSED_RATIO", "delta_fuera_pp"] == pytest.approx(3.6682, abs=5e-5)
+    assert con_2.loc["PREV_URGENT_PURPOSE_RATIO", "delta_fuera_pp"] == pytest.approx(
+        2.0062, abs=5e-5
+    )

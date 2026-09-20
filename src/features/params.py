@@ -135,13 +135,16 @@ PARAMS: dict[str, Parametro] = {
         "evidencia propia converja al comportamiento medio en vez de a su propio azar",
         "convención de suavizado bayesiano de WoE",
     ),
-    "min_denominador_proporcion": Parametro(
-        None,
-        "medido",
-        "denominador mínimo de toda proporción de cliente; hoy solo bureau_balance lo exige "
-        "y previous_application lo mide sin fijarlo",
-        "auditoría transversal, pendiente 1",
-    ),
+    # Sin mínimo transversal de denominador, decidido en el 4.9 con el usuario: el pendiente 1 de
+    # la auditoría transversal se cierra por tabla y no con un número. Los denominadores tienen
+    # unidades distintas (meses reportados, créditos y solicitudes) y cada tabla decide el suyo:
+    # bureau, sin mínimo (2.3); bureau_balance, `bb_min_meses_reportados`, de dominio; y
+    # previous_application, sin mínimo en ninguna de sus seis proporciones de conteos, medido sobre
+    # train con `informe_denominador_previous()`. Con el de dos el grupo que queda fuera separa con
+    # significación en cuatro (r_rb de 0,0227 a 0,0569 en la calle, la hora, el acompañante y la
+    # sobreconcesión); en el rechazo y en la finalidad urgente no llega (p de 0,065 y 0,083), pero
+    # el mínimo mandaría a la mediana al 18% y al 67% de los clientes, y con 3 y 5 el grupo
+    # excluido separa en las seis. El del rechazo, con su motivo, está al final de este registro.
     "remedicion_factor_max": Parametro(
         2.0,
         "dominio",
@@ -557,13 +560,13 @@ PARAMS: dict[str, Parametro] = {
         "que entra, y no sobre la bandera, que daba un corte opuesto",
         "notebook 04 celda 160",
     ),
-    "prev_ratio_rechazo_min_solicitudes": Parametro(
-        None,
-        "medido",
-        "mínimo de solicitudes para que el ratio de rechazo tenga denominador; sin mínimo "
-        "rinde 0,1204 con cobertura total y con dos rinde 0,1558 cubriendo el 81,95%",
-        "notebook 04 celda 155",
-    ),
+    # Sin corte de mínimo de solicitudes para PREV_REFUSED_RATIO, decidido en el 4.9 con el
+    # usuario. Sobre train el único mínimo defendible es 2 (r_rb 0,1555 frente a 0,1221, con el
+    # 81,98% de cobertura), porque con 3 y 5 el grupo que dejan fuera separa con significación
+    # (0,0308 y 0,0665). Con 2 el grupo excluido apenas separa (0,0022), pero su lectura de
+    # bandera se mueve entre +1,63pp con n=250 en la tabla cruda y +3,67pp con n=193 en train,
+    # dentro del mismo error típico, y el mínimo mandaría a la mediana (0) a 41.956 clientes,
+    # entre ellos las 193 únicas rechazadas.
 }
 
 # Qué corte lleva dentro cada feature de las tres recetas. Es lo que permite comprobar que
@@ -605,7 +608,6 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
         "PREV_EARLY_SETTLED_RATIO": ("prev_adelanto_liquidacion_dias",),
         "PREV_REFUSED_LONG_TERM_FLAG": ("prev_plazo_largo_cuotas",),
         "PREV_OVERGRANTED_RATIO": ("prev_sobreconcesion_corte",),
-        "PREV_REFUSED_RATIO": ("prev_ratio_rechazo_min_solicitudes",),
         "PREV_APPLICATIONS_PER_YEAR": ("suelo_anios_denominador",),
         "PREV_EARLY_HOUR_RATIO": ("prev_hora_temprana_max",),
         "PREV_URGENT_PURPOSE_RATIO": ("prev_finalidades_urgentes",),

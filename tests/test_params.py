@@ -68,8 +68,6 @@ def test_los_pendientes_sin_referencia_son_los_declarados():
     assert set(sin_fijar()) == {
         "bureau_count_cola",
         "umbral_continuas_rb",
-        "min_denominador_proporcion",
-        "prev_ratio_rechazo_min_solicitudes",
     }
 
 
@@ -173,6 +171,12 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     0.0387, 0.0522, 0.0614,               # r_rb de la hora temprana hasta las 7, las 8 y las 9
     0.0342, 0.0654, 0.0769,               # r_rb del conteo con 183, 365 y 730 dias
     2.03, 1.51, 1.68,                     # superaditividad con 3, 4 y 5 años sobre train
+    # el mínimo de denominador del 4.9, que params.py cita al retirar los dos cortes
+    0.1221, 0.1555,                       # r_rb del rechazo con 1 y con 2 solicitudes
+    0.0022, 0.0308, 0.0665,               # r_rb de los excluidos del rechazo con 2, 3 y 5
+    0.0227, 0.0569,                       # r_rb de los excluidos con 2: calle y sobreconcesion
+    1.63, 3.67,                           # delta de la unica rechazada, en la cruda y en train
+    0.065, 0.083,                         # p de los excluidos con 2 en el rechazo y la finalidad
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -359,13 +363,10 @@ def test_todo_corte_reajustable_lo_usa_alguna_feature_o_es_transversal():
     """Un corte reajustable que no usa nadie es un valor huérfano.
 
     Los transversales no aparecen en el mapa porque no pertenecen a una feature concreta:
-    son los percentiles de application_train y los tres pendientes de la capa 2b.
+    son los percentiles de application_train y el pendiente de la capa 2b.
     """
     usados = set(features_con_corte())
-    transversales = {n for n in PARAMS if n.startswith("app_")} | {
-        "umbral_continuas_rb",
-        "min_denominador_proporcion",
-    }
+    transversales = {n for n in PARAMS if n.startswith("app_")} | {"umbral_continuas_rb"}
     huerfanos = set(reajustables()) - usados - transversales
     assert not huerfanos, f"cortes reajustables que no usa ninguna feature: {sorted(huerfanos)}"
 

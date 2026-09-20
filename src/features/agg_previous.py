@@ -127,6 +127,15 @@ def finalidad_declarada(p: pd.DataFrame) -> pd.Series:
     return finalidad.notna() & ~finalidad.isin(FINALIDAD_NO_DECLARADA)
 
 
+def combinacion_definida(p: pd.DataFrame) -> pd.Series:
+    """Máscara de las solicitudes con combinación de producto, que es el denominador de la calle.
+
+    Sin combinación es el registro fantasma y va aparte de la calle. La comparten la agregación y
+    el informe del denominador, que tienen que contar la misma población.
+    """
+    return p["PRODUCT_COMBINATION"].notna()
+
+
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
@@ -176,7 +185,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     coste = (p["AMT_ANNUITY"] * p["CNT_PAYMENT"] / p["AMT_CREDIT"]).where(valida)
     # la combinación de producto sin definir es el registro fantasma, y va aparte de la calle
     combinacion = p["PRODUCT_COMBINATION"]
-    definida = combinacion.notna()
+    definida = combinacion_definida(p)
     # la finalidad solo existe donde el cliente la declara, y ese es el denominador honesto
     finalidad = p["NAME_CASH_LOAN_PURPOSE"]
     declarada = finalidad_declarada(p)
