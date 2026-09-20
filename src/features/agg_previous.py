@@ -156,7 +156,9 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     f = p.assign(
         _concesion=concesion,
         # proporción y no bandera: el corte se barrió sobre la proporción; el borde queda fuera
-        _sobreconcedida=concesion.gt(c["prev_sobreconcesion_corte"]).astype(float).where(dos_cifras),
+        _sobreconcedida=concesion.gt(c["prev_sobreconcesion_corte"])
+        .astype(float)
+        .where(dos_cifras),
         _coste=coste,
         _entrada=p["RATE_DOWN_PAYMENT"].where(p["NAME_CONTRACT_TYPE"].eq("Consumer loans")),
         _plazo=p["CNT_PAYMENT"].where(p["CNT_PAYMENT"].gt(0)),

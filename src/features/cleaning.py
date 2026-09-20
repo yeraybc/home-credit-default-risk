@@ -582,9 +582,7 @@ def limpiar_bureau_balance(bb: pd.DataFrame) -> pd.DataFrame:
         bb["MONTHS_BALANCE"] = meses.astype("int8")
     if "STATUS" in bb.columns:
         status = _normalizar_status(bb["STATUS"])
-        _exigir_dominio(
-            status, ~status.isin(DTYPE_STATUS.categories), "STATUS", "bureau_balance"
-        )
+        _exigir_dominio(status, ~status.isin(DTYPE_STATUS.categories), "STATUS", "bureau_balance")
         # El orden de los niveles se impone con el constructor y **no con un
         # `astype(DTYPE_STATUS)`**: pandas da por iguales dos categóricas no ordenadas con el
         # mismo conjunto de niveles, así que el astype devolvía la de entrada tal cual y el orden
