@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
+from scipy.stats import mannwhitneyu
 
 from src.config import RAIZ, ruta
 from src.data.loader import TABLE_FILES, load_table
@@ -1663,3 +1664,92 @@ def test_contraste_del_plazo_largo(dato_real):
     assert medido == esperado
     assert all(medido[c][1] > 10 for c in (60, 66))
     assert all(medido[c][1] < 5 for c in (48, 54))
+
+
+def con_previas_en_train(prev, cortes):
+    """Los clientes de train con previas, con la agregación construida con los cortes pasados."""
+    split = cargar_split()
+    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
+    unido = unir_previous(train, agregar(prev, cortes))
+    return unido[unido.HAS_PREV_APPLICATION == 1]
+
+
+def rrb_y_p(valores, target):
+    """Rank-biserial con signo, positivo si los morosos toman valores más bajos, y su p."""
+    sanos, morosos = valores[target == 0], valores[target == 1]
+    u, p = mannwhitneyu(sanos, morosos)
+    return 2 * u / (len(sanos) * len(morosos)) - 1, p
+
+
+@sin_dato_real
+def test_contraste_de_la_hora_temprana(dato_real):
+    """El efecto se sostiene con la franja hasta las 7, las 8 y las 9, que por eso es dominio.
+
+    Sobre los 232.793 clientes de train con previas, |r_rb| de 0,0387, 0,0522 y 0,0614 (0,0502 en
+    el EDA con las 8), con p de 4e-54 o menos: un factor de 1,59 entre extremos.
+    """
+    esperado = {7: 0.0387, 8: 0.0522, 9: 0.0614}
+    medido = {}
+    for hora in esperado:
+        con = con_previas_en_train(dato_real[0], {"prev_hora_temprana_max": hora})
+        assert len(con) == 232_793, hora
+        r, p = rrb_y_p(con.PREV_EARLY_HOUR_RATIO, con.TARGET)
+        assert p < 0.05, hora
+        medido[hora] = round(abs(r), 4)
+    assert medido == esperado
+    assert max(medido.values()) / min(medido.values()) <= valor("remedicion_factor_max")
+
+
+@sin_dato_real
+def test_contraste_de_la_ventana_reciente(dato_real):
+    """El conteo separa el default con 6, 12 y 24 meses, pero la ventana no es un valor libre.
+
+    Sobre los 232.793 de train con previas, |r_rb| del conteo de 0,0342 con 183 días, 0,0654 con
+    365 y 0,0769 con 730: un factor de 2,25, fuera de `remedicion_factor_max`, porque una ventana
+    más larga cuenta más solicitudes. La bandera con el corte en 4 da +1,81pp con 183 días, por
+    debajo del umbral, y +2,31pp y +2,16pp con 365 y 730. Es una convención de un año y no un
+    plateau, y queda declarado así.
+    """
+    esperado = {
+        183: (0.0342, 10_672, 1.81),
+        365: (0.0654, 36_575, 2.31),
+        730: (0.0769, 63_762, 2.16),
+    }
+    medido = {}
+    for dias in esperado:
+        con = con_previas_en_train(dato_real[0], {"prev_ventana_reciente_dias": dias})
+        assert len(con) == 232_793, dias
+        r, p = rrb_y_p(con.PREV_COUNT_12M, con.TARGET)
+        assert r < 0 and p < 0.05, dias
+        marcados = con.PREV_ACTIVIDAD_12M_COLA == 1
+        delta = (con.TARGET[marcados].mean() - con.TARGET[~marcados].mean()) * 100
+        medido[dias] = (round(abs(r), 4), int(marcados.sum()), round(delta, 2))
+    assert medido == esperado
+    umbral = valor("umbral_flags_pp")
+    assert medido[183][2] < umbral <= min(medido[365][2], medido[730][2])
+    efectos = [medido[d][0] for d in esperado]
+    assert efectos == sorted(efectos)
+    assert max(efectos) / min(efectos) > valor("remedicion_factor_max")
+
+
+@sin_dato_real
+def test_contraste_de_la_relacion_larga(dato_real):
+    """La relación corta con actividad alta es superaditiva con 3, 4 y 5 años: es dominio.
+
+    Sobre los 232.793 de train con previas: +2,03pp con 3 años (13.653 en la esquina), +1,51pp con
+    4 (17.503) y +1,68pp con 5 (21.566). El 4 es el más bajo de los tres, como ya lo era en el EDA.
+    """
+    esperado = {3: (13_653, 2.03), 4: (17_503, 1.51), 5: (21_566, 1.68)}
+    medido = {}
+    for anios in esperado:
+        con = con_previas_en_train(dato_real[0], {"prev_relacion_larga_anios": anios})
+        assert len(con) == 232_793, anios
+        larga = -con.PREV_DAYS_DECISION_MIN / DIAS >= anios
+        grupo = con.groupby([larga, con.PREV_ACTIVIDAD_12M_COLA]).TARGET.agg(["size", "mean"])
+        tasa = (grupo["mean"] * 100).to_dict()
+        aditivo = tasa[(False, 0)] + tasa[(True, 1)] - tasa[(True, 0)]
+        superaditividad = tasa[(False, 1)] - aditivo
+        assert int(con.PREV_RELACION_CORTA_ACTIVA.sum()) == grupo.loc[(False, 1), "size"], anios
+        medido[anios] = (int(grupo.loc[(False, 1), "size"]), round(superaditividad, 2))
+    assert medido == esperado
+    assert all(s > 0 for _, s in medido.values())

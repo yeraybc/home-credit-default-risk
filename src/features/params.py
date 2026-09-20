@@ -437,8 +437,10 @@ PARAMS: dict[str, Parametro] = {
         "notebook 04 celda 121",
         contraste_pendiente=(
             "comprobar sobre el split que la actividad reciente separa el default con ventanas "
-            "de 6, 12 y 24 meses, o sea que la señal de PREV_COUNT_12M y de su cola no depende "
-            "de este valor. Pendiente de ejecutar con el refijado de la cola de actividad (4.8)"
+            "de 6, 12 y 24 meses. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_de_la_ventana_reciente: el conteo separa con las tres, pero su "
+            "magnitud crece con la ventana y la cola de 4 solo cruza umbral_flags_pp desde los "
+            "12 meses, así que la ventana es una convención y no un valor libre"
         ),
     ),
     # Dominio por lo mismo que las app_hora_*: hasta las 8 es la franja antes de que abra la
@@ -451,8 +453,9 @@ PARAMS: dict[str, Parametro] = {
         "notebook 04 celda 153",
         contraste_pendiente=(
             "comprobar sobre el split que PREV_EARLY_HOUR_RATIO separa el default con la franja "
-            "hasta las 7, las 8 y las 9, o sea que la señal no depende de este valor. Pendiente "
-            "de ejecutar con los refijados de previous_application (4.8)"
+            "hasta las 7, las 8 y las 9, con efectos dentro de remedicion_factor_max entre sí, o "
+            "sea que la señal no depende de este valor. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_de_la_hora_temprana"
         ),
     ),
     # Dominio y no medido, decidido en el 4.7: es un borde de la rejilla descriptiva de la celda
@@ -468,7 +471,7 @@ PARAMS: dict[str, Parametro] = {
         contraste_pendiente=(
             "comprobar sobre el split que la relación corta con actividad alta sigue siendo "
             "superaditiva con 3, 4 y 5 años, o sea que PREV_RELACION_CORTA_ACTIVA no depende de "
-            "este valor. Pendiente de ejecutar con los refijados de previous_application (4.8)"
+            "este valor. Ejecutado en el 4.8 y fijado en test_contraste_de_la_relacion_larga"
         ),
     ),
     # previous_application: cortes medidos
