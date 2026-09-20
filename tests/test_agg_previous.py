@@ -883,17 +883,24 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(prev):
 # --- el 4.8, el refijado de las dos colas sobre train -----------------------------------------
 
 
-def escenario(*grupos):
-    """Cada grupo es (solicitudes por cliente, targets, parte[, cuántas dentro de la ventana])."""
+def armar(grupos, filas_de):
+    """Cada grupo es (dato, targets, parte[, extra]); `filas_de` da las filas de un cliente."""
     filas, clientes = [], []
-    for total, targets, parte, *recientes in grupos:
-        dentro = recientes[0] if recientes else 0
+    for dato, targets, parte, *extra in grupos:
         for target in targets:
             cliente = len(clientes) + 1
             clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
-            filas += [solicitud(cliente, -30)] * dentro
-            filas += [solicitud(cliente, -1000)] * (total - dentro)
+            filas += filas_de(cliente, dato, *extra)
     return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+
+def escenario(*grupos):
+    """Cada grupo es (solicitudes por cliente, targets, parte[, cuántas dentro de la ventana])."""
+
+    def filas_de(cliente, total, dentro=0):
+        return [solicitud(cliente, -30)] * dentro + [solicitud(cliente, -1000)] * (total - dentro)
+
+    return armar(grupos, filas_de)
 
 
 def refijar(ajustar, nombre, *grupos, sobrescribir=False):
@@ -975,6 +982,16 @@ def test_la_cola_de_actividad_solo_cuenta_lo_de_dentro_de_la_ventana():
         refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *fuera)
 
 
+def test_refijar_la_cola_de_actividad_otra_vez_exige_sobrescribir():
+    refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *GRUPOS_ACTIVIDAD)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *GRUPOS_ACTIVIDAD)
+    corte, _ = refijar(
+        ajustar_actividad_previous, "prev_actividad_12m_cola", *GRUPOS_ACTIVIDAD, sobrescribir=True
+    )
+    assert corte == 3
+
+
 def test_la_cola_de_actividad_puede_elegir_el_uno():
     """El guardián del barrido desde 1: aquí el cero es un nivel real y el 1 es el primer cruce.
 
@@ -995,21 +1012,41 @@ def test_n_train_de_la_cola_de_actividad_cuenta_al_que_no_tiene_ninguna_reciente
     assert parametro("prev_actividad_12m_cola").n_train_operativo == 20 + 20 + 40 + 5 + 2
 
 
+@pytest.mark.parametrize(
+    "ajustar",
+    [
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ],
+    ids=["conteo", "actividad", "sobreconcesion", "finalidades"],
+)
+def test_los_refijados_de_previous_limpian_por_dentro(ajustar):
+    """Un estado fuera de dominio revienta desde el refijado, como desde la agregación.
+
+    Ninguna de las cuatro lecturas usa una columna que la limpieza cambie, así que sin esta guarda
+    quitar la llamada no movería ninguna cifra y nadie lo vería.
+    """
+    prev, clientes = escenario(*GRUPOS_CONTEO)
+    prev.loc[0, "NAME_CONTRACT_STATUS"] = "Otro"
+    with pytest.raises(ValueError, match="NAME_CONTRACT_STATUS"):
+        ajustar(prev, clientes, clientes)
+
+
 # --- el 4.8, el refijado de la sobreconcesion sobre train -------------------------------------
 
 
 def escenario_concesion(*grupos):
     """Cada grupo es (cocientes de sus solicitudes, targets, parte); un número es una sola fila."""
-    filas, clientes = [], []
-    for cocientes, targets, parte in grupos:
-        for target in targets:
-            cliente = len(clientes) + 1
-            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
-            for cociente in np.atleast_1d(cocientes):
-                filas.append(
-                    solicitud(cliente, -100, AMT_APPLICATION=100.0, AMT_CREDIT=100.0 * cociente)
-                )
-    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+    def filas_de(cliente, cocientes):
+        return [
+            solicitud(cliente, -100, AMT_APPLICATION=100.0, AMT_CREDIT=100.0 * cociente)
+            for cociente in np.atleast_1d(cocientes)
+        ]
+
+    return armar(grupos, filas_de)
 
 
 def refijar_concesion(*grupos, sobrescribir=False):
@@ -1116,13 +1153,11 @@ def test_el_cociente_de_concesion_deja_fuera_las_dos_cifras_a_cero():
 
 def escenario_finalidad(*grupos):
     """Cada grupo es (finalidad, targets, parte); una solicitud por cliente."""
-    filas, clientes = [], []
-    for finalidad, targets, parte in grupos:
-        for target in targets:
-            cliente = len(clientes) + 1
-            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
-            filas.append(solicitud(cliente, -100, NAME_CASH_LOAN_PURPOSE=finalidad))
-    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+    def filas_de(cliente, finalidad):
+        return [solicitud(cliente, -100, NAME_CASH_LOAN_PURPOSE=finalidad)]
+
+    return armar(grupos, filas_de)
 
 
 def refijar_finalidad(*grupos, sobrescribir=False):
@@ -1200,6 +1235,8 @@ def test_valid_no_mueve_las_finalidades():
 def test_n_train_de_las_finalidades_son_los_clientes_de_train_con_finalidad_declarada():
     """Ni las sin declarar ni los de valid ni el cliente sin previas."""
     prev, clientes = escenario_finalidad(*GRUPOS_FINALIDAD, FINALIDAD_VALID)
+    # el primer cliente con una segunda solicitud declarada: son clientes y no solicitudes
+    prev = pd.concat([prev, prev.iloc[[0]]], ignore_index=True)
     sin_previas = pd.DataFrame([{"SK_ID_CURR": 9999, "TARGET": 1, "split": "train"}])
     clientes = pd.concat([clientes, sin_previas], ignore_index=True)
     ajustar_finalidades_previous(prev, clientes, clientes)
