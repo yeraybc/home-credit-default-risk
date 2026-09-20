@@ -135,7 +135,7 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 # 23 la más antigua un día por debajo del corte de la relación larga, con la actividad justo en su
 #    cola: es corta con 365,25 días por año y sería larga con 365, así que el término vale 1
 CONSUMO = "Consumer loans"
-SENTINELA = 365243.0
+CENTINELA = 365243.0
 SOLICITUDES = [
     solicitud(1, -100),
     solicitud(2, -2000, "Repeater"),
@@ -174,8 +174,8 @@ SOLICITUDES = [
     solicitud(13, -900, DAYS_LAST_DUE_1ST_VERSION=-100.0, DAYS_LAST_DUE=-465.0),
     solicitud(13, -400, DAYS_LAST_DUE_1ST_VERSION=-50.0, DAYS_LAST_DUE=-50.0),
     solicitud(13, -200, DAYS_LAST_DUE_1ST_VERSION=0.0, DAYS_LAST_DUE=0.0),
-    solicitud(14, -700, DAYS_LAST_DUE_1ST_VERSION=SENTINELA, DAYS_LAST_DUE=-200.0),
-    solicitud(15, -300, DAYS_LAST_DUE_1ST_VERSION=300.0, DAYS_LAST_DUE=SENTINELA),
+    solicitud(14, -700, DAYS_LAST_DUE_1ST_VERSION=CENTINELA, DAYS_LAST_DUE=-200.0),
+    solicitud(15, -300, DAYS_LAST_DUE_1ST_VERSION=300.0, DAYS_LAST_DUE=CENTINELA),
     solicitud(16, -300, HOUR_APPR_PROCESS_START=HORA, PRODUCT_COMBINATION="Cash Street: high",
               NAME_TYPE_SUITE=np.nan, NAME_CASH_LOAN_PURPOSE="Car repairs"),
     solicitud(16, -200, HOUR_APPR_PROCESS_START=HORA + 1, NAME_TYPE_SUITE="Family",
@@ -254,7 +254,7 @@ ESPERADO_CIFRAS = {
         coste=(20 * 10 / 130 + 5 * 6 / 90) / 2, entrada=0.1,
     ),
     8: dict(concesion=NAN, sobre=NAN, plazo=NAN, coste=NAN, entrada=NAN, liquidada=NAN,
-            por_vencer=NAN, calle=NAN, urgente=NAN),
+            por_vencer=NAN),
     9: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=1.2, entrada=0.15),
     10: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
     11: dict(concesion=1.0, sobre=0.0, plazo=12.0, coste=NAN, entrada=NAN),
@@ -387,8 +387,8 @@ def test_el_fixture_ejercita_cada_rama(prev):
         doce.loc[doce.DAYS_LAST_DUE.isna(), "DAYS_LAST_DUE_1ST_VERSION"].item()
     )
     # el centinela en cada una de las dos fechas, cada uno en su cliente
-    assert prev[prev.SK_ID_CURR == 14].DAYS_LAST_DUE_1ST_VERSION.eq(SENTINELA).all()
-    assert prev[prev.SK_ID_CURR == 15].DAYS_LAST_DUE.eq(SENTINELA).all()
+    assert prev[prev.SK_ID_CURR == 14].DAYS_LAST_DUE_1ST_VERSION.eq(CENTINELA).all()
+    assert prev[prev.SK_ID_CURR == 15].DAYS_LAST_DUE.eq(CENTINELA).all()
     # con previas y ninguna operación terminada, y con alguna terminada
     assert prev[prev.SK_ID_CURR == 1].DAYS_LAST_DUE.isna().all()
     # la captación: el 8 con todas sus filas sin combinación y sin finalidad, y el 17 igual
@@ -472,6 +472,14 @@ def test_las_colas_y_el_termino_deja_dentro_sus_bordes(prev):
     # el 21 está justo en el corte de la relación larga: un poco más y pasa a corta
     assert col({}, 21, "PREV_RELACION_CORTA_ACTIVA") == 0
     assert col({"prev_relacion_larga_anios": LARGA + 0.01}, 21, "PREV_RELACION_CORTA_ACTIVA") == 1
+
+
+def test_el_suelo_del_ritmo_se_reenvia(prev):
+    """El 1 es el único por debajo del suelo, y es el único corte cuyo reenvío no se veía: con el
+    valor del registro la salida es la misma lo lea de `cortes` o de `params.py`."""
+    assert agregar(prev).loc[1, "PREV_APPLICATIONS_PER_YEAR"] == 2
+    subido = agregar(prev, {"suelo_anios_denominador": 2})
+    assert subido.loc[1, "PREV_APPLICATIONS_PER_YEAR"] == 0.5
 
 
 def test_la_hora_temprana_deja_dentro_el_borde(prev):
@@ -588,7 +596,7 @@ def test_el_centinela_de_las_fechas_de_fin_no_cuenta_ni_como_terminada_ni_como_p
     crudo = prev[prev.SK_ID_CURR.isin([14, 15])]
     adelanto = crudo.DAYS_LAST_DUE_1ST_VERSION - crudo.DAYS_LAST_DUE
     assert adelanto.notna().all() and adelanto.iloc[0] > ADELANTO
-    assert crudo.DAYS_LAST_DUE_1ST_VERSION.max() == SENTINELA
+    assert crudo.DAYS_LAST_DUE_1ST_VERSION.max() == CENTINELA
 
 
 def test_el_coste_solo_lee_aprobadas(prev):
@@ -803,7 +811,7 @@ NUMERICAS_ESPERADAS = [
     "DAYS_LAST_DUE",
     "HOUR_APPR_PROCESS_START",
 ]
-CATEGORICAS_ESPERADAS = [
+CLAVE_Y_CATEGORICAS = [
     "SK_ID_CURR",
     "NAME_CLIENT_TYPE",
     "NAME_CONTRACT_STATUS",
@@ -818,7 +826,7 @@ CATEGORICAS_ESPERADAS = [
 def test_el_contrato_de_columnas_de_origen_es_el_declarado():
     """Lo que hace que quitar una columna del contrato rompa y no encoja la parametrizada."""
     assert list(NUMERICAS_ORIGEN) == NUMERICAS_ESPERADAS
-    assert list(COLUMNAS_ORIGEN) == CATEGORICAS_ESPERADAS + NUMERICAS_ESPERADAS
+    assert list(COLUMNAS_ORIGEN) == CLAVE_Y_CATEGORICAS + NUMERICAS_ESPERADAS
 
 
 @pytest.mark.parametrize("columna", NUMERICAS_ESPERADAS)
@@ -829,7 +837,7 @@ def test_una_numerica_que_no_es_numero_revienta_en_la_frontera(prev, columna):
         agregar(roto)
 
 
-@pytest.mark.parametrize("columna", CATEGORICAS_ESPERADAS + NUMERICAS_ESPERADAS)
+@pytest.mark.parametrize("columna", CLAVE_Y_CATEGORICAS + NUMERICAS_ESPERADAS)
 def test_una_columna_de_origen_ausente_revienta_con_su_nombre(prev, columna):
     with pytest.raises(ValueError, match=columna):
         agregar(prev.drop(columns=columna))

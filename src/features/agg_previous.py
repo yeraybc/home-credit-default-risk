@@ -213,25 +213,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     agregado["PREV_ACTIVIDAD_12M_COLA"] = activa
     # la relación corta y la actividad alta se refuerzan más de lo que suman: el término explícito
     agregado["PREV_RELACION_CORTA_ACTIVA"] = activa & (anios < c["prev_relacion_larga_anios"])
-    # el esquema no puede depender del lote: un frame vacío deja los conteos y la bandera en
-    # object o bool
-    return agregado.astype(
-        {
-            "PREV_APPLICATION_COUNT": "int64",
-            "PREV_COUNT_12M": "int64",
-            "PREV_HISTORIAL_RECORTADO": "int8",
-            "PREV_REFUSED_COUNT": "int64",
-            "PREV_REFUSED_RATIO": "float64",
-            "PREV_REFUSED_SCOFR_FLAG": "int8",
-            "PREV_REFUSED_LONG_TERM_FLAG": "int8",
-            "PREV_EARLY_HOUR_RATIO": "float64",
-            "PREV_NO_SUITE_RATIO": "float64",
-            "PREV_PHANTOM_FLAG": "int8",
-            "PREV_COUNT_COLA": "int8",
-            "PREV_ACTIVIDAD_12M_COLA": "int8",
-            "PREV_RELACION_CORTA_ACTIVA": "int8",
-        }
-    )
+    # las banderas a int8 como en las otras dos agregaciones: el esquema no puede depender del
+    # lote, y un bool queda en object en cuanto el lote trae algún NaN
+    banderas = agregado.select_dtypes("bool").columns
+    agregado[banderas] = agregado[banderas].astype("int8")
+    return agregado
 
 
 def unir_previous(clientes: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
