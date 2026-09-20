@@ -492,9 +492,15 @@ PARAMS: dict[str, Parametro] = {
         "finalidades declaradas que cuentan como liquidez urgente",
         "notebook 04 celdas 92 y 153",
     ),
+    # El 15 es el primero de la rejilla del EDA (8, 11, 15 y 20) que cruza umbral_flags_pp. Con el
+    # barrido entero sobre train el corte baja a 11, con +2,04pp y 20.319 marcados: el 11 que el EDA
+    # descartaba por +1,91pp cruza al medirlo sobre el 80%, y el 15 sube a +3,31pp
     "prev_count_cola": Parametro(
         15, "medido", "corte de la cola del conteo de solicitudes", "notebook 04 celda 153"
     ),
+    # El EDA registró el 4 de su rejilla descriptiva sin declarar criterio, y su barrido ya cruzaba
+    # en 3 (+2,01pp). Con el criterio de las otras tres colas el 4 se sostiene sobre train: el 3
+    # baja a +1,99pp y el 4 da +2,31pp con 36.575 marcados
     "prev_actividad_12m_cola": Parametro(
         4,
         "medido",

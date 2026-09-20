@@ -31,12 +31,14 @@ from sklearn.pipeline import Pipeline
 from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
+from src.features.agg_previous import solicitudes_recientes
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
     limpiar_application,
     limpiar_application_entrenamiento,
     limpiar_bureau,
+    limpiar_previous,
 )
 from src.features.params import fijar_operativo, valor
 from src.features.pipeline import construir_pipeline
@@ -249,12 +251,86 @@ def ajustar_cola_bb(
     return informe.assign(p99_mas_uno=informe.index == int(clientes["n"].quantile(0.99)) + 1)
 
 
-def _primer_corte_que_cruza(
-    conteo: pd.Series, target: pd.Series, nombre: str, sobrescribir: bool
+def _previous_de_train(
+    prev: pd.DataFrame, base: pd.DataFrame, split: pd.DataFrame | None
 ) -> pd.DataFrame:
-    """Barre los cortes de un conteo por cliente y fija el primero cuyo delta cruza el umbral."""
+    """Las filas limpias de previous_application de los clientes de train, con `SK_ID_CURR` y
+    `TARGET`.
+
+    Es la población de los refijados de la tabla: el `n_train` que declaran son sus clientes, los
+    de train con solicitudes previas.
+    """
+    entrenamiento = solo_train(base, split)[["SK_ID_CURR", "TARGET"]]
+    return limpiar_previous(prev).merge(entrenamiento, on="SK_ID_CURR")
+
+
+def ajustar_cola_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_COUNT_COLA`, el primero cuyo delta cruza el umbral.
+
+    Es el criterio con el que el propio EDA eligió las 15 solicitudes, barriendo 8, 11, 15 y 20.
+    Sobre train el barrido entero baja el corte a 11, que en la rejilla del EDA se quedaba a
+    +1,91pp y aquí llega a +2,04pp.
+
+    Va fuera del `Pipeline` por lo mismo que los de bureau, así que en el CV de la Fase 4 cada fold
+    usa el corte elegido sobre todo el 80%. En 15 folds sale 11 en 10 de 15, con 10, 12 y 13 en los
+    otros cinco; midiendo sobre la parte de validación, que son cinco veces menos clientes, se abre
+    de 9 a 25.
+    """
+    filas = _previous_de_train(prev, base, split)
+    clientes = filas.groupby("SK_ID_CURR")["TARGET"].agg(n="size", target="first")
+    return _primer_corte_que_cruza(
+        clientes["n"], clientes["target"], "prev_count_cola", sobrescribir
+    )
+
+
+def ajustar_actividad_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_ACTIVIDAD_12M_COLA` con el mismo criterio de la cola.
+
+    El EDA registró el 4 de su rejilla descriptiva sin declarar criterio, y su propio barrido ya
+    cruzaba en 3 (+2,01pp). Aquí se unifica con las otras tres colas del proyecto y el corte se
+    sostiene: sobre train el 3 se queda en +1,99pp y el primero que cruza vuelve a ser el 4.
+
+    **El barrido empieza en 1 y no en 2** porque aquí el cero es un nivel real, el 42,08% de los
+    clientes de train con previas. Marcar a quien pide alguna vez en el año no cruza (+1,31pp),
+    pero eso hay que medirlo, no suponerlo.
+
+    **Es la más frágil de las cuatro colas del proyecto**, y por eso va escrito: el 3 se queda a
+    0,014pp del umbral, así que en 15 folds el corte sale 4 en 10 y 3 en 5, y midiendo sobre la
+    parte de validación el 3 gana en 9 de 15. Lo que el corte separa no se mueve; lo que se mueve
+    es de qué lado del umbral cae el 3.
+    """
+    filas = _previous_de_train(prev, base, split)
+    reciente = solicitudes_recientes(filas, valor("prev_ventana_reciente_dias"))
+    clientes = (
+        filas.assign(_reciente=reciente)
+        .groupby("SK_ID_CURR")
+        .agg(n=("_reciente", "sum"), target=("TARGET", "first"))
+    )
+    return _primer_corte_que_cruza(
+        clientes["n"], clientes["target"], "prev_actividad_12m_cola", sobrescribir, desde=1
+    )
+
+
+def _primer_corte_que_cruza(
+    conteo: pd.Series, target: pd.Series, nombre: str, sobrescribir: bool, desde: int = 2
+) -> pd.DataFrame:
+    """Barre los cortes de un conteo por cliente y fija el primero cuyo delta cruza el umbral.
+
+    `desde` es 2 salvo en un conteo donde el cero es un nivel real: con el mínimo del conteo el
+    grupo sin marcar queda vacío y el delta no existe.
+    """
     barrido = []
-    for corte in range(2, conteo.max() + 1):
+    for corte in range(desde, conteo.max() + 1):
         cola = conteo.ge(corte)
         delta = target[cola].mean() - target[~cola].mean()
         barrido.append((corte, int(cola.sum()), delta * 100))

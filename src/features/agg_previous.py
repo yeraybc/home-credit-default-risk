@@ -94,6 +94,16 @@ COLUMNAS_SIN_RECETA: dict[str, str] = {
 }
 
 
+def solicitudes_recientes(p: pd.DataFrame, ventana: float) -> pd.Series:
+    """Máscara de las solicitudes decididas dentro de la ventana, con el borde fuera.
+
+    Vive aquí y no en el refijado del 4.8 porque la cola de actividad se barre sobre la misma
+    población que después cuenta la feature: escrita dos veces, un `>=` en una de las dos elige
+    el corte sobre un conteo distinto del que entra en la matriz.
+    """
+    return p["DAYS_DECISION"] > -ventana
+
+
 def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None) -> pd.DataFrame:
     """Una fila por cliente con solicitudes previas, indexada por `SK_ID_CURR`.
 
@@ -162,7 +172,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         _coste=coste,
         _entrada=p["RATE_DOWN_PAYMENT"].where(p["NAME_CONTRACT_TYPE"].eq("Consumer loans")),
         _plazo=p["CNT_PAYMENT"].where(p["CNT_PAYMENT"].gt(0)),
-        _reciente=decision > -c["prev_ventana_reciente_dias"],
+        _reciente=solicitudes_recientes(p, c["prev_ventana_reciente_dias"]),
         _recurrente_en_la_primera=primera & p["NAME_CLIENT_TYPE"].isin(TIPOS_RECURRENTES),
         _rechazada=rechazada,
         _scofr=rechazada & p["CODE_REJECT_REASON"].eq("SCOFR"),

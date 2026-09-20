@@ -20,6 +20,7 @@ from src.features.agg_previous import (
     agregar_previous,
     unir_previous,
 )
+from src.features.build_features import ajustar_actividad_previous, ajustar_cola_previous
 from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -870,6 +871,121 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(prev):
         unir_previous(pd.DataFrame({"SK_ID_CURR": [5]}), duplicado)
 
 
+# --- el 4.8, el refijado de las dos colas sobre train -----------------------------------------
+
+
+def escenario(*grupos):
+    """Cada grupo es (solicitudes por cliente, targets, parte[, cuántas dentro de la ventana])."""
+    filas, clientes = [], []
+    for total, targets, parte, *recientes in grupos:
+        dentro = recientes[0] if recientes else 0
+        for target in targets:
+            cliente = len(clientes) + 1
+            clientes.append({"SK_ID_CURR": cliente, "TARGET": target, "split": parte})
+            filas += [solicitud(cliente, -30)] * dentro
+            filas += [solicitud(cliente, -1000)] * (total - dentro)
+    return pd.DataFrame(filas), pd.DataFrame(clientes)
+
+
+def refijar(ajustar, nombre, *grupos, sobrescribir=False):
+    """El corte que sale de refijar sobre el escenario, y el barrido."""
+    prev, clientes = escenario(*grupos)
+    informe = ajustar(prev, clientes, clientes, sobrescribir)
+    return valor(nombre), informe
+
+
+# Con dos solicitudes o más la tasa baja (10,6% frente a 15%), con tres cruza (71% frente a 5%) y
+# con cuatro separa todavía más (100% frente a 9%): el corte es 3, el primero que cruza, y ni el 2
+# ni el de más delta. Todas fuera de la ventana, para que no mida las dos colas a la vez
+GRUPOS_CONTEO = [
+    (1, [1] * 3 + [0] * 17, "train"),
+    (2, [0] * 40, "train"),
+    (3, [1] * 3 + [0] * 2, "train"),
+    (4, [1] * 2, "train"),
+]
+# diez clientes de dos solicitudes, todos impagados: si contaran, el corte bajaría a 2
+GRUPOS_CONTEO_VALID = (2, [1] * 10, "valid")
+# El mismo reparto medido sobre la ventana, con los veinte de una sola solicitud repetidos delante
+# sin ninguna reciente: así el corte 1 no cruza (-3,06pp) y el primero que cruza sigue siendo el 3
+GRUPOS_ACTIVIDAD = [GRUPOS_CONTEO[0], *[(n, t, p, n) for n, t, p in GRUPOS_CONTEO]]
+
+
+def test_la_cola_del_conteo_es_el_primer_corte_que_cruza_y_no_el_de_mas_delta():
+    corte, informe = refijar(ajustar_cola_previous, "prev_count_cola", *GRUPOS_CONTEO)
+    assert corte == 3
+    assert informe.loc[2, "delta_pp"] < valor("umbral_flags_pp") <= informe.loc[3, "delta_pp"]
+    assert informe.delta_pp.idxmax() == 4
+    assert informe.elegido.sum() == 1 and informe.loc[3, "elegido"]
+
+
+def test_valid_no_mueve_la_cola_del_conteo():
+    """Las dos direcciones: el grupo de valid no cuenta, y contado en train bajaría el corte a 2."""
+    assert (
+        refijar(ajustar_cola_previous, "prev_count_cola", *GRUPOS_CONTEO, GRUPOS_CONTEO_VALID)[0]
+        == 3
+    )
+    en_train = (*GRUPOS_CONTEO_VALID[:2], "train")
+    corte, _ = refijar(
+        ajustar_cola_previous, "prev_count_cola", *GRUPOS_CONTEO, en_train, sobrescribir=True
+    )
+    assert corte == 2
+
+
+def test_n_train_de_la_cola_del_conteo_son_los_clientes_de_train_con_previas():
+    prev, clientes = escenario(*GRUPOS_CONTEO, GRUPOS_CONTEO_VALID)
+    sin_previas = pd.DataFrame([{"SK_ID_CURR": 999, "TARGET": 1, "split": "train"}])
+    ajustar_cola_previous(prev, pd.concat([clientes, sin_previas], ignore_index=True), clientes)
+    assert parametro("prev_count_cola").n_train_operativo == 20 + 40 + 5 + 2
+
+
+def test_una_cola_del_conteo_sin_senal_revienta():
+    plana = [(1, [1] + [0] * 9, "train"), (3, [1] + [0] * 9, "train")]
+    with pytest.raises(ValueError, match="ningún corte"):
+        refijar(ajustar_cola_previous, "prev_count_cola", *plana)
+
+
+def test_refijar_la_cola_del_conteo_otra_vez_exige_sobrescribir():
+    refijar(ajustar_cola_previous, "prev_count_cola", *GRUPOS_CONTEO)
+    with pytest.raises(ValueError, match="sobrescribir"):
+        refijar(ajustar_cola_previous, "prev_count_cola", *GRUPOS_CONTEO)
+
+
+def test_la_cola_de_actividad_solo_cuenta_lo_de_dentro_de_la_ventana():
+    """Las dos direcciones: el mismo reparto elige 3 dentro de la ventana, y fuera no hay barrido.
+
+    Es lo que la distingue de la cola del conteo: con las mismas solicitudes empujadas fuera de los
+    doce meses, todos los clientes se quedan a cero y no queda ningún corte que medir.
+    """
+    corte, informe = refijar(
+        ajustar_actividad_previous, "prev_actividad_12m_cola", *GRUPOS_ACTIVIDAD
+    )
+    assert corte == 3
+    assert informe.loc[2, "delta_pp"] < valor("umbral_flags_pp") <= informe.loc[3, "delta_pp"]
+    fuera = [(n, t, p) for n, t, p, *_ in GRUPOS_ACTIVIDAD]
+    with pytest.raises(ValueError, match="ningún corte"):
+        refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *fuera)
+
+
+def test_la_cola_de_actividad_puede_elegir_el_uno():
+    """El guardián del barrido desde 1: aquí el cero es un nivel real y el 1 es el primer cruce.
+
+    Empezando en 2, como las otras tres colas, este escenario se quedaría sin ningún corte que
+    cruce: el 2 marca a cuatro clientes que no fallan y su delta es negativo.
+    """
+    uno = [(1, [0] * 20, "train"), (1, [1] * 4 + [0] * 6, "train", 1), (2, [0] * 4, "train", 2)]
+    corte, informe = refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *uno)
+    assert corte == 1
+    assert informe.loc[1, "delta_pp"] > informe.loc[2, "delta_pp"]
+    assert informe.index.min() == 1
+
+
+def test_n_train_de_la_cola_de_actividad_cuenta_al_que_no_tiene_ninguna_reciente():
+    """Los 20 sin actividad están en el denominador: son clientes con previas, no ausencias."""
+    prev, clientes = escenario(*GRUPOS_ACTIVIDAD)
+    ajustar_actividad_previous(prev, clientes, clientes)
+    assert parametro("prev_actividad_12m_cola").n_train_operativo == 20 + 20 + 40 + 5 + 2
+
+
 # --- la puerta contra el dato real -----------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -1085,3 +1201,71 @@ def test_sobre_el_dato_real_la_relacion_corta_y_activa_es_superaditiva(dato_real
         # la esquina es exactamente el término, no otra población parecida
         marcados = con[con.PREV_RELACION_CORTA_ACTIVA == 1]
         assert marcados.TARGET.mean() * 100 == pytest.approx(tasa[(False, 1)])
+
+
+# --- el 4.8 contra el dato real ----------------------------------------------------------------
+
+# El barrido de la celda 153 sobre los 307.511: por corte, marcados, cobertura en % de los que
+# tienen previas, y delta en pp. Los dos que el EDA registró son el 15 y el 4
+BARRIDO_COLAS_EDA = {
+    "PREV_APPLICATION_COUNT": {
+        8: (55_694, 19.14, 1.21),
+        11: (25_505, 8.76, 1.91),
+        15: (9_422, 3.24, 2.97),
+        20: (3_083, 1.06, 3.49),
+    },
+    "PREV_COUNT_12M": {
+        2: (107_206, 36.83, 1.59),
+        3: (68_888, 23.67, 2.01),
+        4: (45_771, 15.73, 2.41),
+        5: (30_983, 10.64, 2.82),
+    },
+}
+
+
+@sin_dato_real
+def test_las_dos_colas_reproducen_el_barrido_del_eda(dato_real):
+    """Las dos rejillas de la celda 153, sobre la población del EDA y leídas del agregado.
+
+    Es lo que separa un corte que se mueve porque el split es otro de un corte que se mueve porque
+    el código mide otra cosa: aquí tiene que salir clavado lo que salió en el notebook.
+    """
+    _, agregado, _ = dato_real
+    crudo = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    unido = unir_previous(crudo, agregado)
+    con = unido[unido.HAS_PREV_APPLICATION == 1]
+    for columna, barrido in BARRIDO_COLAS_EDA.items():
+        for corte, esperado in barrido.items():
+            cola = con[columna].ge(corte)
+            delta = (con.TARGET[cola].mean() - con.TARGET[~cola].mean()) * 100
+            medido = (int(cola.sum()), round(cola.mean() * 100, 2), round(delta, 2))
+            assert medido == esperado, (columna, corte)
+
+
+@sin_dato_real
+@pytest.mark.parametrize(
+    ("ajustar", "nombre", "esperado", "vecinos"),
+    [
+        (ajustar_cola_previous, "prev_count_cola", 11, {10: (26_356, 1.81), 11: (20_319, 2.04)}),
+        (
+            ajustar_actividad_previous,
+            "prev_actividad_12m_cola",
+            4,
+            {3: (55_049, 1.99), 4: (36_575, 2.31)},
+        ),
+    ],
+    ids=["conteo", "actividad"],
+)
+def test_sobre_el_split_las_dos_colas_se_refijan(dato_real, ajustar, nombre, esperado, vecinos):
+    """El conteo baja de 15 a 11 y la actividad se queda en 4, sobre los 232.793 de train.
+
+    Los dos vecinos van al lado porque los dos cortes se deciden por poco: el 10 se queda en
+    +1,81pp y el 3 en +1,99pp, a 0,014pp del umbral.
+    """
+    split = cargar_split()
+    informe = ajustar(dato_real[0], split, split)
+    assert valor(nombre) == esperado
+    assert parametro(nombre).n_train_operativo == 232_793
+    cortes = sorted(vecinos)
+    assert informe.loc[cortes, "marcados"].tolist() == [v[0] for v in vecinos.values()]
+    assert informe.loc[cortes, "delta_pp"].round(2).tolist() == [v[1] for v in vecinos.values()]
