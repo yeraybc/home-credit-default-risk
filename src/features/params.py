@@ -442,7 +442,8 @@ PARAMS: dict[str, Parametro] = {
         ),
     ),
     # Dominio por lo mismo que las app_hora_*: hasta las 8 es la franja antes de que abra la
-    # oficina a las 9, y el 82,44% de las decisiones cae entre las 9 y las 17. El borde entra
+    # oficina a las 9, y el 82,44% de las decisiones de los clientes de train cae entre las 9 y las
+    # 17 (82,43% sobre la tabla entera). El borde entra
     "prev_hora_temprana_max": Parametro(
         8,
         "dominio",
@@ -475,8 +476,8 @@ PARAMS: dict[str, Parametro] = {
     # liquidez urgente, pero sus cinco finalidades con al menos 100 solicitudes son exactamente las
     # cinco primeras de la tabla ordenada por tasa de default (celda 92), y el corte cae justo
     # después: Medicine (13,42%) y Repairs (13,00%) van sexta y séptima y se quedan fuera. Las otras
-    # dos (15 y 25 solicitudes) no estaban en esa tabla. El 4.8 la refija sobre train con una regla
-    # declarada
+    # dos no llegan a las 100 solicitudes de train (13 y 23; sobre la tabla entera, 15 y 25). El 4.8
+    # la refija sobre train con una regla declarada
     "prev_finalidades_urgentes": Parametro(
         (
             "Refusal to name the goal",
