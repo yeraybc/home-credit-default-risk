@@ -123,7 +123,9 @@ def rechazo(cliente, dias, tipo="New", motivo="HC", **campos):
 #    hora siguiente con "Repairs", que no es "Car repairs"; y una sin combinación con XNA como
 #    finalidad, que sale de los dos denominadores
 # 17 todo fantasma y sin finalidad: la calle es NaN y no 0
-# 18 una sola fila de calle con finalidad urgente, a las 23: los dos ratios valen 1
+# 18 dos filas de calle a las 23, una con finalidad urgente y otra sin finalidad (NaN, que la tabla
+#    no tiene y solo puede llegar por la API): la que no la declara no entra en el denominador, así
+#    que los dos ratios siguen valiendo 1
 # 19 una finalidad informada y no urgente, a las 0: la proporción urgente vale 0 y no NaN
 # Y para las colas y el término de la interacción (recientes son las de los últimos doce meses):
 # 20 justo en la cola del conteo y en la de actividad, con la relación corta: las tres a 1
@@ -183,6 +185,8 @@ SOLICITUDES = [
     solicitud(17, -150, HOUR_APPR_PROCESS_START=HORA + 1, PRODUCT_COMBINATION=np.nan),
     solicitud(18, -120, HOUR_APPR_PROCESS_START=23.0, PRODUCT_COMBINATION="Card Street",
               NAME_CASH_LOAN_PURPOSE="Urgent needs"),
+    solicitud(18, -110, HOUR_APPR_PROCESS_START=23.0, PRODUCT_COMBINATION="Card Street",
+              NAME_CASH_LOAN_PURPOSE=np.nan),
     solicitud(19, -110, HOUR_APPR_PROCESS_START=0.0, NAME_CASH_LOAN_PURPOSE="Medicine"),
     *[solicitud(20, -50 * (i + 1)) for i in range(ACTIVIDAD)],
     *[solicitud(20, -400 - 60 * i) for i in range(COLA - ACTIVIDAD)],
@@ -404,7 +408,10 @@ def test_el_fixture_ejercita_cada_rama(prev):
     assert {"Car repairs", "Repairs", "XNA"} == set(dieciseis.NAME_CASH_LOAN_PURPOSE)
     # el 19 declara una finalidad que no es urgente y el 18 una que sí, así que el 0 y el 1 se ven
     assert prev[prev.SK_ID_CURR == 19].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).sum() == 0
-    assert prev[prev.SK_ID_CURR == 18].NAME_CASH_LOAN_PURPOSE.isin(URGENTES).all()
+    # el 18: una urgente y otra sin finalidad, que es la única forma de ver el notna() del
+    # denominador, porque la tabla real no trae ni un NaN en la finalidad
+    finalidades = prev[prev.SK_ID_CURR == 18].NAME_CASH_LOAN_PURPOSE
+    assert finalidades.isin(URGENTES).sum() == 1 and finalidades.isna().sum() == 1
     # las colas: el conteo y la actividad justo en el corte y uno por debajo, y la más antigua justo
     # en el corte de la relación larga junto a otra más corta
     veinte, veintiuno, veintidos = (prev[prev.SK_ID_CURR == c] for c in (20, 21, 22))
