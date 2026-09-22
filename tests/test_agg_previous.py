@@ -1213,7 +1213,7 @@ def test_la_sobreconcesion_deja_fuera_el_borde_del_corte():
     clientes = pd.DataFrame({"SK_ID_CURR": [1, 2], "TARGET": [1, 0], "split": "train"})
     informe = ajustar_sobreconcesion_previous(prev, clientes, clientes)
     assert informe.loc[1.05, "r_rb"] == pytest.approx(1.0)
-    assert informe.loc[1.1, "r_rb"] == pytest.approx(0.0)
+    assert np.isnan(informe.loc[1.1, "r_rb"])
 
 
 def test_refijar_la_sobreconcesion_otra_vez_exige_sobrescribir():
@@ -1735,11 +1735,11 @@ def test_el_delta_de_las_banderas_es_el_calculado_a_mano():
     assert salida.loc["PREV_REFUSED_RATIO > 0", "efecto_abs"] == pytest.approx(300 / 14)
 
 
-def r_rb_a_mano(valores, target):
-    """La r_rb en valor absoluto de `valores` contra `target`, sin pasar por el informe."""
+def rrb_y_p(valores, target):
+    """Rank-biserial con signo, positivo si los morosos toman valores más bajos, y su p."""
     sanos, morosos = valores[target == 0], valores[target == 1]
-    u, _ = mannwhitneyu(sanos, morosos)
-    return abs(2 * u / (len(sanos) * len(morosos)) - 1)
+    u, p = mannwhitneyu(sanos, morosos)
+    return 2 * u / (len(sanos) * len(morosos)) - 1, p
 
 
 def test_el_efecto_de_las_continuas_y_de_su_contraparte_es_el_calculado_a_mano():
@@ -1773,8 +1773,8 @@ def test_el_efecto_de_las_continuas_y_de_su_contraparte_es_el_calculado_a_mano()
             if juntos["rel"].nunique() < 2 or juntos["abs"].nunique() < 2:
                 continue
             medidos += 1
-            assert fila["efecto"] == pytest.approx(r_rb_a_mano(juntos["rel"], juntos["t"]))
-            assert fila["efecto_abs"] == pytest.approx(r_rb_a_mano(juntos["abs"], juntos["t"]))
+            assert fila["efecto"] == pytest.approx(abs(rrb_y_p(juntos["rel"], juntos["t"])[0]))
+            assert fila["efecto_abs"] == pytest.approx(abs(rrb_y_p(juntos["abs"], juntos["t"])[0]))
     assert medidos >= 4, "el escenario dejó casi todas las lecturas constantes"
 
 
@@ -2190,16 +2190,21 @@ def test_sobre_el_split_las_finalidades_urgentes_son_tres(dato_real):
     assert informe.loc["Urgent needs", "delta_pp"].round(2) == 1.85
 
 
+def con_previas_en_train(prev, cortes):
+    """Los clientes de train con previas, con la agregación construida con los cortes pasados."""
+    split = cargar_split()
+    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
+    unido = unir_previous(train, agregar(prev, cortes))
+    return unido[unido.HAS_PREV_APPLICATION == 1]
+
+
 def delta_en_train(prev, cortes, columna, poblacion=None):
     """Marcados y delta de la bandera en pp sobre los clientes de train, con el corte pasado.
 
     `poblacion` es la columna que ha de ser no nula para entrar: la bandera de liquidación solo se
     evalúa en quien tiene una operación terminada. Sin ella, todos los clientes con previas.
     """
-    split = cargar_split()
-    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
-    unido = unir_previous(train, agregar(prev, cortes))
-    con = unido[unido.HAS_PREV_APPLICATION == 1]
+    con = con_previas_en_train(prev, cortes)
     if poblacion is not None:
         con = con[con[poblacion].notna()]
     marcados = con[columna] == 1
@@ -2263,21 +2268,6 @@ def test_contraste_del_plazo_largo(dato_real):
     assert medido == esperado
     assert all(medido[c][1] > 10 for c in (60, 66))
     assert all(medido[c][1] < 5 for c in (48, 54))
-
-
-def con_previas_en_train(prev, cortes):
-    """Los clientes de train con previas, con la agregación construida con los cortes pasados."""
-    split = cargar_split()
-    train = split.loc[split.split == "train", ["SK_ID_CURR", "TARGET"]]
-    unido = unir_previous(train, agregar(prev, cortes))
-    return unido[unido.HAS_PREV_APPLICATION == 1]
-
-
-def rrb_y_p(valores, target):
-    """Rank-biserial con signo, positivo si los morosos toman valores más bajos, y su p."""
-    sanos, morosos = valores[target == 0], valores[target == 1]
-    u, p = mannwhitneyu(sanos, morosos)
-    return 2 * u / (len(sanos) * len(morosos)) - 1, p
 
 
 @sin_dato_real
@@ -2376,10 +2366,9 @@ def test_el_barrido_del_denominador_del_rechazo_reproduce_el_eda(dato_real):
     }
     for minimo, (r_esperada, n) in esperado.items():
         dentro = con[con.PREV_APPLICATION_COUNT >= minimo]
-        sanos, morosos = (dentro.PREV_REFUSED_RATIO[dentro.TARGET == t] for t in (0, 1))
-        u, _ = mannwhitneyu(sanos, morosos)
+        r, _ = rrb_y_p(dentro.PREV_REFUSED_RATIO, dentro.TARGET)
         assert len(dentro) == n, minimo
-        assert round(abs(2 * u / (len(sanos) * len(morosos)) - 1), 4) == r_esperada, minimo
+        assert round(abs(r), 4) == r_esperada, minimo
     una = con[con.PREV_APPLICATION_COUNT == 1]
     rechazada = una.TARGET[una.PREV_REFUSED_RATIO == 1]
     resto = una.TARGET[una.PREV_REFUSED_RATIO == 0]

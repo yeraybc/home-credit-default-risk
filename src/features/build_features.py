@@ -401,9 +401,7 @@ def ajustar_sobreconcesion_previous(
             .dropna()
         )
         target = objetivo.loc[proporcion.index]
-        sanos, morosos = proporcion[target == 0], proporcion[target == 1]
-        u, _ = mannwhitneyu(sanos, morosos)
-        r_rb = abs(2 * u / (len(sanos) * len(morosos)) - 1)
+        r_rb, _ = _r_rb(pd.DataFrame({"valor": proporcion, "TARGET": target}))
         marcados = proporcion > 0
         delta = (target[marcados].mean() - target[~marcados].mean()) * 100
         barrido.append((corte, len(proporcion), r_rb, delta))

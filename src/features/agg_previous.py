@@ -180,12 +180,11 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
     notebook, así que cuenta también las operaciones ya liquidadas antes de ese fin: es el plan
     pactado y no la deuda viva (84.673 de las 224.392 solicitudes por vencer ya se cerraron).
 
-    `PREV_URGENT_PURPOSE_RATIO` es una proporción y nunca un conteo, y la lista de finalidades
-    urgentes es `medido`: entra por `cortes` y revienta hasta que se refija sobre train.
+    `PREV_URGENT_PURPOSE_RATIO` es una proporción y nunca un conteo.
     `PREV_PHANTOM_FLAG` vale 0 en quien tiene previas y ninguna sin combinación de producto.
 
-    Las dos colas son `medido`. `PREV_ACTIVIDAD_12M_COLA` se conserva solo como término de
-    `PREV_RELACION_CORTA_ACTIVA`: fijado el ritmo anual, su efecto propio desaparece.
+    `PREV_ACTIVIDAD_12M_COLA` se conserva solo como término de `PREV_RELACION_CORTA_ACTIVA`:
+    fijado el ritmo anual, su efecto propio desaparece.
     """
     faltan = [c for c in COLUMNAS_ORIGEN if c not in prev.columns]
     if faltan:
@@ -212,11 +211,7 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         & p["AMT_CREDIT"].gt(0)
     )
     coste = (p["AMT_ANNUITY"] * p["CNT_PAYMENT"] / p["AMT_CREDIT"]).where(valida)
-    # la combinación de producto sin definir es el registro fantasma, y va aparte de la calle
-    combinacion = p["PRODUCT_COMBINATION"]
     definida = combinacion_definida(p)
-    # la finalidad solo existe donde el cliente la declara, y ese es el denominador honesto
-    finalidad = p["NAME_CASH_LOAN_PURPOSE"]
     declarada = finalidad_declarada(p)
     # el fin previsto frente al efectivo; sin el segundo la operación no ha terminado
     previsto = p["DAYS_LAST_DUE_1ST_VERSION"]
@@ -241,10 +236,16 @@ def agregar_previous(prev: pd.DataFrame, cortes: dict[str, float] | None = None)
         .astype(float)
         .where(adelanto.notna()),
         _por_vencer=previsto.where(previsto.gt(0)),
-        _calle=combinacion.str.contains(CAPTACION_CALLE, na=False).astype(float).where(definida),
+        _calle=p["PRODUCT_COMBINATION"]
+        .str.contains(CAPTACION_CALLE, na=False)
+        .astype(float)
+        .where(definida),
         _temprana=p["HOUR_APPR_PROCESS_START"].le(c["prev_hora_temprana_max"]),
         _sin_acompanante=p["NAME_TYPE_SUITE"].isna(),
-        _urgente=finalidad.isin(c["prev_finalidades_urgentes"]).astype(float).where(declarada),
+        _urgente=p["NAME_CASH_LOAN_PURPOSE"]
+        .isin(c["prev_finalidades_urgentes"])
+        .astype(float)
+        .where(declarada),
         _fantasma=~definida,
     )
     # el motivo va como bandera y no como conteo: está a cero en casi todos
