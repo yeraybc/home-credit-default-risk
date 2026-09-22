@@ -84,6 +84,19 @@ DENOMINADOR: dict[str, str] = {
     "PREV_URGENT_PURPOSE_RATIO": "finalidad declarada",
 }
 
+# Las poblaciones sobre las que la receta midió cada feature, como máscara del frame que devuelve
+# `unir_previous()`, como en `agg_bureau.py`. None es la población del propio evaluador. Las dos
+# últimas salen del NaN de su feature, que es su denominador: la finalidad es la declarada y no
+# la de la lista de urgentes.
+POBLACIONES = {
+    "global": None,
+    "no nulos (auto-cond.)": None,
+    "con previas": lambda d: d["HAS_PREV_APPLICATION"].eq(1),
+    "con algún rechazo": lambda d: d["PREV_REFUSED_COUNT"].gt(0),
+    "con operación terminada": lambda d: d["PREV_EARLY_SETTLED_FLAG"].notna(),
+    "con finalidad informada": lambda d: d["PREV_URGENT_PURPOSE_RATIO"].notna(),
+}
+
 # Lo que la agregación añade y la receta no tiene, con su motivo. Es la lista que el bloque 5
 # tiene que repartir en buckets.
 COLUMNAS_SIN_RECETA: dict[str, str] = {

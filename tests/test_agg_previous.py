@@ -20,6 +20,7 @@ from src.features.agg_previous import (
     CORTES,
     DENOMINADOR,
     NUMERICAS_ORIGEN,
+    POBLACIONES,
     agregar_previous,
     cociente_de_concesion,
     combinacion_definida,
@@ -42,6 +43,7 @@ from src.features.build_features import (
 )
 from src.features.cleaning import limpiar_previous
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
+from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
 
 # Los cortes salen del registro y no de literales: dos copias del mismo corte dejan el fixture
@@ -911,6 +913,40 @@ def test_unir_revienta_si_el_agregado_trae_un_cliente_repetido(prev):
         unir_previous(pd.DataFrame({"SK_ID_CURR": [5]}), duplicado)
 
 
+def test_las_poblaciones_son_exactamente_las_de_la_receta(prev):
+    """Ninguna etiqueta de lo provisional sin máscara ni máscara sin usar, y cada población
+    condicionada es exactamente la de las filas, contada aparte. En las banderas la n son los
+    marcados y la puerta local no ve la población: esto es lo que la sostiene."""
+    receta = cargar_receta("previous_application")["features"]
+    medidas = {
+        f["poblacion_medicion"]
+        for f in receta
+        if f["firmeza"] == "provisional" and f["tipo"] != "control"
+    }
+    assert medidas == set(POBLACIONES)
+    # el bucle de abajo se salta las None: sin esto, una condicionada que pase a None no cae en CI
+    sin_mascara = {e for e, m in POBLACIONES.items() if m is None}
+    assert sin_mascara == {"global", "no nulos (auto-cond.)"}
+    # el 99 no tiene solicitudes
+    clientes = pd.DataFrame({"SK_ID_CURR": [99, *prev.SK_ID_CURR.unique()]})
+    unido = unir_previous(clientes, agregar(prev)).set_index("SK_ID_CURR")
+    # de las filas y no de las columnas que leen las propias máscaras; limpias, que el centinela
+    # no es una fecha de fin
+    p = limpiar_previous(prev)
+    clientes_con = {
+        "con previas": p,
+        "con algún rechazo": p[p.NAME_CONTRACT_STATUS.eq("Refused")],
+        "con operación terminada": p[p.DAYS_LAST_DUE_1ST_VERSION.notna() & p.DAYS_LAST_DUE.notna()],
+        "con finalidad informada": p[finalidad_declarada(p)],
+    }
+    for etiqueta, filas in clientes_con.items():
+        dentro = POBLACIONES[etiqueta](unido)
+        assert dentro.dtype == bool, etiqueta
+        assert set(dentro.index[dentro]) == set(filas.SK_ID_CURR), etiqueta
+        if etiqueta != "con previas":
+            assert (unido.HAS_PREV_APPLICATION.eq(1) & ~dentro).any(), etiqueta
+
+
 # --- el 4.8, el refijado de las dos colas sobre train -----------------------------------------
 
 
@@ -1746,13 +1782,14 @@ sin_dato_real = pytest.mark.skipif(
     reason="data/raw y el split no viajan con el repo",
 )
 
-# La parte del 4.2 al 4.7 de la puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que
-# es la del EDA, y la de modelado, que es la del split. El 4.11 la completa con el resto.
+# La puerta del bloque 4, sobre sus dos poblaciones: la tabla cruda, que es la del EDA, y la de
+# modelado, que es la del split. Los efectos remedidos sobre train van en su propio test (4.11).
 PUERTA = {
     "crudo": {
         "con previas": 291_057,
         "sin previas": 16_454,
         "historial recortado": 53_934,
+        "con algún rechazo": 100_294,
         "rechazo por scoring externo": 6_788,
         "plazo largo rechazado": 78,
         "cociente de concesión": 290_042,
@@ -1773,6 +1810,7 @@ PUERTA = {
         "con previas": 291_041,
         "sin previas": 16_451,
         "historial recortado": 53_933,
+        "con algún rechazo": 100_284,
         "rechazo por scoring externo": 6_787,
         "plazo largo rechazado": 78,
         "cociente de concesión": 290_026,
@@ -1815,6 +1853,7 @@ def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
         "con previas": len(con),
         "sin previas": len(unido) - len(con),
         "historial recortado": int(con.PREV_HISTORIAL_RECORTADO.sum()),
+        "con algún rechazo": int(POBLACIONES["con algún rechazo"](con).sum()),
         "rechazo por scoring externo": int(con.PREV_REFUSED_SCOFR_FLAG.sum()),
         "plazo largo rechazado": int(con.PREV_REFUSED_LONG_TERM_FLAG.sum()),
         "cociente de concesión": int(con.PREV_CREDIT_APPLICATION_RATIO.notna().sum()),
@@ -2445,3 +2484,4 @@ def test_sobre_el_split_ninguna_lectura_de_recencia_relativa_gana(dato_real):
     continuas = global_[global_["tipo"].eq("continua")]
     ganan = continuas[continuas["efecto"] > continuas["efecto_abs"]]
     assert list(ganan.index) == [("PREV_COUNT_12M_REL", "PREV_COUNT_12M")]
+
