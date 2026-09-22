@@ -1221,10 +1221,10 @@ def test_el_cociente_de_concesion_deja_fuera_las_dos_cifras_a_cero():
 
 
 def escenario_finalidad(*grupos):
-    """Cada grupo es (finalidad, targets, parte); una solicitud por cliente."""
+    """Cada grupo es (finalidad, targets, parte[, solicitudes por cliente]), una por defecto."""
 
-    def filas_de(cliente, finalidad):
-        return [solicitud(cliente, -100, NAME_CASH_LOAN_PURPOSE=finalidad)]
+    def filas_de(cliente, finalidad, veces=1):
+        return [solicitud(cliente, -100, NAME_CASH_LOAN_PURPOSE=finalidad)] * veces
 
     return armar(grupos, filas_de)
 
@@ -1278,6 +1278,18 @@ def test_las_finalidades_sin_declarar_no_cuentan_ni_en_la_tasa_global():
     global_ = np.mean(sum((g[1] for g in declaradas), []))
     esperado = (informe.loc["Alta", "tasa"] / 100 - global_) * 100
     assert informe.loc["Alta", "delta_pp"] == pytest.approx(esperado)
+
+
+def test_la_tasa_global_es_por_solicitud_y_no_por_cliente():
+    """Repairs pesa cinco solicitudes por cliente: por solicitud la global es 10,5% y Alta, con 13%,
+    la supera en 2,5pp; por cliente sería 11,5% y Alta se quedaría en 1,5pp. En el dato real leerla
+    por cliente pasa la lista de tres finalidades a seis."""
+    lista, informe = refijar_finalidad(
+        ("Repairs", con_tasa(100, 10), "train", 5), ("Alta", con_tasa(100, 13), "train")
+    )
+    assert lista == ("Alta",)
+    assert informe.loc["Repairs", "n"] == 500
+    assert informe.loc["Alta", "delta_pp"] == pytest.approx(2.5)
 
 
 def test_la_lista_sale_ordenada_y_como_tupla_aunque_la_categorica_no_lo_este():
