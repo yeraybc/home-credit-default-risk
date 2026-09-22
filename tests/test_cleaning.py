@@ -20,6 +20,9 @@ from src.features.cleaning import (
     COLUMNAS_FIRMES,
     COLUMNAS_PROVISIONALES,
     DTYPE_STATUS,
+    ENTRADAS_PREVIOUS,
+    ESTADOS_CONTRATO,
+    FECHAS_PREVIOUS,
     FILAS_POR_CATEGORIA,
     FILAS_POR_NULO,
     IMPORTES_BUREAU,
@@ -41,6 +44,7 @@ from src.features.cleaning import (
     limpiar_application_entrenamiento,
     limpiar_bureau,
     limpiar_bureau_balance,
+    limpiar_previous,
     marcar_moneda_extranjera,
 )
 from src.features.params import valor
@@ -886,7 +890,7 @@ def test_un_status_fuera_de_dominio_revienta(bb, malo):
     """
     roto = bb.copy()
     roto.loc[0, "STATUS"] = malo
-    with pytest.raises(ValueError, match="STATUS fuera de dominio"):
+    with pytest.raises(ValueError, match="STATUS fuera de dominio.*bureau_balance"):
         limpiar_bureau_balance(roto)
 
 
@@ -905,7 +909,7 @@ def test_un_mes_fuera_de_ventana_revienta(bb, malo):
     """
     roto = bb.copy()
     roto.loc[0, "MONTHS_BALANCE"] = malo
-    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio"):
+    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio.*bureau_balance"):
         limpiar_bureau_balance(roto)
 
 
@@ -919,7 +923,7 @@ def test_un_mes_con_decimales_revienta(bb):
     """Pasa el rango y el `int8` lo truncaría a un mes que no es. Solo puede traerlo la API."""
     roto = bb.astype({"MONTHS_BALANCE": float})
     roto.loc[0, "MONTHS_BALANCE"] = -1.5
-    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio"):
+    with pytest.raises(ValueError, match="MONTHS_BALANCE fuera de dominio.*bureau_balance"):
         limpiar_bureau_balance(roto)
 
 
@@ -1119,3 +1123,247 @@ def test_la_puerta_del_3_1_sobre_el_dato_real(bureau_balance_real):
     reparto = {k: round(100 * medido[k] / medido["filas"], 2) for k in PARTICION_EDA}
     assert reparto == PARTICION_EDA
     assert medido["C"] + medido["X"] + int(limpio[COL_BB_DPD].notna().sum()) == medido["filas"]
+
+
+# --- previous_application ---------------------------------------------------------------------
+# Tres reglas y ningún cap: el centinela de las fechas a NaN, la entrada negativa a 0 y el dominio
+# del estado. Lo que estos tests protegen es que el centinela no se lleve nada que no sea una fecha
+# y que el sin dato no se rellene.
+
+
+@pytest.fixture
+def prev():
+    """Cinco solicitudes, cada una con un caso de borde.
+
+    La 2 es del cliente 365243, que existe en la tabla real y es lo que borraría un centinela
+    aplicado al frame entero. La 3 trae el bloque nativo de NaN de las cinco fechas del ciclo de
+    vida, que es otra ausencia y tiene que seguir siéndolo. La 5 trae negativa solo la entrada en
+    importe, que es lo que distingue corregir cada columna por su cuenta de corregir las dos con
+    la máscara de una.
+    """
+    n = np.nan
+    return pd.DataFrame(
+        {
+            "SK_ID_PREV": [1, 2, 3, 4, 5],
+            "SK_ID_CURR": [100, CENTINELA, 100, 200, 200],
+            "NAME_CONTRACT_STATUS": ["Approved", "Approved", "Canceled", "Refused", "Unused offer"],
+            "DAYS_DECISION": [-900.0, -400.0, -10.0, -50.0, CENTINELA],
+            "DAYS_FIRST_DRAWING": [-890.0, CENTINELA, n, -40.0, -5.0],
+            "DAYS_FIRST_DUE": [-860.0, -370.0, n, CENTINELA, -2.0],
+            # la 1 y la 5 vencen en el futuro, que es legítimo en esta fecha y no se toca
+            "DAYS_LAST_DUE_1ST_VERSION": [500.0, -10.0, n, CENTINELA, 30.0],
+            "DAYS_LAST_DUE": [-100.0, CENTINELA, n, -20.0, -1.0],
+            "DAYS_TERMINATION": [-95.0, CENTINELA, n, -15.0, CENTINELA],
+            "AMT_DOWN_PAYMENT": [1_000.0, -0.9, n, 0.0, -0.45],
+            "RATE_DOWN_PAYMENT": [0.1, -1.37e-05, n, 0.0, 0.2],
+            # el -1 es un código de zona y no un centinela que esta limpieza trate
+            "SELLERPLACE_AREA": [-1, 50, -1, 3_570, 0],
+        }
+    )
+
+
+# Las dos listas van escritas a mano y no salen de las constantes que prueban: derivadas de ellas,
+# quitar una columna de la tupla **reduce** estos tests en vez de romperlos, y la mutación pasa.
+FECHAS_ESPERADAS = [
+    "DAYS_DECISION",
+    "DAYS_FIRST_DRAWING",
+    "DAYS_FIRST_DUE",
+    "DAYS_LAST_DUE_1ST_VERSION",
+    "DAYS_LAST_DUE",
+    "DAYS_TERMINATION",
+]
+ENTRADAS_ESPERADAS = ["AMT_DOWN_PAYMENT", "RATE_DOWN_PAYMENT"]
+
+
+def test_el_contrato_de_columnas_de_previous_es_el_declarado():
+    """Lo que hace que quitar una columna de las tuplas rompa y no encoja las parametrizadas."""
+    assert list(FECHAS_PREVIOUS) == FECHAS_ESPERADAS
+    assert list(ENTRADAS_PREVIOUS) == ENTRADAS_ESPERADAS
+
+
+def test_el_fixture_de_previous_ejercita_cada_rama(prev):
+    """Guardián: si el fixture pierde un caso, los tests de abajo dejan de probar lo que dicen."""
+    for col in FECHAS_ESPERADAS:
+        assert prev[col].eq(CENTINELA).any(), f"{col} no trae centinela"
+        if col != "DAYS_DECISION":
+            assert prev[col].isna().any(), f"{col} no trae el NaN nativo"
+    assert prev.DAYS_LAST_DUE_1ST_VERSION.between(1, CENTINELA - 1).any(), "falta el futuro"
+    assert prev.SK_ID_CURR.eq(CENTINELA).any(), "falta el cliente 365243"
+    for col in ENTRADAS_ESPERADAS:
+        assert prev[col].lt(0).any() and prev[col].eq(0).any() and prev[col].gt(0).any()
+        assert prev[col].isna().any(), f"{col} no trae NaN"
+    negativas = prev[ENTRADAS_ESPERADAS].lt(0)
+    assert (negativas.sum(axis=1) == 1).any(), "falta la fila con una sola entrada negativa"
+    assert set(prev.NAME_CONTRACT_STATUS) == set(ESTADOS_CONTRATO)
+
+
+@pytest.mark.parametrize("col", FECHAS_ESPERADAS)
+def test_el_centinela_pasa_a_nan_y_el_resto_de_la_fecha_no_se_toca(prev, col):
+    """El futuro legítimo y el NaN nativo sobreviven tal cual: solo cambia el centinela."""
+    esperado = prev[col].mask(prev[col].eq(CENTINELA))
+    pd.testing.assert_series_equal(limpiar_previous(prev)[col], esperado)
+
+
+def test_el_centinela_solo_se_toca_en_las_fechas(prev):
+    """El cliente 365243 y el -1 del código de zona salen como entraron."""
+    tocadas = FECHAS_ESPERADAS + ENTRADAS_ESPERADAS
+    pd.testing.assert_frame_equal(
+        limpiar_previous(prev).drop(columns=tocadas), prev.drop(columns=tocadas)
+    )
+
+
+def test_el_centinela_de_previous_lee_params_y_no_un_literal(prev):
+    """Cambiar el código en PARAMS tiene que cambiar lo que se anula. El conftest lo restaura."""
+    from src.features.params import PARAMS, Parametro
+
+    PARAMS["centinela_365243"] = Parametro(-10.0, "dominio", "centinela de prueba", "test")
+    limpio = limpiar_previous(prev)
+    assert limpio.DAYS_DECISION.eq(-10.0).sum() == 0, "el código de prueba no se anuló"
+    assert limpio.DAYS_LAST_DUE_1ST_VERSION.eq(CENTINELA).any(), "el 365243 se anuló igual"
+
+
+@pytest.mark.parametrize("col", ENTRADAS_ESPERADAS)
+def test_la_entrada_negativa_va_a_cero_y_nada_mas_se_mueve(prev, col):
+    """Cada columna por su cuenta: la 5 solo trae negativo el importe y su tasa de 0,2 se queda.
+
+    El NaN sigue siendo NaN, que la capa 1 no rellena.
+    """
+    esperado = prev[col].mask(prev[col].lt(0), 0.0)
+    pd.testing.assert_series_equal(limpiar_previous(prev)[col], esperado)
+
+
+@pytest.mark.parametrize("malo", ["Approvd", "", " Approved", None])
+def test_un_estado_de_contrato_fuera_de_dominio_revienta(prev, malo):
+    """Sin esto un estado desconocido descuadra la partición en silencio, como `CREDIT_ACTIVE`.
+
+    El espacio va en la lista porque el estado no se normaliza: la tabla no trae ninguna variante
+    sucia, así que una es un dato que el pipeline no sabe leer. Y el nulo porque la tabla no
+    trae ninguno.
+    """
+    roto = prev.copy()
+    roto.loc[0, "NAME_CONTRACT_STATUS"] = malo
+    with pytest.raises(ValueError, match="fuera de dominio.*previous_application"):
+        limpiar_previous(roto)
+
+
+def test_los_cuatro_estados_pasan_y_tambien_en_categorica(prev):
+    """La otra dirección del check de arriba, y en `category`, que es como lo deja `load_table`."""
+    como_carga = prev.astype({"NAME_CONTRACT_STATUS": "category"})
+    for frame in (prev, como_carga):
+        assert set(limpiar_previous(frame).NAME_CONTRACT_STATUS) == set(ESTADOS_CONTRATO)
+
+
+def test_la_limpieza_de_previous_no_borra_ni_una_fila(prev):
+    assert len(limpiar_previous(prev)) == len(prev)
+
+
+def test_la_limpieza_de_previous_es_idempotente(prev):
+    """En la segunda pasada el centinela ya es NaN y la entrada ya es 0: no hay bandera."""
+    una = limpiar_previous(prev)
+    pd.testing.assert_frame_equal(limpiar_previous(una), una)
+
+
+def test_la_limpieza_de_previous_no_muta_el_frame_de_entrada(prev):
+    copia = prev.copy()
+    limpiar_previous(prev)
+    pd.testing.assert_frame_equal(prev, copia)
+
+
+def test_la_limpieza_de_previous_da_lo_mismo_fila_a_fila_que_sobre_la_tabla_entera(prev):
+    """La premisa que permite que la capa 1 corra fuera del split: no cruza filas."""
+    entera = limpiar_previous(prev)
+    fila_a_fila = pd.concat([limpiar_previous(prev.iloc[[i]]) for i in range(len(prev))])
+    pd.testing.assert_frame_equal(entera, fila_a_fila)
+
+
+@pytest.mark.parametrize(
+    "falta", [["NAME_CONTRACT_STATUS"], ENTRADAS_ESPERADAS, FECHAS_ESPERADAS]
+)
+def test_la_limpieza_de_previous_no_revienta_si_faltan_columnas(prev, falta):
+    """A la API puede llegar un frame parcial: quien exige el contrato es la agregación del 4.2."""
+    completa = limpiar_previous(prev).drop(columns=falta)
+    pd.testing.assert_frame_equal(limpiar_previous(prev.drop(columns=falta)), completa)
+
+
+def test_el_frame_vacio_y_sin_tipos_no_revienta(prev):
+    """Es lo que llega de la API para un cliente sin solicitudes.
+
+    Solo se exige que pase: esta limpieza no fija tipos, y el esquema de la salida lo fija la
+    frontera de la agregación.
+    """
+    vacio = pd.DataFrame({c: [] for c in prev.columns}, dtype=object)
+    assert list(limpiar_previous(vacio).columns) == list(prev.columns)
+
+
+# --- la puerta del 4.1 contra el dato real ----------------------------------------------------
+
+sin_previous = pytest.mark.skipif(
+    not (ruta("raw_data") / TABLE_FILES["previous_application"]).exists(),
+    reason="data/raw no viaja con el repo",
+)
+
+# La puerta sobre `previous_application.csv` completo, que es la población de la limpieza (capa 1,
+# no ve el TARGET). Coincide con la del EDA: el nivel solicitud se midió sobre la tabla entera.
+PUERTA_PREV = {
+    "filas": 1_670_214,
+    "solicitudes únicas": 1_670_214,
+    "clientes": 338_857,
+    "centinela antes": {
+        "DAYS_DECISION": 0,
+        "DAYS_FIRST_DRAWING": 934_444,
+        "DAYS_FIRST_DUE": 40_645,
+        "DAYS_LAST_DUE_1ST_VERSION": 93_864,
+        "DAYS_LAST_DUE": 211_221,
+        "DAYS_TERMINATION": 225_913,
+    },
+    "centinela después": 0,
+    "entradas negativas antes": 2,
+    "entradas negativas después": 0,
+    "estados": {
+        "Approved": 1_036_781,
+        "Canceled": 316_319,
+        "Refused": 290_678,
+        "Unused offer": 26_436,
+    },
+}
+
+# Los porcentajes de centinela que publica el EDA (5C.4), al lado de los conteos.
+CENTINELA_EDA = {
+    "DAYS_FIRST_DRAWING": 55.95,
+    "DAYS_TERMINATION": 13.53,
+    "DAYS_LAST_DUE": 12.65,
+    "DAYS_LAST_DUE_1ST_VERSION": 5.62,
+    "DAYS_FIRST_DUE": 2.43,
+}
+
+
+@pytest.fixture(scope="module")
+def previous_real():
+    return load_table("previous_application")
+
+
+@sin_previous
+def test_la_puerta_del_4_1_sobre_el_dato_real(previous_real):
+    fechas, entradas = FECHAS_ESPERADAS, ENTRADAS_ESPERADAS
+    limpio = limpiar_previous(previous_real)
+    medido = {
+        "filas": len(limpio),
+        "solicitudes únicas": limpio.SK_ID_PREV.nunique(),
+        "clientes": limpio.SK_ID_CURR.nunique(),
+        "centinela antes": previous_real[fechas].eq(CENTINELA).sum().to_dict(),
+        "centinela después": int(limpio[fechas].eq(CENTINELA).sum().sum()),
+        "entradas negativas antes": int(previous_real[entradas].lt(0).any(axis=1).sum()),
+        "entradas negativas después": int(limpio[entradas].lt(0).sum().sum()),
+        "estados": limpio.NAME_CONTRACT_STATUS.value_counts().to_dict(),
+    }
+    assert medido == PUERTA_PREV
+    reparto = {
+        c: round(100 * medido["centinela antes"][c] / medido["filas"], 2) for c in CENTINELA_EDA
+    }
+    assert reparto == CENTINELA_EDA
+    # lo que sale a NaN es exactamente el centinela, sin tocar el NaN nativo
+    for col in fechas:
+        assert int(limpio[col].isna().sum()) == int(
+            previous_real[col].isna().sum() + medido["centinela antes"][col]
+        )
+    assert limpio.SK_ID_CURR.eq(CENTINELA).sum() == previous_real.SK_ID_CURR.eq(CENTINELA).sum()

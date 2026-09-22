@@ -26,17 +26,28 @@ import logging
 
 import numpy as np
 import pandas as pd
+from scipy.stats import mannwhitneyu
 from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
+from src.features.agg_previous import (
+    CAPTACION_CALLE,
+    agregar_previous,
+    cociente_de_concesion,
+    combinacion_definida,
+    fin_de_ventana,
+    finalidad_declarada,
+    solicitudes_recientes,
+)
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
     filas_a_eliminar,
     limpiar_application,
     limpiar_application_entrenamiento,
     limpiar_bureau,
+    limpiar_previous,
 )
 from src.features.params import fijar_operativo, valor
 from src.features.pipeline import construir_pipeline
@@ -58,6 +69,39 @@ REDUCIR_MEMORIA = False
 # frente a los +2,49pp sobre 71.580 del 2 a 5). Las dos se quedan con el tramo más estrecho que la
 # rejilla permita, así que el valor lo decidiría la rejilla y no el dato.
 REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
+
+# La rejilla con la que el EDA barrió la sobreconcesión de previous_application (notebook 04, celda
+# 160), en cociente concedido entre solicitado. El 1,3 heredado del binning no salió de un barrido
+# y perdía dos tercios de la señal de la proporción.
+REJILLA_SOBRECONCESION = (1.05, 1.1, 1.2, 1.3, 1.4, 1.5)
+
+# Los mínimos de denominador que barrió el EDA (notebook 04, celda 155): con uno no hay mínimo.
+MINIMOS_DENOMINADOR = (1, 2, 3, 5)
+
+# Los estratos de recencia de la última solicitud con los que el EDA controló la captación de
+# previous_application (5C.11), en días con signo y con el borde superior dentro. Son el control
+# obligatorio del 4.10: si una lectura relativa solo gana porque codifica "tu última solicitud es
+# reciente", dentro de estos estratos su ventaja desaparece.
+ESTRATOS_RECENCIA_PREVIOUS: dict[str, tuple[float, float]] = {
+    "hasta 6m": (-180, 0),
+    "6 a 12m": (-365, -180),
+    "12 a 24m": (-730, -365),
+    "mas de 24m": (-np.inf, -730),
+}
+
+# Las lecturas de recencia relativa del 4.10 con las contrapartes contra las que se comparan, todas
+# escritas antes de medir. La recencia del último rechazo y las tres de captación se miden contra su
+# propia versión absoluta; la salida en rechazo, contra las dos banderas de rechazo que ya existen;
+# y el conteo de la ventana propia, además de contra el absoluto, contra el ritmo, que es la vía por
+# la que puede ser la longitud de la relación con otro nombre.
+LECTURAS_RECENCIA_RELATIVA: dict[str, tuple[str, ...]] = {
+    "PREV_EXIT_REFUSED_FLAG": ("PREV_REFUSED_RATIO > 0", "PREV_REFUSED_SCOFR_FLAG"),
+    "PREV_DAYS_SINCE_REFUSED_REL": ("PREV_DAYS_SINCE_REFUSED",),
+    "PREV_COUNT_12M_REL": ("PREV_COUNT_12M", "PREV_APPLICATIONS_PER_YEAR"),
+    "PREV_STREET_RATIO_REL": ("PREV_STREET_RATIO",),
+    "PREV_EARLY_HOUR_RATIO_REL": ("PREV_EARLY_HOUR_RATIO",),
+    "PREV_NO_SUITE_RATIO_REL": ("PREV_NO_SUITE_RATIO",),
+}
 
 
 def cargar_y_limpiar(nombre: str = "application_train") -> pd.DataFrame:
@@ -249,12 +293,395 @@ def ajustar_cola_bb(
     return informe.assign(p99_mas_uno=informe.index == int(clientes["n"].quantile(0.99)) + 1)
 
 
-def _primer_corte_que_cruza(
-    conteo: pd.Series, target: pd.Series, nombre: str, sobrescribir: bool
+def _previous_de_train(
+    prev: pd.DataFrame, base: pd.DataFrame, split: pd.DataFrame | None
 ) -> pd.DataFrame:
-    """Barre los cortes de un conteo por cliente y fija el primero cuyo delta cruza el umbral."""
+    """Las filas limpias de previous_application de los clientes de train, con `SK_ID_CURR` y
+    `TARGET`.
+
+    Es la población de los refijados de la tabla: el `n_train` que declaran son sus clientes, los
+    de train con solicitudes previas.
+    """
+    entrenamiento = solo_train(base, split)[["SK_ID_CURR", "TARGET"]]
+    return limpiar_previous(prev).merge(entrenamiento, on="SK_ID_CURR")
+
+
+def ajustar_cola_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_COUNT_COLA`, el primero cuyo delta cruza el umbral.
+
+    Es el criterio con el que el propio EDA eligió las 15 solicitudes, barriendo 8, 11, 15 y 20.
+    Sobre train el barrido entero baja el corte a 11, que en la rejilla del EDA se quedaba a
+    +1,91pp y aquí llega a +2,04pp.
+
+    Va fuera del `Pipeline` por lo mismo que los de bureau, así que en el CV de la Fase 4 cada fold
+    usa el corte elegido sobre todo el 80%. En 15 folds sale 11 en 10 de 15, con 10, 12 y 13 en los
+    otros cinco; midiendo sobre la parte de validación, que son cinco veces menos clientes, se abre
+    de 9 a 25.
+    """
+    filas = _previous_de_train(prev, base, split)
+    clientes = filas.groupby("SK_ID_CURR")["TARGET"].agg(n="size", target="first")
+    return _primer_corte_que_cruza(
+        clientes["n"], clientes["target"], "prev_count_cola", sobrescribir
+    )
+
+
+def ajustar_actividad_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_ACTIVIDAD_12M_COLA` con el mismo criterio de la cola.
+
+    El EDA registró el 4 de su rejilla descriptiva sin declarar criterio, y su propio barrido ya
+    cruzaba en 3 (+2,01pp). Aquí se unifica con las otras tres colas del proyecto y el corte se
+    sostiene: sobre train el 3 se queda en +1,99pp y el primero que cruza vuelve a ser el 4.
+
+    **El barrido empieza en 1 y no en 2** porque aquí el cero es un nivel real, el 42,08% de los
+    clientes de train con previas. Marcar a quien pide alguna vez en el año no cruza (+1,31pp),
+    pero eso hay que medirlo, no suponerlo.
+
+    **Es la más frágil de las cuatro colas del proyecto**, y por eso va escrito: el 3 se queda a
+    0,014pp del umbral, así que en 15 folds el corte sale 4 en 10 y 3 en 5, y midiendo sobre la
+    parte de validación el 3 gana en 9 de 15. Lo que el corte separa no se mueve; lo que se mueve
+    es de qué lado del umbral cae el 3.
+    """
+    filas = _previous_de_train(prev, base, split)
+    reciente = solicitudes_recientes(filas, valor("prev_ventana_reciente_dias"))
+    clientes = (
+        filas.assign(_reciente=reciente)
+        .groupby("SK_ID_CURR")
+        .agg(n=("_reciente", "sum"), target=("TARGET", "first"))
+    )
+    return _primer_corte_que_cruza(
+        clientes["n"], clientes["target"], "prev_actividad_12m_cola", sobrescribir, desde=1
+    )
+
+
+def ajustar_sobreconcesion_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train el corte de `PREV_OVERGRANTED_RATIO`, el de mayor r_rb de la proporción.
+
+    Se barre `REJILLA_SOBRECONCESION` sobre la proporción por cliente de solicitudes que superan el
+    corte, que es la codificación que entra en la matriz. Sobre la bandera el delta crece con el
+    corte (+1,65pp a +9,28pp en train) porque marca a cada vez menos gente, y elegiría el 1,5. Y no
+    es un primer cruce como en las colas: aquí el efecto tiene pico y se elige el máximo.
+
+    La población es la de la feature: los clientes de train con alguna solicitud con las dos cifras
+    positivas, y ese es el `n_train` que se declara. Sale 1,1 con r_rb 0,1208, y el borde queda
+    fuera como en la agregación. Con una rejilla más fina el pico es plano entre 1,1 y 1,125 (0,1208
+    y 0,1200), así que la rejilla del EDA decide el valor, como en el tramo de bureau.
+
+    Es el más estable de los seis: sale 1,1 en los 15 folds, tanto midiendo sobre la parte de
+    entrenamiento como sobre la de validación, y en el CV de la Fase 4 cada fold usa el elegido
+    sobre todo el 80%, como los de bureau.
+
+    Devuelve el barrido, n, r_rb y delta de la bandera por corte con el elegido marcado.
+    """
+    filas = _previous_de_train(prev, base, split)
+    concesion = cociente_de_concesion(filas)
+    objetivo = filas.groupby("SK_ID_CURR")["TARGET"].first()
     barrido = []
-    for corte in range(2, conteo.max() + 1):
+    for corte in REJILLA_SOBRECONCESION:
+        proporcion = (
+            concesion.gt(corte)
+            .astype(float)
+            .where(concesion.notna())
+            .groupby(filas["SK_ID_CURR"])
+            .mean()
+            .dropna()
+        )
+        target = objetivo.loc[proporcion.index]
+        r_rb, _ = _r_rb(pd.DataFrame({"valor": proporcion, "TARGET": target}))
+        marcados = proporcion > 0
+        delta = (target[marcados].mean() - target[~marcados].mean()) * 100
+        barrido.append((corte, len(proporcion), r_rb, delta))
+    informe = pd.DataFrame(barrido, columns=["corte", "n", "r_rb", "delta_bandera_pp"])
+    informe = informe.set_index("corte")
+    elegido = informe["r_rb"].idxmax()
+    fijar_operativo("prev_sobreconcesion_corte", elegido, int(informe["n"].iloc[0]), sobrescribir)
+    logger.info(
+        "sobreconcesion refijada en %s sobre %s clientes", elegido, f"{informe['n'].iloc[0]:,}"
+    )
+    return informe.assign(elegido=informe.index == elegido)
+
+
+def ajustar_finalidades_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> pd.DataFrame:
+    """Refija sobre train la lista de `PREV_URGENT_PURPOSE_RATIO`: las finalidades que destacan.
+
+    Entra la finalidad declarada con al menos `n_min_categoria` solicitudes de train y una tasa de
+    default que supera en `umbral_flags_pp` la global de las declaradas. Reutiliza los dos cortes
+    ya declarados y no fija ningún k: el EDA tomó las cinco primeras por tasa, y esa lista es la
+    misma con la que midió el efecto, así que no es evidencia independiente. La tasa es por
+    solicitud, como la celda 92, y la global es la de todas las declaradas.
+
+    Sobre train salen tres, Gasification, Car repairs y Payments on other loans. **`Urgent needs`
+    queda fuera**, con +1,85pp en train y +1,93pp en el crudo, y con ella `Building a house or an
+    annex`: la lista del EDA tenía cinco. Decidido con el usuario al ver la cifra. La regla es
+    más estricta que la del EDA a propósito, y el 4.11 remide el efecto con la lista refijada.
+
+    **Es la lista menos estable de las seis.** En 15 folds sobre la parte de entrenamiento, Car
+    repairs entra en 15, Gasification y Payments en 14 y Urgent needs en 6; la lista exacta se
+    repite en 5 de 15. Midiendo sobre la parte de validación, con cinco veces menos clientes, no se
+    repite ninguna. Va fuera del `Pipeline`, así que en el CV cada fold usa la elegida sobre todo
+    el 80%.
+
+    El `n_train` son los clientes de train con alguna solicitud con finalidad declarada. La tupla
+    sale ordenada, para que no dependa del orden de las filas ni de un empate en la tasa.
+
+    Devuelve el barrido: n, tasa y delta sobre la global por finalidad, con las elegidas marcadas.
+    Revienta si ninguna cruza.
+    """
+    filas = _previous_de_train(prev, base, split)
+    declaradas = filas[finalidad_declarada(filas)]
+    global_ = declaradas["TARGET"].mean()
+    por_finalidad = declaradas.groupby("NAME_CASH_LOAN_PURPOSE", observed=True)["TARGET"]
+    informe = por_finalidad.agg(n="size", tasa="mean")
+    informe["delta_pp"] = (informe["tasa"] - global_) * 100
+    informe["tasa"] *= 100
+    informe["elegida"] = informe["n"].ge(valor("n_min_categoria")) & informe["delta_pp"].ge(
+        valor("umbral_flags_pp")
+    )
+    if not informe["elegida"].any():
+        raise ValueError("ninguna finalidad cruza el umbral de banderas con la n mínima")
+    elegidas = tuple(sorted(informe.index[informe["elegida"]]))
+    n_train = declaradas["SK_ID_CURR"].nunique()
+    fijar_operativo("prev_finalidades_urgentes", elegidas, n_train, sobrescribir)
+    logger.info("finalidades urgentes refijadas en %s sobre %s clientes", elegidas, f"{n_train:,}")
+    return informe.sort_values("tasa", ascending=False)
+
+
+def informe_denominador_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    cortes: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Barre el mínimo de denominador de las seis proporciones de conteos de previous_application.
+
+    Cada proporción se cuenta sobre su propio denominador y no sobre el de solicitudes, y lo que
+    decide es la señal **dentro del grupo que el mínimo deja fuera**: exigir denominador sube
+    siempre el efecto, porque selecciona población. Solo informa, no fija nada: sobre train ninguna
+    de las seis lleva mínimo, y las tres medias de importes quedan fuera por el criterio del 2.3.
+
+    Una fila por proporción y mínimo, sobre los clientes de train con la proporción construida:
+    n y r_rb de los que quedan, n de los que se quedan fuera y su r_rb y su p. Cuando el grupo
+    excluido solo vale 0 o 1, que con mínimo 2 es siempre, añade su delta de bandera en pp. Los
+    `cortes` son los de la agregación, que la sobreconcesión y las finalidades urgentes necesitan.
+    """
+    filas = _previous_de_train(prev, base, split)
+    todas = pd.Series(True, index=filas.index)
+    denominador = pd.DataFrame(
+        {
+            feature: mascara.groupby(filas["SK_ID_CURR"]).sum()
+            for feature, mascara in {
+                "PREV_REFUSED_RATIO": todas,
+                "PREV_OVERGRANTED_RATIO": cociente_de_concesion(filas).notna(),
+                "PREV_STREET_RATIO": combinacion_definida(filas),
+                "PREV_NO_SUITE_RATIO": todas,
+                "PREV_EARLY_HOUR_RATIO": todas,
+                "PREV_URGENT_PURPOSE_RATIO": finalidad_declarada(filas),
+            }.items()
+        }
+    )
+    proporciones = agregar_previous(prev, cortes)[list(denominador.columns)]
+    target = filas.groupby("SK_ID_CURR")["TARGET"].first()
+    informe = []
+    for feature in denominador:
+        clientes = target.to_frame().join(proporciones[feature].rename("valor"), how="inner")
+        clientes = clientes.join(denominador[feature].rename("den"))[lambda d: d["valor"].notna()]
+        for minimo in MINIMOS_DENOMINADOR:
+            dentro, fuera = clientes[clientes["den"] >= minimo], clientes[clientes["den"] < minimo]
+            r_dentro, _ = _r_rb(dentro)
+            r_fuera, p_fuera = _r_rb(fuera)
+            informe.append(
+                {
+                    "feature": feature,
+                    "minimo": minimo,
+                    "n": len(dentro),
+                    "r_rb": r_dentro,
+                    "n_fuera": len(fuera),
+                    "r_rb_fuera": r_fuera,
+                    "p_fuera": p_fuera,
+                    "delta_fuera_pp": _delta_bandera(fuera),
+                }
+            )
+    return pd.DataFrame(informe).set_index(["feature", "minimo"])
+
+
+def lecturas_relativas_previous(
+    filas: pd.DataFrame, reciente: pd.Series, hora_max: float
+) -> pd.DataFrame:
+    """Las seis lecturas de recencia relativa del 4.10, una columna por cliente.
+
+    `reciente` es la máscara de la ventana. El informe se la pasa relativa al fin de ventana de
+    cada cliente; con la absoluta, el conteo y las tres de captación tienen que dar exactamente
+    las columnas que construye `agregar_previous()`, y eso lo fija un test, que es lo que impide
+    que la relativa y la absoluta se separen por una diferencia de escritura.
+
+    Ninguna se guarda en la matriz: el 4.10 es exploratorio y solo construye lo que gane.
+    """
+    cliente = filas["SK_ID_CURR"]
+    fin = fin_de_ventana(filas)
+    rechazada = filas["NAME_CONTRACT_STATUS"].eq("Refused")
+    # alguna de las del día más reciente, no la primera fila de ese día: el orden no decide, como
+    # en PREV_HISTORIAL_RECORTADO en el otro extremo del historial
+    ultima = filas["DAYS_DECISION"].eq(fin)
+    calle = (
+        filas["PRODUCT_COMBINATION"]
+        .str.contains(CAPTACION_CALLE, na=False)
+        .astype(float)
+        .where(combinacion_definida(filas))
+    )
+    temprana = filas["HOUR_APPR_PROCESS_START"].le(hora_max).astype(float)
+    sin_acompanante = filas["NAME_TYPE_SUITE"].isna().astype(float)
+    return pd.DataFrame(
+        {
+            "PREV_EXIT_REFUSED_FLAG": (rechazada & ultima).groupby(cliente).max().astype(float),
+            # el último rechazo contra el fin de ventana del cliente: 0 es salir en rechazo
+            "PREV_DAYS_SINCE_REFUSED_REL": (filas["DAYS_DECISION"] - fin)
+            .where(rechazada)
+            .groupby(cliente)
+            .max(),
+            "PREV_COUNT_12M_REL": reciente.groupby(cliente).sum().astype(float),
+            "PREV_STREET_RATIO_REL": calle.where(reciente).groupby(cliente).mean(),
+            "PREV_EARLY_HOUR_RATIO_REL": temprana.where(reciente).groupby(cliente).mean(),
+            "PREV_NO_SUITE_RATIO_REL": sin_acompanante.where(reciente).groupby(cliente).mean(),
+        }
+    )
+
+
+def informe_recencia_relativa_previous(
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    cortes: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Mide las seis lecturas de recencia relativa del 4.10 contra sus contrapartes absolutas.
+
+    El pendiente 6 de la auditoría transversal: en `bureau_balance` la recencia contra el fin de
+    ventana propio ganó a la absoluta, y aquí el fin de ventana de cada cliente es su última
+    solicitud. Solo informa, no fija nada y no construye ninguna columna de la matriz.
+
+    Una fila por lectura, contraparte y estrato de recencia, con el estrato `todos` como fila
+    global. En las banderas el efecto es el delta en pp y en las continuas el rank-biserial en
+    valor absoluto, los dos sobre la misma población: los clientes de train donde la lectura
+    relativa está definida. `n_solo_abs` son los que pierde frente a su contraparte, que es la
+    cobertura que cuesta relativizar. La `p` sale de Mann-Whitney también en las banderas, como en
+    el grupo excluido de `informe_denominador_previous()`.
+
+    La redundancia va solo en la fila global, porque por estrato es ruido: Pearson entre las dos
+    continuas, y entre dos banderas el mismo número es la V de Cramér de su tabla 2x2.
+
+    La familia de Bonferroni son los contrastes que emite, dos por fila.
+    """
+    filas = _previous_de_train(prev, base, split)
+    hora_max = valor("prev_hora_temprana_max")
+    relativa = lecturas_relativas_previous(
+        filas,
+        solicitudes_recientes(filas, valor("prev_ventana_reciente_dias"), fin_de_ventana(filas)),
+        hora_max,
+    )
+    rechazada = filas["NAME_CONTRACT_STATUS"].eq("Refused")
+    agregado = agregar_previous(prev, cortes).reindex(relativa.index)
+    absoluta = agregado.assign(
+        **{
+            "PREV_REFUSED_RATIO > 0": agregado["PREV_REFUSED_RATIO"].gt(0).astype(float),
+            "PREV_DAYS_SINCE_REFUSED": filas["DAYS_DECISION"]
+            .where(rechazada)
+            .groupby(filas["SK_ID_CURR"])
+            .max(),
+        }
+    )
+    target = filas.groupby("SK_ID_CURR")["TARGET"].first().reindex(relativa.index)
+    recencia = agregado["PREV_DAYS_DECISION_MAX"]
+    estratos = {"todos": (-np.inf, np.inf), **ESTRATOS_RECENCIA_PREVIOUS}
+    informe = []
+    for lectura, contrapartes in LECTURAS_RECENCIA_RELATIVA.items():
+        flag = lectura.endswith("_FLAG")
+        for contraparte in contrapartes:
+            datos = pd.DataFrame(
+                {
+                    "valor": relativa[lectura],
+                    "abs": absoluta[contraparte],
+                    "TARGET": target,
+                    "recencia": recencia,
+                }
+            )
+            for estrato, (desde, hasta) in estratos.items():
+                dentro = datos[datos["recencia"].gt(desde) & datos["recencia"].le(hasta)]
+                d = dentro[dentro["valor"].notna()]
+                contra = d.assign(valor=d["abs"]).dropna(subset=["valor"])
+                efecto, p = _r_rb(d)
+                efecto_abs, p_abs = _r_rb(contra)
+                informe.append(
+                    {
+                        "lectura": lectura,
+                        "contraparte": contraparte,
+                        "estrato": estrato,
+                        "tipo": "flag" if flag else "continua",
+                        "n": len(d),
+                        "n_marcados": int(d["valor"].sum()) if flag else np.nan,
+                        "n_solo_abs": int(
+                            (dentro["valor"].isna() & dentro["abs"].notna()).sum()
+                        ),
+                        "efecto": _delta_bandera(d) if flag else efecto,
+                        "p": p,
+                        "efecto_abs": _delta_bandera(contra) if flag else efecto_abs,
+                        "p_abs": p_abs,
+                        "redundancia": _redundancia(d) if estrato == "todos" else np.nan,
+                    }
+                )
+    return pd.DataFrame(informe).set_index(["lectura", "contraparte", "estrato"])
+
+
+def _redundancia(d: pd.DataFrame) -> float:
+    """Pearson en valor absoluto entre la lectura y su contraparte; NaN si alguna es constante."""
+    if d["valor"].nunique() < 2 or d["abs"].nunique() < 2:
+        return np.nan
+    return abs(d["valor"].corr(d["abs"]))
+
+
+def _r_rb(clientes: pd.DataFrame) -> tuple[float, float]:
+    """Rank-biserial en valor absoluto y p de una proporción contra el TARGET; NaN si no separa."""
+    sanos = clientes.loc[clientes["TARGET"] == 0, "valor"]
+    morosos = clientes.loc[clientes["TARGET"] == 1, "valor"]
+    if sanos.empty or morosos.empty or clientes["valor"].nunique() < 2:
+        return np.nan, np.nan
+    u, p = mannwhitneyu(sanos, morosos)
+    return abs(2 * u / (len(sanos) * len(morosos)) - 1), p
+
+
+def _delta_bandera(clientes: pd.DataFrame) -> float:
+    """Tasa de default con la proporción a 1 menos con ella a 0, en pp; NaN si no es solo 0 o 1."""
+    tasa = clientes.groupby("valor")["TARGET"].mean()
+    return (tasa[1] - tasa[0]) * 100 if set(tasa.index) == {0, 1} else np.nan
+
+
+def _primer_corte_que_cruza(
+    conteo: pd.Series, target: pd.Series, nombre: str, sobrescribir: bool, desde: int = 2
+) -> pd.DataFrame:
+    """Barre los cortes de un conteo por cliente y fija el primero cuyo delta cruza el umbral.
+
+    `desde` es 2 salvo en un conteo donde el cero es un nivel real: con el mínimo del conteo el
+    grupo sin marcar queda vacío y el delta no existe.
+    """
+    barrido = []
+    for corte in range(desde, conteo.max() + 1):
         cola = conteo.ge(corte)
         delta = target[cola].mean() - target[~cola].mean()
         barrido.append((corte, int(cola.sum()), delta * 100))

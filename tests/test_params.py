@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from src.config import RAIZ, cargar_config
-from src.features import agg_bureau, agg_bureau_balance
+from src.features import agg_bureau, agg_bureau_balance, agg_previous
 from src.features.params import (
     CORTES_POR_FEATURE,
     PARAMS,
@@ -68,8 +68,6 @@ def test_los_pendientes_sin_referencia_son_los_declarados():
     assert set(sin_fijar()) == {
         "bureau_count_cola",
         "umbral_continuas_rb",
-        "min_denominador_proporcion",
-        "prev_ratio_rechazo_min_solicitudes",
     }
 
 
@@ -159,6 +157,31 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     5.25, 4.89, 4.31,                     # delta de la mora reciente con 3, 6 y 12 meses
     # la cola del conteo de bureau_balance que refija el 3.9, sobre sus 73.767 clientes de train
     2.51, 1.92, 3.39,                     # delta con 18 y 17 creditos, y con el p99 mas uno (22)
+    # previous_application, que limpiar_previous() cita en su docstring
+    0.0118,                               # rank-biserial del conteo de contratos vivos
+    5.96, 8.19,                           # default sin y con previas, docstring de unir_previous()
+    # el barrido de la relación larga que el 4.7 cita en params.py al declararla de dominio
+    2.86, 1.99, 1.61, 1.78, 1.73,         # superaditividad con 2, 3, 4, 5 y 6 años
+    # el corte de la lista de finalidades urgentes que el 4.6 cita en params.py
+    13.42,                                # tasa de Medicine, la sexta y primera fuera de la lista
+    # los refijados y contrastes del 4.8, sobre los 232.793 clientes de train con previas
+    2.04, 3.31, 1.81,                     # cola del conteo con 11 y 15 solicitudes, y con 10
+    2.31, 2.01, 1.31,                     # cola de actividad con 4; el 3 del EDA y el 1 sin cruzar
+    0.1208, 0.0837, 0.0820,               # r_rb de la sobreconcesion con 1,1, 1,05 y 1,2
+    0.1194, 0.12,                         # r_rb de la sobreconcesion en el EDA y en la rejilla fina
+    1.65, 9.28,                           # delta de la bandera de sobreconcesion, de 1,05 a 1,5
+    4.18, 5.76, 3.85, 1.85, 1.93,         # delta de las tres finalidades urgentes y de Urgent needs
+    2.26, 1.83, 2.87, 1.06,               # adelanto con 365, 270, 1.095 y 180 dias (sin el 3,00)
+    14.62, 16.81, 2.35, 2.27, 2.3, 3.9,   # plazo largo con 60, 66, 48, 54 y su rango de delta
+    0.0387, 0.0522, 0.0614,               # r_rb de la hora temprana hasta las 7, las 8 y las 9
+    0.0342, 0.0654, 0.0769,               # r_rb del conteo con 183, 365 y 730 dias
+    2.03, 1.51, 1.68,                     # superaditividad con 3, 4 y 5 años sobre train
+    # el mínimo de denominador del 4.9, que params.py cita al retirar los dos cortes
+    0.1221, 0.1555,                       # r_rb del rechazo con 1 y con 2 solicitudes
+    0.0022, 0.0308, 0.0665,               # r_rb de los excluidos del rechazo con 2, 3 y 5
+    0.0227, 0.0569,                       # r_rb de los excluidos con 2: calle y sobreconcesion
+    1.63, 3.67,                           # delta de la unica rechazada, en la cruda y en train
+    0.065, 0.083,                         # p de los excluidos con 2 en el rechazo y la finalidad
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -279,6 +302,7 @@ TABLAS = ["bureau", "bureau_balance", "previous_application"]
 SIN_RECETA = {
     "bureau": set(agg_bureau.COLUMNAS_SIN_RECETA),
     "bureau_balance": set(agg_bureau_balance.COLUMNAS_SIN_RECETA),
+    "previous_application": set(agg_previous.COLUMNAS_SIN_RECETA),
 }
 
 
@@ -344,13 +368,10 @@ def test_todo_corte_reajustable_lo_usa_alguna_feature_o_es_transversal():
     """Un corte reajustable que no usa nadie es un valor huérfano.
 
     Los transversales no aparecen en el mapa porque no pertenecen a una feature concreta:
-    son los percentiles de application_train y los tres pendientes de la capa 2b.
+    son los percentiles de application_train y el pendiente de la capa 2b.
     """
     usados = set(features_con_corte())
-    transversales = {n for n in PARAMS if n.startswith("app_")} | {
-        "umbral_continuas_rb",
-        "min_denominador_proporcion",
-    }
+    transversales = {n for n in PARAMS if n.startswith("app_")} | {"umbral_continuas_rb"}
     huerfanos = set(reajustables()) - usados - transversales
     assert not huerfanos, f"cortes reajustables que no usa ninguna feature: {sorted(huerfanos)}"
 
@@ -381,6 +402,27 @@ def test_el_denominador_y_la_mora_reciente_de_bb_son_dominio_con_su_contraste(no
     """El barrido del EDA no tiene pico, así que no hay corte que refijar sobre train (3.8)."""
     assert parametro(nombre).procedencia == "dominio"
     assert valor(nombre) == 6
+    assert nombre in con_contraste_pendiente()
+
+
+@pytest.mark.parametrize(
+    ("nombre", "referencia"),
+    [
+        ("prev_adelanto_liquidacion_dias", 365),
+        ("prev_plazo_largo_cuotas", 60),
+        ("prev_ventana_reciente_dias", 365),
+        ("prev_hora_temprana_max", 8),
+        ("prev_relacion_larga_anios", 4),
+    ],
+)
+def test_los_cinco_cortes_de_dominio_de_previous_llevan_contraste(nombre, referencia):
+    """Ninguno de los cinco tiene pico que barrer sobre train, así que no se refijan.
+
+    El valor va escrito a mano: el fixture de previous los lee de `valor()` y se mueve con ellos,
+    así que con la hora a 7 o a 9 ningún test de CI se ponía rojo.
+    """
+    assert parametro(nombre).procedencia == "dominio"
+    assert valor(nombre) == referencia
     assert nombre in con_contraste_pendiente()
 
 
@@ -474,8 +516,8 @@ def test_valor_operativo_sin_n_train_asociado_revienta():
 
 def test_la_referencia_del_eda_no_se_usa_hasta_que_alguien_la_declara_sobre_train():
     """El número que ya vivía en PARAMS no basta solo, aunque sea el mismo que se acabe fijando."""
-    referencia = parametro("prev_plazo_largo_cuotas").valor_referencia
+    referencia = parametro("prev_count_cola").valor_referencia
     with pytest.raises(ValueError, match="sin fijar"):
-        valor("prev_plazo_largo_cuotas")
-    fijar_operativo("prev_plazo_largo_cuotas", referencia, n_train=245_993)
-    assert valor("prev_plazo_largo_cuotas") == referencia
+        valor("prev_count_cola")
+    fijar_operativo("prev_count_cola", referencia, n_train=245_993)
+    assert valor("prev_count_cola") == referencia

@@ -55,12 +55,13 @@ class Parametro:
     perderse al reclasificarlo.
     """
 
-    valor_referencia: float | None
+    # una tupla cuando el corte es una lista de categorías, como las finalidades urgentes
+    valor_referencia: float | tuple[str, ...] | None
     procedencia: str
     descripcion: str
     fuente: str
     contraste_pendiente: str | None = None
-    valor_operativo: float | None = None
+    valor_operativo: float | tuple[str, ...] | None = None
     n_train_operativo: int | None = None
 
     def __post_init__(self) -> None:
@@ -134,13 +135,16 @@ PARAMS: dict[str, Parametro] = {
         "evidencia propia converja al comportamiento medio en vez de a su propio azar",
         "convención de suavizado bayesiano de WoE",
     ),
-    "min_denominador_proporcion": Parametro(
-        None,
-        "medido",
-        "denominador mínimo de toda proporción de cliente; hoy solo bureau_balance lo exige "
-        "y previous_application lo mide sin fijarlo",
-        "auditoría transversal, pendiente 1",
-    ),
+    # Sin mínimo transversal de denominador, decidido en el 4.9 con el usuario: el pendiente 1 de
+    # la auditoría transversal se cierra por tabla y no con un número. Los denominadores tienen
+    # unidades distintas (meses reportados, créditos y solicitudes) y cada tabla decide el suyo:
+    # bureau, sin mínimo (2.3); bureau_balance, `bb_min_meses_reportados`, de dominio; y
+    # previous_application, sin mínimo en ninguna de sus seis proporciones de conteos, medido sobre
+    # train con `informe_denominador_previous()`. Con el de dos el grupo que queda fuera separa con
+    # significación en cuatro (r_rb de 0,0227 a 0,0569 en la calle, la hora, el acompañante y la
+    # sobreconcesión); en el rechazo y en la finalidad urgente no llega (p de 0,065 y 0,083), pero
+    # el mínimo mandaría a la mediana al 18% y al 67% de los clientes, y con 3 y 5 el grupo
+    # excluido separa en las seis. El del rechazo, con su motivo, está al final de este registro.
     "remedicion_factor_max": Parametro(
         2.0,
         "dominio",
@@ -425,10 +429,86 @@ PARAMS: dict[str, Parametro] = {
             "test_contraste_de_la_ventana_minima_de_la_trayectoria"
         ),
     ),
+    # previous_application. Dominio porque es la ventana de un año y no se eligió contra el default:
+    # el notebook corta `DAYS_DECISION > -365` con el 365 literal y no con dias_por_anio, y no es
+    # lo mismo: hay 1.855 solicitudes justo en -365 y con 365,25 entrarían, lo que mueve el
+    # conteo de 1.201 clientes
+    "prev_ventana_reciente_dias": Parametro(
+        365,
+        "dominio",
+        "ventana de las solicitudes recientes, un año, con el borde fuera",
+        "notebook 04 celda 121",
+        contraste_pendiente=(
+            "comprobar sobre el split que la actividad reciente separa el default con ventanas "
+            "de 6, 12 y 24 meses. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_de_la_ventana_reciente: el conteo separa con las tres, pero su "
+            "magnitud crece con la ventana y la cola de 4 solo cruza umbral_flags_pp desde los "
+            "12 meses, así que la ventana es una convención y no un valor libre"
+        ),
+    ),
+    # Dominio por lo mismo que las app_hora_*: hasta las 8 es la franja antes de que abra la
+    # oficina a las 9, y el 82,44% de las decisiones de los clientes de train cae entre las 9 y las
+    # 17 (82,43% sobre la tabla entera). El borde entra
+    "prev_hora_temprana_max": Parametro(
+        8,
+        "dominio",
+        "última hora de la franja temprana de la solicitud, con el borde dentro",
+        "notebook 04 celda 153",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_EARLY_HOUR_RATIO separa el default con la franja "
+            "hasta las 7, las 8 y las 9, con efectos dentro de remedicion_factor_max entre sí, o "
+            "sea que la señal no depende de este valor. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_de_la_hora_temprana"
+        ),
+    ),
+    # Dominio y no medido, decidido en el 4.7: es un borde de la rejilla descriptiva de la celda
+    # 121 (0, 1, 2, 4, 6 y 8 años), que parte la cartera casi por la mitad, y no salió de un
+    # barrido. Sobre train completo la superaditividad con 2 a 6 años es +2,86, +1,99, +1,61,
+    # +1,78 y +1,73pp: positiva con cualquiera, y el 4 es casi la más baja. El borde entra
+    "prev_relacion_larga_anios": Parametro(
+        4,
+        "dominio",
+        "años desde la solicitud más antigua a partir de los cuales la relación es larga, con el "
+        "borde dentro",
+        "notebook 04 celdas 121 y 131",
+        contraste_pendiente=(
+            "comprobar sobre el split que la relación corta con actividad alta sigue siendo "
+            "superaditiva con 3, 4 y 5 años, o sea que PREV_RELACION_CORTA_ACTIVA no depende de "
+            "este valor. Ejecutado en el 4.8 y fijado en test_contraste_de_la_relacion_larga"
+        ),
+    ),
     # previous_application: cortes medidos
+    # Medido y no dominio, decidido en el 4.6 con auditoria-fuga-datos: la lista se escribe como
+    # liquidez urgente, pero sus cinco finalidades con al menos 100 solicitudes son exactamente las
+    # cinco primeras de la tabla ordenada por tasa de default (celda 92), y el corte cae justo
+    # después: Medicine (13,42%) y Repairs (13,00%) van sexta y séptima y se quedan fuera. Las otras
+    # dos no llegan a las 100 solicitudes de train (13 y 23; sobre la tabla entera, 15 y 25).
+    # Refijada en el 4.8 con n de 100 o más y +2pp sobre la global de las declaradas: sale Car
+    # repairs, Gasification y Payments on other loans sobre 28.564 clientes. Urgent needs se queda
+    # fuera con +1,85pp en train (+1,93pp en el crudo), y con ella Building a house or an annex
+    "prev_finalidades_urgentes": Parametro(
+        (
+            "Refusal to name the goal",
+            "Car repairs",
+            "Gasification / water supply",
+            "Money for a third person",
+            "Payments on other loans",
+            "Urgent needs",
+            "Building a house or an annex",
+        ),
+        "medido",
+        "finalidades declaradas que cuentan como liquidez urgente",
+        "notebook 04 celdas 92 y 153",
+    ),
+    # El 15 es el primero de la rejilla del EDA (8, 11, 15 y 20) que cruza umbral_flags_pp. Con el
+    # barrido entero sobre train el corte baja a 11, con +2,04pp y 20.319 marcados: el 11 que el EDA
+    # descartaba por +1,91pp cruza al medirlo sobre el 80%, y el 15 sube a +3,31pp
     "prev_count_cola": Parametro(
         15, "medido", "corte de la cola del conteo de solicitudes", "notebook 04 celda 153"
     ),
+    # El EDA registró el 4 de su rejilla descriptiva sin declarar criterio, y su barrido ya cruzaba
+    # en 3 (+2,01pp). Con el criterio de las otras tres colas el 4 se sostiene sobre train: el 3
+    # baja a +1,99pp y el 4 da +2,31pp con 36.575 marcados
     "prev_actividad_12m_cola": Parametro(
         4,
         "medido",
@@ -436,18 +516,42 @@ PARAMS: dict[str, Parametro] = {
         "término de la interacción con la longitud de relación",
         "notebook 04 celda 153",
     ),
+    # Dominio y no medido, decidido en el 4.8 con el usuario: el año es la convención y el barrido
+    # no tiene pico. Sobre los 214.134 clientes de train con operación terminada el delta de la
+    # bandera sube casi continuo con el corte (+1,06pp con 180 días, +1,83pp con 270, +2,26pp con
+    # 365, +3,00pp con 730) y baja a +2,87pp con 1.095. El primer cruce de los 2pp depende de la
+    # rejilla, así que la rejilla y no el dato elegiría el corte, como en los 180 días de bureau
     "prev_adelanto_liquidacion_dias": Parametro(
         365,
-        "medido",
-        "adelanto sobre la fecha de fin prevista que marca liquidación anticipada",
+        "dominio",
+        "adelanto sobre la fecha de fin prevista que marca liquidación anticipada, con el borde "
+        "fuera",
         "notebook 04 celda 125",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_EARLY_SETTLED_FLAG cruza umbral_flags_pp con 365, "
+            "545, 730 y 1.095 días y no con 270, o sea que la señal empieza en el año y no "
+            "depende del valor por encima de él. Ejecutado en el 4.8 y fijado en "
+            "test_contraste_del_adelanto_de_liquidacion"
+        ),
     ),
+    # Dominio y no medido, decidido en el 4.8 con el usuario: el plazo solo toma los valores 36, 42,
+    # 48, 54, 60, 66, 72 y 84, y el 60 es el borde del plazo estándar, donde acaba la masa de 35.487
+    # solicitudes no aprobadas a exactamente 60 cuotas. No hay pico que barrer: con cualquier corte
+    # hasta el 54 la bandera marca de 12.669 a 43.387 clientes de train con +2,3pp a +3,9pp, y el
+    # salto a +14,62pp con 57 marcados llega justo al pasar del 54 al 60
     "prev_plazo_largo_cuotas": Parametro(
         60,
-        "medido",
+        "dominio",
         "plazo por encima del cual la petición rechazada marca; el mismo plazo concedido no marca",
         "notebook 04 celda 153",
+        contraste_pendiente=(
+            "comprobar sobre el split que PREV_REFUSED_LONG_TERM_FLAG separa más de 10pp con 60 y "
+            "con 66 cuotas, y que con 48 y 54 mide otra población, la masa de 60 cuotas, con "
+            "efectos de otro orden. Ejecutado en el 4.8 y fijado en test_contraste_del_plazo_largo"
+        ),
     ),
+    # Refijado en el 4.8 con la rejilla del EDA: sobre train el 1,1 se queda en r_rb 0,1208 (0,1194
+    # en el EDA) sobre 231.992 clientes, y el 1,05 y el 1,2 bajan a 0,0837 y 0,0820
     "prev_sobreconcesion_corte": Parametro(
         1.1,
         "medido",
@@ -455,13 +559,13 @@ PARAMS: dict[str, Parametro] = {
         "que entra, y no sobre la bandera, que daba un corte opuesto",
         "notebook 04 celda 160",
     ),
-    "prev_ratio_rechazo_min_solicitudes": Parametro(
-        None,
-        "medido",
-        "mínimo de solicitudes para que el ratio de rechazo tenga denominador; sin mínimo "
-        "rinde 0,1204 con cobertura total y con dos rinde 0,1558 cubriendo el 81,95%",
-        "notebook 04 celda 155",
-    ),
+    # Sin corte de mínimo de solicitudes para PREV_REFUSED_RATIO, decidido en el 4.9 con el
+    # usuario. Sobre train el único mínimo defendible es 2 (r_rb 0,1555 frente a 0,1221, con el
+    # 81,98% de cobertura), porque con 3 y 5 el grupo que dejan fuera separa con significación
+    # (0,0308 y 0,0665). Con 2 el grupo excluido apenas separa (0,0022), pero su lectura de
+    # bandera se mueve entre +1,63pp con n=250 en la tabla cruda y +3,67pp con n=193 en train,
+    # dentro del mismo error típico, y el mínimo mandaría a la mediana (0) a 41.956 clientes,
+    # entre ellos las 193 únicas rechazadas.
 }
 
 # Qué corte lleva dentro cada feature de las tres recetas. Es lo que permite comprobar que
@@ -491,14 +595,21 @@ CORTES_POR_FEATURE: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "previous_application": {
         "PREV_COUNT_COLA": ("prev_count_cola",),
-        "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola",),
+        "PREV_COUNT_12M": ("prev_ventana_reciente_dias",),
+        "PREV_ACTIVIDAD_12M_COLA": ("prev_actividad_12m_cola", "prev_ventana_reciente_dias"),
+        "PREV_RELACION_CORTA_ACTIVA": (
+            "prev_actividad_12m_cola",
+            "prev_ventana_reciente_dias",
+            "prev_relacion_larga_anios",
+        ),
         "PREV_EARLY_SETTLED_FLAG": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_COUNT": ("prev_adelanto_liquidacion_dias",),
         "PREV_EARLY_SETTLED_RATIO": ("prev_adelanto_liquidacion_dias",),
         "PREV_REFUSED_LONG_TERM_FLAG": ("prev_plazo_largo_cuotas",),
         "PREV_OVERGRANTED_RATIO": ("prev_sobreconcesion_corte",),
-        "PREV_REFUSED_RATIO": ("prev_ratio_rechazo_min_solicitudes",),
         "PREV_APPLICATIONS_PER_YEAR": ("suelo_anios_denominador",),
+        "PREV_EARLY_HOUR_RATIO": ("prev_hora_temprana_max",),
+        "PREV_URGENT_PURPOSE_RATIO": ("prev_finalidades_urgentes",),
     },
 }
 
@@ -529,7 +640,7 @@ def valor(nombre: str):  # noqa: ANN201 - devuelve el tipo que declare el parám
 
 
 def fijar_operativo(
-    nombre: str, valor_nuevo: float, n_train: int, sobrescribir: bool = False
+    nombre: str, valor_nuevo: float | tuple[str, ...], n_train: int, sobrescribir: bool = False
 ) -> None:
     """Único punto de escritura del valor operativo de un reajustable.
 
