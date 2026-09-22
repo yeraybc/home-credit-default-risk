@@ -34,8 +34,12 @@ from sklearn.pipeline import Pipeline
 
 from src.config import cargar_config, ruta
 from src.data.loader import load_table
-from src.features.agg_bureau import vencimiento_a_termino
-from src.features.agg_bureau_balance import puente_credito_cliente
+from src.features.agg_bureau import agregar_bureau, unir_bureau, vencimiento_a_termino
+from src.features.agg_bureau_balance import (
+    agregar_bureau_balance,
+    puente_credito_cliente,
+    unir_bureau_balance,
+)
 from src.features.agg_previous import (
     CAPTACION_CALLE,
     agregar_previous,
@@ -44,6 +48,7 @@ from src.features.agg_previous import (
     fin_de_ventana,
     finalidad_declarada,
     solicitudes_recientes,
+    unir_previous,
 )
 from src.features.application import construir_features_capa1, verificar_contrato_capa1
 from src.features.cleaning import (
@@ -172,6 +177,76 @@ def construir_base(sobrescribir: bool = False) -> tuple[pd.DataFrame, pd.DataFra
     base = preparar_application()
     split = construir_split(app=base, sobrescribir=sobrescribir)
     return base, split
+
+
+def _verificar_union(unido: pd.DataFrame, base: pd.DataFrame, etiqueta: str) -> None:
+    """El `join` no puede cambiar la población: mismas filas que `base`, índice único."""
+    if len(unido) != len(base):
+        raise ValueError(
+            f"unir_{etiqueta}() cambió el número de filas: {len(base):,} -> {len(unido):,}. "
+            "Un left join no infla filas salvo que la lista de clientes traiga un duplicado."
+        )
+    if not unido.index.is_unique:
+        raise ValueError(f"el índice deja de ser único tras unir_{etiqueta}()")
+
+
+def _fijar_tipos(unido: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
+    """Castea a float64 las columnas que trajo el agregado, salvo `BB_TRAYECTORY`.
+
+    Es la frontera que construye la matriz la que exige el contrato de esquema, no cada pieza:
+    `agregar_bureau()`, `agregar_bureau_balance()` y `agregar_previous()` siguen siendo
+    permisivas, porque a la API puede llegar un frame parcial. Sin este casteo el esquema
+    depende del lote: un cliente sin historial deja un conteo en float64 y uno con todos con
+    historial lo deja en int64 o int8, el patrón 12 sobre la matriz de capa 1. Las `HAS_*` las
+    crea cada `unir_*` en int8 y no se tocan aquí.
+    """
+    columnas = [c for c in agregado.columns if c != "BB_TRAJECTORY"]
+    return unido.astype(dict.fromkeys(columnas, "float64"))
+
+
+def ensamblar_auxiliares(
+    base: pd.DataFrame, bureau: pd.DataFrame, bb: pd.DataFrame, prev: pd.DataFrame
+) -> pd.DataFrame:
+    """Agrega y une las tres auxiliares a la base de capa 1, sin tocar el split.
+
+    Capa 1 pura: no estima nada, no mira al TARGET y el agregado de un cliente solo depende de
+    sus propias filas, así que corre fuera del split y el mismo camino sirve para
+    `application_test` y para un cliente suelto de la API. Las tres tablas van crudas, cada
+    agregación limpia lo suyo y es idempotente.
+
+    Ninguna agregación recibe `cortes`: los ocho de `CORTES_AUXILIARES` se leen de `params.py`,
+    y pasarlos a mano es para los contrastes, nunca para construir la matriz. Si alguno sigue sin
+    fijar, revienta antes de agregar nada, nombrando cómo se arregla.
+
+    El orden de las uniones no es preferencia: `unir_bureau_balance()` exige que `clientes` ya
+    traiga `BUREAU_OVERDUE_UNION`, porque `BB_OVERDUE_UNION` la lee para no perder la mora del
+    cliente con historial de bureau y sin panel mensual.
+    """
+    faltan = [c for c in CORTES_AUXILIARES if parametro(c).valor_operativo is None]
+    if faltan:
+        raise ValueError(
+            f"cortes de las auxiliares sin fijar: {faltan}. Refíjalos con "
+            "refijar_cortes_auxiliares() y guardar_cortes(), o cárgalos con cargar_cortes() "
+            "si ya están persistidos en cortes.json."
+        )
+    puente = puente_credito_cliente(bureau)
+
+    ag_bureau = agregar_bureau(bureau)
+    unido = unir_bureau(base, ag_bureau)
+    _verificar_union(unido, base, "bureau")
+    unido = _fijar_tipos(unido, ag_bureau)
+
+    ag_bb = agregar_bureau_balance(bb, puente)
+    unido = unir_bureau_balance(unido, ag_bb)
+    _verificar_union(unido, base, "bureau_balance")
+    unido = _fijar_tipos(unido, ag_bb)
+
+    ag_prev = agregar_previous(prev)
+    unido = unir_previous(unido, ag_prev)
+    _verificar_union(unido, base, "previous")
+    unido = _fijar_tipos(unido, ag_prev)
+
+    return unido
 
 
 def matriz_de_features(base: pd.DataFrame) -> pd.DataFrame:
