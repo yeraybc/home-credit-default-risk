@@ -13,16 +13,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.features.agg_bureau_balance import TRAYECTORIAS
 from src.features.pipeline import (
+    BANDERAS_AUX,
     BINARIAS,
     CATEGORICAS_OHE,
     CODIGO_EDUCACION_DESCONOCIDA,
+    CODIGO_SIN_TRAYECTORIA,
     COL_DIA,
     COL_EDUCACION,
     COL_FRANJA,
     COL_HORA,
     COL_OCUPACION,
     COL_ORGANIZACION,
+    COL_TRAYECTORIA,
     COLUMNAS_PROTEGIDAS_DE_VARIANZA,
     DIA_FIN_DE_SEMANA,
     DIA_LABORABLE,
@@ -33,10 +37,14 @@ from src.features.pipeline import (
     JERARQUIA_EDUCACION,
     NIVEL_SIN_OCUPACION,
     NUMERICAS,
+    NUMERICAS_AUX,
+    PRESENCIA_AUX,
     PRESENCIA_CASI_EXACTA,
     PRESENCIA_POR_BANDERA,
     PRESENCIA_POR_BLOQUE,
+    PRESENCIA_POR_COLUMNA,
     REPARTO,
+    RESIDUO_PRESENCIA_POR_COLUMNA,
     aplicar_dominio,
     columnas_declaradas,
     construir_pipeline,
@@ -50,19 +58,23 @@ from src.features.pipeline import (
 # nivel único y el OHE trabajaba sobre constantes que después se llevaba el VarianceThreshold.
 # Los tests pasaban igual, midiendo una matriz degenerada. Lo vigila `test_el_fixture_no_colapsa`.
 N = 600
-COLUMNAS_ENTRADA = 101
+COLUMNAS_ENTRADA = 180
 N_POSITIVOS = 100
 N_NULOS_OCUPACION = 100
 N_FIN_DE_SEMANA = 200
 N_ORGANIZACION_MINORITARIA = 150
+N_NULOS_AUX = 60
 
 
 @pytest.fixture
 def entrada():
-    """Las 101 columnas que ve el pipeline, con valores plausibles y variedad en cada bucket.
+    """Las 180 columnas que ve el pipeline, con valores plausibles y variedad en cada bucket.
 
     Se arma desde las listas declaradas y no a mano: si mañana entra una columna nueva al
     contrato, el fixture la trae sola y no hay dos sitios que sincronizar.
+
+    Las de las auxiliares (5.3) llevan NaN intercalado y no en bloque, igual que la ocupación:
+    es lo que ejercita de verdad los dos imputadores nuevos, `cero` y `tray`.
     """
     frame = pd.DataFrame({c: np.linspace(1.0, 100.0, N) for c in NUMERICAS})
     # los cuatro numeradores y denominadores de los dos ratios posteriores, separados: con el
@@ -73,8 +85,26 @@ def entrada():
     frame["CNT_CHILDREN"] = np.tile([0.0, 1.0, 2.0, 3.0], N // 4)
     frame["CNT_FAM_MEMBERS"] = frame["CNT_CHILDREN"] + 2.0
     frame[COL_HORA] = list(range(24)) * (N // 24)
-    for c in BINARIAS:
+    for c in NUMERICAS_AUX:
+        frame[c] = np.linspace(1.0, 100.0, N)
+    for c in BINARIAS + PRESENCIA_AUX:
         frame[c] = ([0] * (N - 50)) + ([1] * 50)
+    for i, c in enumerate(BANDERAS_AUX):
+        # la mitad con mayoría de unos y la mitad con mayoría de ceros: es lo que reproduce, en
+        # el fixture, por qué la mediana no vale para estas columnas (en dos de las 30 reales
+        # sale 1) y separa la constante de la mediana en vez de coincidir por casualidad. El
+        # patrón se desplaza por columna, así que una mutación que rompa una sola fila no la
+        # cazaría ningún test si el hueco fuera siempre el mismo
+        mayoria = 1.0 if i % 2 == 0 else 0.0
+        bandera = ([mayoria] * (N - 50)) + ([1.0 - mayoria] * 50)
+        for j in range(N_NULOS_AUX):
+            bandera[(j * 7 + i) % N] = np.nan
+        frame[c] = bandera
+    niveles = list(TRAYECTORIAS.categories)
+    trayectoria = [niveles[i % len(niveles)] for i in range(N)]
+    for j in range(N_NULOS_AUX):
+        trayectoria[j * 9 % N] = None
+    frame[COL_TRAYECTORIA] = pd.Series(trayectoria, dtype=TRAYECTORIAS)
     for c in CATEGORICAS_OHE:
         if c == COL_FRANJA:
             continue
@@ -155,13 +185,13 @@ def test_una_columna_de_menos_tambien_revienta(entrada):
 
 
 def test_el_pipeline_exige_el_contrato_con_una_columna_de_mas(entrada, objetivo):
-    """El fallo que caza: una agregación del bloque 2 en la base, caída sin avisar.
+    """El fallo que caza: una feature nueva de un bloque futuro en la base, caída sin avisar.
 
     Sin la guarda dentro del pipeline la matriz sale idéntica a la de sin esa columna, o sea que
     ni el conteo de columnas la delata.
     """
     with pytest.raises(ValueError, match="sobran"):
-        construir_pipeline().fit(entrada.assign(BUREAU_LOAN_COUNT=1.0), objetivo)
+        construir_pipeline().fit(entrada.assign(COLUMNA_DEL_BLOQUE_6=1.0), objetivo)
 
 
 def test_el_pipeline_exige_el_contrato_con_una_columna_de_menos(entrada, objetivo):
@@ -181,7 +211,7 @@ def test_en_transform_la_columna_de_mas_ya_reventaba_antes_de_la_guarda(entrada,
     pipeline = construir_pipeline().fit(entrada, objetivo)
 
     with pytest.raises(ValueError, match="Length mismatch"):
-        pipeline.transform(entrada.assign(BUREAU_LOAN_COUNT=1.0))
+        pipeline.transform(entrada.assign(COLUMNA_DEL_BLOQUE_6=1.0))
 
 
 def test_el_informe_de_buckets_cuadra_con_el_frame(entrada):
@@ -526,10 +556,12 @@ def test_el_total_de_columnas_de_salida_cuadra_bucket_a_bucket(entrada, objetivo
     """La aritmética completa, calculada aparte y no leída del pipeline ya ajustado."""
     niveles = _niveles_por_columna(entrada)
     esperado = (
-        len(NUMERICAS)
+        len(NUMERICAS) + len(NUMERICAS_AUX)
         + sum(1 if k == 2 else k for k in niveles.values())
         + 3  # ordinal, WoE y target encoding, una columna cada uno
-        + len(BINARIAS)
+        + len(BINARIAS) + len(PRESENCIA_AUX)
+        + len(BANDERAS_AUX)  # el bucket de constante 0
+        + 1  # el ordinal de BB_TRAYECTORY
     )
     salida = construir_pipeline().fit_transform(entrada, objetivo)
 
@@ -688,26 +720,44 @@ def test_el_fixture_asimetrico_separa_la_mediana_de_la_media(entrada_asimetrica)
 # --- de dónde se recupera lo que la mediana rellena -------------------------------------------
 
 
-def test_los_cuatro_grupos_de_presencia_no_se_solapan():
-    """Una numérica en dos grupos diría dos cosas distintas sobre la misma imputación."""
+def test_los_cinco_grupos_de_presencia_no_se_solapan():
+    """Una numérica en dos grupos diría dos cosas distintas sobre la misma imputación.
+
+    Cinco desde el 5.3, que añadió `PRESENCIA_POR_COLUMNA` para las de `bureau_balance` que se
+    recuperan por otra columna de la matriz y no por su `HAS_*`.
+    """
     grupos = [
         set(PRESENCIA_POR_BANDERA),
+        set(PRESENCIA_POR_COLUMNA),
         set(PRESENCIA_CASI_EXACTA),
         set(PRESENCIA_POR_BLOQUE),
         set(IMPUTACION_SIN_RASTRO),
     ]
     union = set().union(*grupos)
+    numericas = set(NUMERICAS + NUMERICAS_AUX)
 
     assert sum(len(g) for g in grupos) == len(union)
-    assert union <= set(
-        NUMERICAS
-    ), f"declaradas fuera del bucket numérico: {union - set(NUMERICAS)}"
+    assert union <= numericas, f"declaradas fuera del bucket numérico: {union - numericas}"
 
 
 def test_las_banderas_de_presencia_estan_de_verdad_en_la_matriz():
-    """De poco sirve declarar que una bandera recupera la ausencia si no llega a la matriz."""
+    """De poco sirve declarar que una bandera recupera la ausencia si no llega a la matriz.
+
+    `PRESENCIA_CASI_EXACTA` puede apuntar a una de las 30 del bucket de constante 0 (`bureau`
+    tiene dos, `HAS_BUREAU_OVERDUE_HISTORY` y `HAS_BUREAU_FINANCIAL_DETAIL`), así que el universo
+    de banderas válidas también incluye `BANDERAS_AUX`.
+    """
     for numerica, bandera in {**PRESENCIA_POR_BANDERA, **PRESENCIA_CASI_EXACTA}.items():
-        assert bandera in BINARIAS or bandera in CATEGORICAS_OHE, f"{numerica} apunta a {bandera}"
+        assert bandera in BINARIAS or bandera in CATEGORICAS_OHE or bandera in (
+            PRESENCIA_AUX + BANDERAS_AUX
+        ), f"{numerica} apunta a {bandera}"
+
+
+def test_las_columnas_que_lee_presencia_por_columna_estan_en_la_matriz():
+    """Lo mismo que el test de arriba, para el grupo cuyo valor es una función y no un nombre."""
+    columnas_que_lee = {"HAS_BUREAU_BALANCE", "BB_MONTHS_REPORTED", "BB_ANY_DPD_FLAG"}
+    assert columnas_que_lee <= set(NUMERICAS_AUX) | set(PRESENCIA_AUX) | set(BANDERAS_AUX)
+    assert set(RESIDUO_PRESENCIA_POR_COLUMNA) == set(PRESENCIA_POR_COLUMNA)
 
 
 def test_el_bloque_edificio_se_recupera_por_su_conteo_y_su_bandera():
@@ -753,3 +803,56 @@ def test_las_protegidas_son_binarias_de_la_matriz(entrada):
     for bandera in COLUMNAS_PROTEGIDAS_DE_VARIANZA:
         assert bandera in BINARIAS
         assert bandera in entrada.columns
+
+
+# --- los dos buckets nuevos del 5.3: constante 0 y el ordinal de la trayectoria ----------------
+
+
+def test_la_bandera_de_auxiliar_se_imputa_a_cero_y_no_a_la_mediana(entrada, objetivo):
+    """La razón de la decisión, reproducida sobre el fixture: la mitad de las 30 tiene mayoría
+    de unos, como en el dato real pasa con dos de ellas, y ahí la mediana pondría un 1."""
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    for bandera in BANDERAS_AUX:
+        nulos = entrada[bandera].isna()
+        assert (salida.loc[nulos, bandera] == 0).all(), f"{bandera} no se imputó a 0"
+
+
+def test_el_fixture_de_banderas_aux_separa_la_constante_de_la_mediana(entrada):
+    """Guardián: sin al menos una con mayoría de unos, el test de arriba no distingue las dos
+    estrategias, porque las dos coincidirían en 0."""
+    medianas = {bandera: entrada[bandera].dropna().median() for bandera in BANDERAS_AUX}
+
+    assert all(entrada[b].isna().any() for b in BANDERAS_AUX), "alguna bandera no trae NaN"
+    assert set(medianas.values()) == {0.0, 1.0}
+    assert any(m == 1.0 for m in medianas.values()), "ninguna bandera tiene mayoría de unos"
+
+
+def test_la_trayectoria_sale_ordinal_con_el_sin_dato_fuera_de_escala(entrada, objetivo):
+    """`BB_TRAJECTORY` en una columna, con los cuatro niveles en el orden de `TRAYECTORIAS` y el
+    NaN en `CODIGO_SIN_TRAYECTORIA`, no en el nivel medio de la escala."""
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+    niveles = list(TRAYECTORIAS.categories)
+
+    nulos = entrada[COL_TRAYECTORIA].isna()
+    assert (salida.loc[nulos, COL_TRAYECTORIA] == CODIGO_SIN_TRAYECTORIA).all()
+    for codigo, nivel in enumerate(niveles):
+        con_ese_nivel = entrada[COL_TRAYECTORIA] == nivel
+        assert (salida.loc[con_ese_nivel, COL_TRAYECTORIA] == codigo).all()
+
+
+def test_la_trayectoria_no_vista_tambien_sale_en_codigo_sin_dato(entrada, objetivo):
+    """Una categoría que el `fit` no vio nunca no puede colarse como un nivel intermedio."""
+    pipeline = construir_pipeline().fit(entrada, objetivo)
+    con_nivel_nuevo = entrada.assign(**{COL_TRAYECTORIA: "nivel jamas visto"})
+
+    salida = pipeline.transform(con_nivel_nuevo)
+
+    assert (salida[COL_TRAYECTORIA] == CODIGO_SIN_TRAYECTORIA).all()
+
+
+def test_la_matriz_final_no_trae_ni_un_nulo(entrada, objetivo):
+    """La garantía de fondo del punto: el modelo no puede recibir un NaN."""
+    salida = construir_pipeline().fit_transform(entrada, objetivo)
+
+    assert int(salida.isna().sum().sum()) == 0

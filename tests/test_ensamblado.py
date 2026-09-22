@@ -161,6 +161,23 @@ def test_la_forma_es_la_base_mas_las_79_de_las_auxiliares(base, ensamblado):
     assert list(ensamblado["SK_ID_CURR"]) == list(base["SK_ID_CURR"])
 
 
+def test_las_79_del_ensamblado_son_exactamente_las_del_reparto_de_buckets(base, ensamblado):
+    """El guardián del 5.3: una columna nueva de una agregación que nadie reparta se caería de
+    la matriz en silencio, porque `verificar_contrato_columnas()` la rechaza y `remainder="drop"`
+    se la lleva. Corre en CI, sin CSV, contra el fixture sintético del ensamblado; el fixture no
+    trae las columnas de `application_train`, así que aquí se cruzan solo las 79 y no el
+    contrato completo, que exige también esas."""
+    from src.features.pipeline import BANDERAS_AUX, COL_TRAYECTORIA, NUMERICAS_AUX, PRESENCIA_AUX
+
+    nuevas = set(ensamblado.columns) - set(base.columns)
+    declaradas = set(NUMERICAS_AUX) | set(BANDERAS_AUX) | set(PRESENCIA_AUX) | {COL_TRAYECTORIA}
+
+    assert nuevas == declaradas, (
+        f"sin repartir: {sorted(nuevas - declaradas)}; declaradas sin producir: "
+        f"{sorted(declaradas - nuevas)}"
+    )
+
+
 def test_el_indice_es_unico(ensamblado):
     assert ensamblado.index.is_unique
 

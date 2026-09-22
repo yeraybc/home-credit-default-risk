@@ -69,6 +69,31 @@ def base():
     return preparar_application()
 
 
+@pytest.fixture(scope="module")
+def tablas_auxiliares(base):
+    """Lo caro del 5.3, cacheado por módulo y sin tocar `PARAMS`: el split y las tres tablas, con
+    el mismo criterio de carga que el 5.2 (`bureau` y `previous_application` sin reducir memoria).
+    `cargar_cortes()` sí muta `PARAMS`, así que va aparte en `base_ensamblada`, de function scope,
+    para no fijarse antes del snapshot de `restaurar_params` (conftest.py) y filtrarse a otros
+    ficheros, como ya explica el mismo desdoblamiento en `tests/test_ensamblado.py`."""
+    split = cargar_split()
+    bureau = load_table("bureau", reduce_memory=False)
+    bb = load_table("bureau_balance")
+    prev = load_table("previous_application", reduce_memory=False)
+    return base, split, bureau, bb, prev
+
+
+@pytest.fixture
+def base_ensamblada(tablas_auxiliares):
+    """La base con las tres auxiliares del 5.2 ya pegadas: las 180 columnas que el pipeline exige
+    desde el 5.3, con el contrato de `verificar_contrato_columnas()` en verde."""
+    from src.features.build_features import cargar_cortes, ensamblar_auxiliares
+
+    base, split, bureau, bb, prev = tablas_auxiliares
+    cargar_cortes(split, sobrescribir=True)
+    return ensamblar_auxiliares(base, bureau, bb, prev)
+
+
 def test_la_limpieza_reproduce_la_puerta_de_salida(cruda, limpia):
     assert len(cruda) == FILAS_CRUDAS
     assert cruda.shape[1] == COLUMNAS_CRUDAS
@@ -379,28 +404,29 @@ def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor
 
 
 # --- puerta de salida del punto 1.4, el ensamblado de las capas 2 -----------------------------
-# El reparto de buckets suma las 101 que ve el ColumnTransformer, que son las 99 de la matriz más
-# los dos ratios que añade el 1.3. Cuidado con el otro 101, el de COLUMNAS_CON_FEATURES: ese
-# lleva la etiqueta y el identificador dentro, y no los dos ratios. Coinciden por casualidad.
-COLUMNAS_DEL_COLUMNTRANSFORMER = 101
-COLUMNAS_DE_LA_MATRIZ_FINAL = 139
+# El reparto de buckets suma las 180 que ve el ColumnTransformer desde el 5.3 (antes 101): las
+# 178 de la matriz ensamblada más los dos ratios que añade el 1.3. Cuidado con el otro 101, el de
+# COLUMNAS_CON_FEATURES: ese es solo la capa 1 de application_train, sin las auxiliares, y sigue
+# en 101 porque el 5.3 no lo toca.
+COLUMNAS_DEL_COLUMNTRANSFORMER = 180
+COLUMNAS_DE_LA_MATRIZ_FINAL = 218
 COLUMNAS_DE_OHE = 52
-BUCKETS = {"num": 48, "ohe": 14, "ord": 1, "woe": 1, "tgt": 1, "bin": 36}
+BUCKETS = {"num": 93, "ohe": 14, "ord": 1, "woe": 1, "tgt": 1, "bin": 39, "cero": 30, "tray": 1}
 
 
 @sin_csv
-def test_la_matriz_final_sale_de_101_columnas_y_da_139():
-    """La cifra de la puerta del 1.4, contra la tabla real y no contra el frame sintético."""
+def test_la_matriz_final_sale_de_180_columnas_y_da_218(base_ensamblada):
+    """La cifra de la puerta del 5.3, contra la tabla real y no contra el frame sintético."""
     from src.features.build_features import ajustar_pipeline
     from src.features.pipeline import informe_buckets
-    from src.features.split import solo_train
+    from src.features.split import cargar_split, solo_train
     from src.features.transformers import RatiosPosteriores, Winsorizador
 
-    base, split = preparar_application(), cargar_split()
-    entrenamiento = solo_train(base, split)
+    split = cargar_split()
+    entrenamiento = solo_train(base_ensamblada, split)
     matriz = matriz_de_features(entrenamiento)
     previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
-    pipeline, salida = ajustar_pipeline(base, split)
+    pipeline, salida = ajustar_pipeline(base_ensamblada, split)
     informe = informe_buckets(previo, pipeline)
 
     assert previo.shape[1] == COLUMNAS_DEL_COLUMNTRANSFORMER
@@ -408,53 +434,46 @@ def test_la_matriz_final_sale_de_101_columnas_y_da_139():
     assert sum(BUCKETS.values()) == COLUMNAS_DEL_COLUMNTRANSFORMER
     assert salida.shape[1] == COLUMNAS_DE_LA_MATRIZ_FINAL
     assert len(salida) == len(entrenamiento)
+    assert int(salida.isna().sum().sum()) == 0, "la matriz no puede salir con ningún NaN"
     # las dos cifras de la puerta salen del informe y no de contarlas a mano
     assert informe.set_index("bucket").loc["ohe", "salen"] == COLUMNAS_DE_OHE
     assert informe["salen"].sum() == COLUMNAS_DE_LA_MATRIZ_FINAL
 
 
 @sin_csv
-def test_el_ohe_expande_sus_14_columnas_en_52():
-    """El resto de la aritmética: 48 + 52 + 1 + 1 + 1 + 36 son las 139."""
+def test_el_ohe_expande_sus_14_columnas_en_52(base_ensamblada):
+    """El resto de la aritmética: 93 + 52 + 1 + 1 + 1 + 39 + 30 + 1 son las 218."""
     from src.features.build_features import ajustar_pipeline
+    from src.features.split import cargar_split
 
-    base, split = preparar_application(), cargar_split()
-    pipeline, _ = ajustar_pipeline(base, split)
+    pipeline, _ = ajustar_pipeline(base_ensamblada, cargar_split())
     ohe = pipeline.named_steps["columnas"].named_transformers_["ohe"]
 
     assert len(ohe.named_steps["codifica"].get_feature_names_out()) == COLUMNAS_DE_OHE
-    assert (
-        BUCKETS["num"]
-        + COLUMNAS_DE_OHE
-        + BUCKETS["ord"]
-        + BUCKETS["woe"]
-        + BUCKETS["tgt"]
-        + BUCKETS["bin"]
-    ) == COLUMNAS_DE_LA_MATRIZ_FINAL
+    assert sum(BUCKETS.values()) - BUCKETS["ohe"] + COLUMNAS_DE_OHE == COLUMNAS_DE_LA_MATRIZ_FINAL
 
 
 @sin_csv
-def test_los_dos_101_no_son_el_mismo_y_se_distinguen():
+def test_los_dos_180_no_son_el_mismo_y_se_distinguen(base_ensamblada):
     """El guardián que el plan pedía: coinciden en número y no en contenido.
 
-    El de la capa 1 lleva `TARGET` y `SK_ID_CURR`; el del ColumnTransformer lleva en su lugar los
-    dos ratios del 1.3. Confundirlos deja un conteo equivocado pasando por bueno.
+    El de la capa 1 ensamblada lleva `TARGET` y `SK_ID_CURR`; el del ColumnTransformer lleva en
+    su lugar los dos ratios del 1.3. Confundirlos deja un conteo equivocado pasando por bueno.
     """
     from src.features.transformers import RatiosPosteriores, Winsorizador
 
-    base = preparar_application()
-    matriz = matriz_de_features(base)
+    matriz = matriz_de_features(base_ensamblada)
     previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
 
-    assert base.shape[1] == COLUMNAS_CON_FEATURES == COLUMNAS_DEL_COLUMNTRANSFORMER
-    assert {"TARGET", "SK_ID_CURR"} <= set(base.columns)
+    assert base_ensamblada.shape[1] == COLUMNAS_CON_FEATURES + 79 == COLUMNAS_DEL_COLUMNTRANSFORMER
+    assert {"TARGET", "SK_ID_CURR"} <= set(base_ensamblada.columns)
     assert not {"TARGET", "SK_ID_CURR"} & set(previo.columns)
     assert {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} <= set(previo.columns)
-    assert not {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} & set(base.columns)
+    assert not {"ANNUITY_TO_INCOME_RATIO", "CHILDREN_TO_FAM_RATIO"} & set(base_ensamblada.columns)
 
 
 @sin_csv
-def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real():
+def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real(base_ensamblada):
     """La codificación cruzada, contra el dato real: 19 niveles y 95 valores fuera de fold.
 
     Y la consecuencia operativa, que es la que importa para la Fase 4: la matriz de
@@ -463,9 +482,9 @@ def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real():
     calculada con ella dentro, que es fuga de etiqueta en la matriz con la que se entrena.
     """
     from src.features.pipeline import COL_OCUPACION, construir_pipeline
-    from src.features.split import solo_train
+    from src.features.split import cargar_split, solo_train
 
-    entrenamiento = solo_train(preparar_application(), cargar_split())
+    entrenamiento = solo_train(base_ensamblada, cargar_split())
     matriz, objetivo = matriz_de_features(entrenamiento), entrenamiento["TARGET"]
     fuera_de_fold = construir_pipeline().fit_transform(matriz, objetivo)[COL_OCUPACION]
     dentro = construir_pipeline().fit(matriz, objetivo).transform(matriz)[COL_OCUPACION]
@@ -475,30 +494,37 @@ def test_la_ocupacion_se_codifica_fuera_de_fold_sobre_la_tabla_real():
 
 
 @sin_csv
-def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia():
-    """La imputación rellena las 48 y el plan solo sancionaba cuatro, así que se declara.
+def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia(base_ensamblada):
+    """La imputación rellena las 93 del bucket de mediana (48 de application_train más 45 de las
+    auxiliares desde el 5.3), así que se declara de dónde se recupera cada una.
 
     Rellenar sin rastro borra la diferencia entre "vale la mediana" y "no se sabe". Este test
-    comprueba contra la tabla real que ninguna numérica con nulos se queda fuera de los cuatro
-    grupos declarados, y que las banderas exactas lo son de verdad.
+    comprueba contra la tabla real que ninguna numérica con nulos se queda fuera de los cinco
+    grupos declarados, que las banderas exactas lo son de verdad, y fija los residuos de los
+    grupos B, C y D, que es lo que hace ruidoso que crezcan.
     """
     from src.features.pipeline import (
         IMPUTACION_SIN_RASTRO,
         NUMERICAS,
+        NUMERICAS_AUX,
         PRESENCIA_CASI_EXACTA,
         PRESENCIA_POR_BANDERA,
         PRESENCIA_POR_BLOQUE,
+        PRESENCIA_POR_COLUMNA,
+        RESIDUO_IMPUTACION_SIN_RASTRO,
+        RESIDUO_PRESENCIA_POR_COLUMNA,
         aplicar_dominio,
     )
-    from src.features.split import solo_train
+    from src.features.split import cargar_split, solo_train
     from src.features.transformers import RatiosPosteriores, Winsorizador
 
-    matriz = matriz_de_features(solo_train(preparar_application(), cargar_split()))
+    matriz = matriz_de_features(solo_train(base_ensamblada, cargar_split()))
     previo = RatiosPosteriores().fit(matriz).transform(Winsorizador().fit(matriz).transform(matriz))
     previo = aplicar_dominio(previo)
-    con_nulos = {c for c in NUMERICAS if previo[c].isna().any()}
+    con_nulos = {c for c in (NUMERICAS + NUMERICAS_AUX) if previo[c].isna().any()}
     declaradas = (
         set(PRESENCIA_POR_BANDERA)
+        | set(PRESENCIA_POR_COLUMNA)
         | set(PRESENCIA_CASI_EXACTA)
         | set(PRESENCIA_POR_BLOQUE)
         | set(IMPUTACION_SIN_RASTRO)
@@ -512,6 +538,54 @@ def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia():
         nulo = previo[numerica].isna()
         casa = (previo[bandera] == 0).equals(nulo) or (previo[bandera] == 1).equals(nulo)
         assert casa, f"{bandera} no reproduce el patrón de nulos de {numerica}"
+
+    # grupo B: recuperación exacta por otra columna de la matriz. `RESIDUO_PRESENCIA_POR_COLUMNA`
+    # no es un fallo de la máscara (la máscara recupera el NaN exacto, comprobado abajo): es
+    # cuántos de los que sí tienen panel mensual caen en esa condición, y por eso se mide entre
+    # `HAS_BUREAU_BALANCE == 1` y no como lo que la máscara deja sin explicar
+    con_panel = previo["HAS_BUREAU_BALANCE"].eq(1)
+    for numerica, condicion in PRESENCIA_POR_COLUMNA.items():
+        nulo = previo[numerica].isna()
+        recupera = previo["HAS_BUREAU_BALANCE"].eq(0) | condicion(previo)
+        assert recupera.equals(nulo), f"{numerica}: la máscara no reproduce el NaN exacto"
+        dentro_del_panel = int((nulo & con_panel).sum())
+        assert dentro_del_panel == RESIDUO_PRESENCIA_POR_COLUMNA[numerica], (
+            f"{numerica}: {dentro_del_panel} con panel y NaN, esperado "
+            f"{RESIDUO_PRESENCIA_POR_COLUMNA[numerica]}"
+        )
+
+    # grupo C: recuperación casi exacta, con su residuo entre quien sí tiene la tabla que
+    # recupera la bandera (bureau para las tres de bureau, FLAG_OWN_CAR ya cubierto aparte)
+    from src.features.pipeline import RESIDUO_PRESENCIA_CASI_EXACTA
+
+    sin_bureau = previo["HAS_BUREAU_HISTORY"].eq(0)
+    columnas_bureau_casi_exactas = (
+        "BUREAU_CURRENT_OVERDUE_SUM",
+        "BUREAU_MAX_OVERDUE_EVER",
+        "BUREAU_DEBT_CREDIT_RATIO",
+    )
+    for numerica in columnas_bureau_casi_exactas:
+        bandera = PRESENCIA_CASI_EXACTA[numerica]
+        nulo = previo[numerica].isna()
+        residuo = int((nulo & ~sin_bureau & previo[bandera].ne(0)).sum())
+        assert residuo == RESIDUO_PRESENCIA_CASI_EXACTA[numerica]
+
+    # grupo D: sin rastro, con su residuo entre quien sí tiene la tabla de origen. Sin `continue`
+    # para el que falte en RESIDUO_IMPUTACION_SIN_RASTRO: los dos tienen que declarar exactamente
+    # las mismas columnas, y un `continue` lo saltaría en silencio en vez de fallar (patrón 7)
+    assert set(IMPUTACION_SIN_RASTRO) == set(RESIDUO_IMPUTACION_SIN_RASTRO)
+    con_bureau = previo["HAS_BUREAU_HISTORY"].eq(1)
+    con_previas = previo["HAS_PREV_APPLICATION"].eq(1)
+    for numerica in IMPUTACION_SIN_RASTRO:
+        grupo = con_bureau if numerica.startswith("BUREAU") else con_previas
+        if numerica in ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2"):
+            residuo = int(previo[numerica].isna().sum())
+        else:
+            residuo = int((previo[numerica].isna() & grupo).sum())
+        assert residuo == RESIDUO_IMPUTACION_SIN_RASTRO[numerica], (
+            f"{numerica}: residuo medido {residuo}, esperado "
+            f"{RESIDUO_IMPUTACION_SIN_RASTRO[numerica]}"
+        )
 
 
 @sin_csv

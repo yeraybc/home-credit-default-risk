@@ -1,13 +1,22 @@
 """El `Pipeline` de las capas 2 montado, con su `ColumnTransformer` dentro.
 
-Convierte 101 columnas heterogéneas en una matriz numérica de 139 con nombres. Se ajusta **solo
+Convierte 180 columnas heterogéneas en una matriz numérica de 218 con nombres. Se ajusta **solo
 sobre el 80% de entrenamiento**: dos de sus pasos estiman parámetros sobre covariables y tres los
 estiman con el TARGET.
 
-**Ojo con ese 101, que es otro.** La capa 1 deja 101 columnas contando `TARGET` y `SK_ID_CURR`, o
-sea 99 features, y lo que ve el `ColumnTransformer` son esas 99 más los dos ratios que añade el
+**Ojo con ese 180, que es otro.** La capa 1 deja 180 columnas contando `TARGET` y `SK_ID_CURR`, o
+sea 178 features, y lo que ve el `ColumnTransformer` son esas 178 más los dos ratios que añade el
 winsorizador. Los dos números coinciden porque se quitan dos y se añaden dos, y no porque sean el
 mismo conjunto.
+
+**Desde el 5.3, el ColumnTransformer reparte ocho buckets y no seis.** Las 79 columnas que las
+tres auxiliares añaden en el 5.2 se reparten entre los seis de siempre (45 numéricas al bucket de
+mediana, 3 banderas de presencia al passthrough) y dos nuevos: `cero`, constante 0 para las 30
+banderas de sí/no de las auxiliares (nunca mediana: en dos de ellas la mediana pondría un 1 a
+quien no tiene tabla), y `tray`, un ordinal para `BB_TRAJECTORY` con el sin dato en -1. De dónde
+se recupera la ausencia de cada columna imputada está declarado en los cuatro grupos de abajo
+(`PRESENCIA_POR_BANDERA`, `PRESENCIA_POR_COLUMNA`, `PRESENCIA_CASI_EXACTA` e
+`IMPUTACION_SIN_RASTRO`), y un test lo comprueba contra la tabla real.
 
 El orden de los pasos no es libre y lo fija `sklearn.md`:
 
@@ -32,6 +41,8 @@ ya cerradas. Cuando se toque ese contrato, su sitio es `application.py`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -40,6 +51,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, TargetEncoder
 
+from src.features.agg_bureau_balance import TRAYECTORIAS
 from src.features.application import COLUMNAS_EDIFICIO
 from src.features.params import valor
 from src.features.transformers import (
@@ -144,6 +156,120 @@ BINARIAS: tuple[str, ...] = (
     "FLAG_EXT_SOURCE_3_NULL",
 )
 
+# --- las 79 columnas que las tres auxiliares añaden, repartidas por bucket (punto 5.3) --------
+# Se escriben a mano, como las dos listas de arriba, y el guardián de que no falte ni sobre
+# ninguna es `test_las_79_del_ensamblado_son_exactamente_las_del_reparto_de_buckets`
+# (tests/test_ensamblado.py), que las cruza contra lo que `ensamblar_auxiliares()` produce de
+# verdad sobre el fixture sintético, o sea en CI y sin CSV.
+
+# Las 45 continuas, conteos y proporciones: 18 de bureau, 10 de bureau_balance y 17 de
+# previous_application. Van al bucket de mediana, con las 48 de la tabla principal.
+NUMERICAS_AUX: tuple[str, ...] = (
+    "BUREAU_LOAN_COUNT",
+    "BUREAU_ACTIVE_COUNT",
+    "BUREAU_CLOSED_COUNT",
+    "BUREAU_BAD_DEBT_COUNT",
+    "BUREAU_CREDIT_TYPE_NUNIQUE",
+    "BUREAU_MAX_OVERDUE_EVER",
+    "BUREAU_CREDITS_WITH_ANNUITY_COUNT",
+    "BUREAU_ANNUITY_ACTIVE_RATIO",
+    "BUREAU_DAYS_CREDIT_MIN",
+    "BUREAU_DAYS_CREDIT_MAX",
+    "BUREAU_CLOSED_AFTER_ENDDATE",
+    "BUREAU_ACTIVE_CARD_COUNT",
+    "BUREAU_ACTIVE_CONSUMER_COUNT",
+    "BUREAU_ENDDATE_2_5Y_COUNT",
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX",
+    "BUREAU_CURRENT_OVERDUE_SUM",
+    "BUREAU_DEBT_CREDIT_RATIO",
+    "BUREAU_CREDITS_PER_YEAR",
+    "BB_N_CREDITS_WBAL",
+    "BB_MONTHS_TOTAL",
+    "BB_MONTHS_REPORTED",
+    "BB_STATUS_WORST",
+    "BB_MONTHS_SINCE_LAST_DPD",
+    "BB_MONTHS_SINCE_LAST_DPD_REL",
+    "BB_CENSORED_RATIO",
+    "BB_CREDITS_WITH_DPD_COUNT",
+    "BB_DPD_MONTHS_COUNT",
+    "BB_PCT_MONTHS_DPD",
+    "PREV_APPLICATION_COUNT",
+    "PREV_DAYS_DECISION_MIN",
+    "PREV_DAYS_DECISION_MAX",
+    "PREV_COUNT_12M",
+    "PREV_REFUSED_COUNT",
+    "PREV_REFUSED_RATIO",
+    "PREV_CREDIT_APPLICATION_RATIO",
+    "PREV_OVERGRANTED_RATIO",
+    "PREV_CNT_PAYMENT_MEAN",
+    "PREV_IMPLIED_COST_MEAN",
+    "PREV_DOWN_PAYMENT_RATE_MEAN",
+    "PREV_FUTURE_DUE_MAX",
+    "PREV_STREET_RATIO",
+    "PREV_EARLY_HOUR_RATIO",
+    "PREV_NO_SUITE_RATIO",
+    "PREV_URGENT_PURPOSE_RATIO",
+    "PREV_APPLICATIONS_PER_YEAR",
+)
+
+# Las 30 banderas de sí/no, que **no van por la mediana**: se imputan a constante 0. En una
+# columna de ceros y unos la mediana es la moda, y sobre train sale 1 en dos de ellas
+# (`HAS_BUREAU_FINANCIAL_DETAIL`, 97,22% de unos, y `HAS_BUREAU_OVERDUE_HISTORY`, 69,81%), o sea
+# que a los 35.118 clientes sin una sola ficha en el buró les escribiría un 1 en "el buró reportó
+# detalle financiero suyo". Con el 0 ninguna bandera afirma lo que no consta, y de dónde se
+# recupera ese 0 está declarado abajo, columna a columna.
+#
+# `BUREAU_DAYS_CREDIT_UPDATE_FLAG` ya venía decidida a constante 0 desde el 2.3, por el único
+# cliente de train con historial y sin ninguna actualización válida: la mediana lo pondría a 1.
+BANDERAS_AUX: tuple[str, ...] = (
+    "BUREAU_HAS_ANY_OVERDUE",
+    "BUREAU_HAS_CURRENT_OVERDUE",
+    "BUREAU_NEGATIVE_LIMIT_FLAG",
+    "HAS_BUREAU_FINANCIAL_DETAIL",
+    "HAS_BUREAU_OVERDUE_HISTORY",
+    "HAS_BUREAU_ANNUITY",
+    "BUREAU_OVERDUE_UNION",
+    "BUREAU_HAS_FOREIGN_CURRENCY",
+    "HAS_BEEN_PROLONGED",
+    "BUREAU_COUNT_COLA",
+    "BUREAU_DAYS_CREDIT_UPDATE_FLAG",
+    "BB_ANY_DPD_FLAG",
+    "BB_RECENT_DPD_FLAG",
+    "BB_RECENT_DPD_FLAG_REL",
+    "BB_WRITEOFF_FLAG",
+    "BB_EXITS_IN_DPD_FLAG",
+    "BB_ALL_CLOSED_FLAG",
+    "BB_MANY_CREDITS_FLAG",
+    "BB_PERSISTENT_DPD_FLAG",
+    "BB_WORSENING_DPD_FLAG",
+    "BB_RECOVERED_DPD_FLAG",
+    "BB_OVERDUE_UNION",
+    "PREV_HISTORIAL_RECORTADO",
+    "PREV_REFUSED_SCOFR_FLAG",
+    "PREV_REFUSED_LONG_TERM_FLAG",
+    "PREV_EARLY_SETTLED_FLAG",
+    "PREV_PHANTOM_FLAG",
+    "PREV_COUNT_COLA",
+    "PREV_ACTIVIDAD_12M_COLA",
+    "PREV_RELACION_CORTA_ACTIVA",
+)
+
+# Las tres banderas de presencia, que las crea cada `unir_*` en int8 y **no traen ni un NaN**:
+# por eso van al passthrough con las binarias de la tabla principal y no al bucket de constante.
+# Son además lo que recupera la ausencia de casi todo lo de arriba, así que tienen que llegar a
+# la matriz sí o sí; quien las protege de una selección por señal es el 5.8.
+PRESENCIA_AUX: tuple[str, ...] = (
+    "HAS_BUREAU_HISTORY",
+    "HAS_BUREAU_BALANCE",
+    "HAS_PREV_APPLICATION",
+)
+
+# La única categórica de las tres tablas, ordenada por prioridad del peor recorrido. Entra como
+# una columna de códigos, con el sin dato fuera de la escala por abajo, que es el mismo idioma
+# que el nivel de educación no visto.
+COL_TRAYECTORIA = "BB_TRAJECTORY"
+CODIGO_SIN_TRAYECTORIA = -1
+
 # De dónde se recupera la ausencia de cada numérica que la imputación rellena. El plan de la
 # fase solo sancionaba cuatro columnas (los dos scores externos, el precio del bien y la
 # antigüedad laboral) y aquí se imputan las 48, con 32 que traen algún nulo y 14 de ellas por
@@ -166,14 +292,98 @@ PRESENCIA_POR_BANDERA: dict[str, str] = {
     "AMT_REQ_CREDIT_BUREAU_MON": "HAS_BUREAU_INFO",
     "AMT_REQ_CREDIT_BUREAU_QRT": "HAS_BUREAU_INFO",
     "AMT_REQ_CREDIT_BUREAU_YEAR": "HAS_BUREAU_INFO",
+    # las 28 de las auxiliares (punto 5.3) cuyo NaN es exactamente el grupo sin esa tabla: 14 de
+    # bureau, 4 de bureau_balance y 10 de previous_application. Solo las numéricas: las banderas
+    # de sí/no de las tres tablas van al bucket de constante 0, declarado más abajo en
+    # `BANDERAS_AUX`, y no entran en este seguimiento aunque su NaN también sea exacto
+    "BUREAU_ACTIVE_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_CLOSED_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_BAD_DEBT_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_CREDIT_TYPE_NUNIQUE": "HAS_BUREAU_HISTORY",
+    "BUREAU_CREDITS_WITH_ANNUITY_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_ANNUITY_ACTIVE_RATIO": "HAS_BUREAU_HISTORY",
+    "BUREAU_DAYS_CREDIT_MIN": "HAS_BUREAU_HISTORY",
+    "BUREAU_DAYS_CREDIT_MAX": "HAS_BUREAU_HISTORY",
+    "BUREAU_CLOSED_AFTER_ENDDATE": "HAS_BUREAU_HISTORY",
+    "BUREAU_ACTIVE_CARD_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_ACTIVE_CONSUMER_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_ENDDATE_2_5Y_COUNT": "HAS_BUREAU_HISTORY",
+    "BUREAU_CREDITS_PER_YEAR": "HAS_BUREAU_HISTORY",
+    "BUREAU_LOAN_COUNT": "HAS_BUREAU_HISTORY",
+    "BB_N_CREDITS_WBAL": "HAS_BUREAU_BALANCE",
+    "BB_MONTHS_TOTAL": "HAS_BUREAU_BALANCE",
+    "BB_MONTHS_REPORTED": "HAS_BUREAU_BALANCE",
+    "BB_CENSORED_RATIO": "HAS_BUREAU_BALANCE",
+    "PREV_APPLICATION_COUNT": "HAS_PREV_APPLICATION",
+    "PREV_DAYS_DECISION_MIN": "HAS_PREV_APPLICATION",
+    "PREV_DAYS_DECISION_MAX": "HAS_PREV_APPLICATION",
+    "PREV_COUNT_12M": "HAS_PREV_APPLICATION",
+    "PREV_REFUSED_COUNT": "HAS_PREV_APPLICATION",
+    "PREV_REFUSED_RATIO": "HAS_PREV_APPLICATION",
+    "PREV_STREET_RATIO": "HAS_PREV_APPLICATION",
+    "PREV_EARLY_HOUR_RATIO": "HAS_PREV_APPLICATION",
+    "PREV_NO_SUITE_RATIO": "HAS_PREV_APPLICATION",
+    "PREV_APPLICATIONS_PER_YEAR": "HAS_PREV_APPLICATION",
+}
+
+# Seis de `bureau_balance` que se recuperan por otra columna de la propia matriz y no por su
+# HAS_*. El valor es una función y no un nombre, con el mismo criterio que `POBLACIONES` en
+# `agg_bureau.py`: la condición no siempre es una columna sola (un umbral), y una función es lo
+# único que la representa sin inventar sintaxis. `bb_min_meses_reportados` es el mismo corte de
+# dominio que ya usa `BB_PCT_MONTHS_DPD` para su denominador (3.8). Las tres banderas de
+# trayectoria (`BB_PERSISTENT_DPD_FLAG` y sus dos hermanas) también son NaN exacto sin
+# trayectoria evaluable, pero son banderas de sí/no y van al bucket de constante 0, no aquí. El
+# residuo que queda fuera de esta recuperación, entre quien sí tiene panel mensual, medido sobre
+# los 245.993 de entrenamiento, va en `RESIDUO_PRESENCIA_POR_COLUMNA`.
+PRESENCIA_POR_COLUMNA: dict[str, Callable[[pd.DataFrame], pd.Series]] = {
+    "BB_STATUS_WORST": lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0),
+    "BB_CREDITS_WITH_DPD_COUNT": (
+        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0)
+    ),
+    "BB_DPD_MONTHS_COUNT": lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0),
+    "BB_PCT_MONTHS_DPD": (
+        lambda d: d["HAS_BUREAU_BALANCE"].eq(0)
+        | d["BB_MONTHS_REPORTED"].lt(valor("bb_min_meses_reportados"))
+    ),
+    "BB_MONTHS_SINCE_LAST_DPD": (
+        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_ANY_DPD_FLAG"].eq(0)
+    ),
+    "BB_MONTHS_SINCE_LAST_DPD_REL": (
+        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_ANY_DPD_FLAG"].eq(0)
+    ),
+}
+RESIDUO_PRESENCIA_POR_COLUMNA: dict[str, int] = {
+    "BB_STATUS_WORST": 1_903,
+    "BB_CREDITS_WITH_DPD_COUNT": 1_903,
+    "BB_DPD_MONTHS_COUNT": 1_903,
+    "BB_PCT_MONTHS_DPD": 6_588,
+    "BB_MONTHS_SINCE_LAST_DPD": 48_926,
+    "BB_MONTHS_SINCE_LAST_DPD_REL": 48_926,
 }
 
 # La antigüedad del coche va aparte porque su bandera **no** es exacta: 4 clientes de los 245.993
 # de entrenamiento declaran coche y no declaran su antigüedad, que es el mismo residuo diminuto
 # que el EDA ya había visto al clasificarla. A esos cuatro la mediana les borra el dato y nada lo
 # señala; al resto los recupera `FLAG_OWN_CAR`, que va por el bucket de OHE y no por el binario.
-PRESENCIA_CASI_EXACTA: dict[str, str] = {"OWN_CAR_AGE": "FLAG_OWN_CAR"}
+#
+# Las tres de `bureau` son el mismo trato: recuperación casi exacta por otra columna de la
+# matriz, con el residuo aparte en `RESIDUO_PRESENCIA_CASI_EXACTA`. Los tres residuos son
+# clientes con alguna fila en moneda extranjera (la limpieza anula su importe antes de agregar,
+# así que la foto de presencia no ve nada que sumar), y en `BUREAU_DEBT_CREDIT_RATIO` además los
+# que no tienen ninguna suma de crédito con la que dividir.
+PRESENCIA_CASI_EXACTA: dict[str, str] = {
+    "OWN_CAR_AGE": "FLAG_OWN_CAR",
+    "BUREAU_CURRENT_OVERDUE_SUM": "HAS_BUREAU_HISTORY",
+    "BUREAU_MAX_OVERDUE_EVER": "HAS_BUREAU_OVERDUE_HISTORY",
+    "BUREAU_DEBT_CREDIT_RATIO": "HAS_BUREAU_FINANCIAL_DETAIL",
+}
 N_COCHE_SIN_EDAD = 4
+RESIDUO_PRESENCIA_CASI_EXACTA: dict[str, int] = {
+    "OWN_CAR_AGE": N_COCHE_SIN_EDAD,
+    "BUREAU_CURRENT_OVERDUE_SUM": 27,
+    "BUREAU_MAX_OVERDUE_EVER": 36,
+    "BUREAU_DEBT_CREDIT_RATIO": 795,
+}
 
 # Las quince del bloque edificio se recuperan **solo en agregado**: `HAS_BUILDING_INFO` reproduce
 # exacto el grupo sin ni un dato y `BUILDING_INFO_COUNT` cuenta cuántos hay, pero ninguna de las
@@ -182,9 +392,41 @@ N_COCHE_SIN_EDAD = 4
 # columna, son quince columnas más que el IV del bloque 5 tendría que juzgar.
 PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
 
-# Y las tres que se imputan sin ningún rastro, aceptado por volumen: 232, 232 y 529 clientes,
-# o sea el 0,09%, el 0,09% y el 0,22% del entrenamiento.
-IMPUTACION_SIN_RASTRO: tuple[str, ...] = ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2")
+# Las tres de application_train, aceptado por volumen: 232, 232 y 529 clientes, o sea el 0,09%,
+# el 0,09% y el 0,22% del entrenamiento. Las ocho de las auxiliares son `BUREAU_DAYS_CREDIT_
+# ENDDATE_MAX` y siete del `DENOMINADOR` de `agg_previous.py` (`PREV_EARLY_SETTLED_FLAG` es
+# bandera y no numérica, así que su ausencia la resuelve la constante 0 de `BANDERAS_AUX`, y
+# `PREV_STREET_RATIO` no tiene residuo y está en `PRESENCIA_POR_BANDERA`): no hay ninguna otra
+# columna de la matriz que distinga a quien le falta un vencimiento a término, o un par de
+# cifras positivas con qué dividir, de quien sí las trae. Los dos residuos más grandes se anotan
+# aparte porque van a pesar en el IV del 5.5: `PREV_URGENT_PURPOSE_RATIO` imputa el 83,02% de
+# train y `PREV_FUTURE_DUE_MAX` el 46,50%.
+IMPUTACION_SIN_RASTRO: tuple[str, ...] = (
+    "AMT_GOODS_PRICE",
+    "LTV",
+    "EXT_SOURCE_2",
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX",
+    "PREV_CREDIT_APPLICATION_RATIO",
+    "PREV_OVERGRANTED_RATIO",
+    "PREV_CNT_PAYMENT_MEAN",
+    "PREV_DOWN_PAYMENT_RATE_MEAN",
+    "PREV_IMPLIED_COST_MEAN",
+    "PREV_FUTURE_DUE_MAX",
+    "PREV_URGENT_PURPOSE_RATIO",
+)
+RESIDUO_IMPUTACION_SIN_RASTRO: dict[str, int] = {
+    "AMT_GOODS_PRICE": 232,
+    "LTV": 232,
+    "EXT_SOURCE_2": 529,
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX": 10_664,
+    "PREV_CREDIT_APPLICATION_RATIO": 801,
+    "PREV_OVERGRANTED_RATIO": 801,
+    "PREV_CNT_PAYMENT_MEAN": 1_980,
+    "PREV_DOWN_PAYMENT_RATE_MEAN": 17_647,
+    "PREV_IMPLIED_COST_MEAN": 2_875,
+    "PREV_FUTURE_DUE_MAX": 114_393,
+    "PREV_URGENT_PURPOSE_RATIO": 204_229,
+}
 
 # Las dos banderas de documento que el EDA decidió conservar pase lo que pase, por su correlación
 # con el objetivo sobre la tabla completa (+0,0443 la 3 y -0,0286 la 6; sobre los 245.993 de
@@ -266,12 +508,14 @@ CODIGO_EDUCACION_DESCONOCIDA = -1
 # nuevo declarado en dos de los tres sitios cambia la matriz sin que falle nada. Los nombres son
 # los del `ColumnTransformer` y por ahí los cruza `test_el_column_transformer_reparte_lo_declarado`.
 REPARTO: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("num", NUMERICAS),
+    ("num", NUMERICAS + NUMERICAS_AUX),
     ("ohe", CATEGORICAS_OHE),
     ("ord", (COL_EDUCACION,)),
     ("woe", (COL_ORGANIZACION,)),
     ("tgt", (COL_OCUPACION,)),
-    ("bin", BINARIAS),
+    ("bin", BINARIAS + PRESENCIA_AUX),
+    ("cero", BANDERAS_AUX),
+    ("tray", (COL_TRAYECTORIA,)),
 )
 
 FIN_DE_SEMANA = ("SATURDAY", "SUNDAY")
@@ -406,7 +650,7 @@ def construir_pipeline() -> Pipeline:
             # comprueba contra la tabla real. Contrastar la mediana contra dejar el NaN, que es
             # el proviso que el EDA dejó abierto para `DAYS_EMPLOYED`, necesita un modelo y por
             # eso es de la Fase 4.
-            ("num", SimpleImputer(strategy="median"), list(NUMERICAS)),
+            ("num", SimpleImputer(strategy="median"), list(NUMERICAS + NUMERICAS_AUX)),
             ("ohe", ohe, list(CATEGORICAS_OHE)),
             (
                 "ord",
@@ -421,7 +665,26 @@ def construir_pipeline() -> Pipeline:
             # `TargetEncoder` hace codificación cruzada interna, o sea que resuelve por diseño el
             # sobreajuste del target encoding sin escribirlo a mano.
             ("tgt", TargetEncoder(), [COL_OCUPACION]),
-            ("bin", "passthrough", list(BINARIAS)),
+            ("bin", "passthrough", list(BINARIAS + PRESENCIA_AUX)),
+            # constante y no mediana, con el motivo medido arriba. `keep_empty_features` no hace
+            # falta: con `strategy="constant"` la columna que llegue toda a NaN se rellena igual,
+            # que es lo que impide que el número de columnas dependa del fold
+            ("cero", SimpleImputer(strategy="constant", fill_value=0), list(BANDERAS_AUX)),
+            # Sin `encoded_missing_value`, igual que el ordinal de educación: con `categories`
+            # explícito y sin "nan" dentro de esa lista, el NaN no entra por la vía de
+            # `encoded_missing_value` (pensada para cuando `categories="auto"` lo detecta como un
+            # nivel más al ajustar), sino por la de `unknown_value`, verificado contra esta misma
+            # versión de scikit-learn. Los cuatro niveles se leen de la agregación, que es donde
+            # se declaró su orden
+            (
+                "tray",
+                OrdinalEncoder(
+                    categories=[list(TRAYECTORIAS.categories)],
+                    handle_unknown="use_encoded_value",
+                    unknown_value=CODIGO_SIN_TRAYECTORIA,
+                ),
+                [COL_TRAYECTORIA],
+            ),
         ],
         remainder="drop",
         verbose_feature_names_out=False,
@@ -447,7 +710,7 @@ def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd
 
     Con `pipeline` ya ajustado añade el `salen`, que es donde está la única cifra que no se puede
     contar a mano: el OHE entrega 14 columnas y saca 52, y esa expansión es la diferencia entre
-    las 101 de entrada y las 139 de la matriz. Sin él, `salen` va a nulo en vez de desaparecer,
+    las 180 de entrada y las 218 de la matriz. Sin él, `salen` va a nulo en vez de desaparecer,
     para que el informe no cambie de forma según con qué se le llame.
 
     `salen` sale de `output_indices_` del `ColumnTransformer` y no de recontar niveles, que sería
