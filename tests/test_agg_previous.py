@@ -42,6 +42,7 @@ from src.features.build_features import (
     lecturas_relativas_previous,
 )
 from src.features.cleaning import limpiar_previous
+from src.features.eval import remedir_receta
 from src.features.params import CORTES_POR_FEATURE, fijar_operativo, parametro, valor
 from src.features.recipes import cargar_receta
 from src.features.split import NOMBRE_FICHERO, cargar_split
@@ -2484,4 +2485,47 @@ def test_sobre_el_split_ninguna_lectura_de_recencia_relativa_gana(dato_real):
     continuas = global_[global_["tipo"].eq("continua")]
     ganan = continuas[continuas["efecto"] > continuas["efecto_abs"]]
     assert list(ganan.index) == [("PREV_COUNT_12M_REL", "PREV_COUNT_12M")]
+# --- el 4.11, la receta remedida sobre train ----------------------------------------------------
 
+
+@sin_dato_real
+def test_sobre_el_split_lo_provisional_de_previous_sigue_en_el_mismo_orden(dato_real):
+    """Las 25 provisionales, todas significativas: 23 con cocientes de 0,95 a 1,19 y dos aparte.
+
+    `PREV_COUNT_COLA` mide otra población, porque su corte bajó de 15 a 11 (2,16 veces la n de la
+    receta): como `BB_MANY_CREDITS_FLAG`, el cociente no compara nada y lo sostiene `mismo_orden`.
+    `PREV_URGENT_PURPOSE_RATIO` remide con la lista refijada de tres y no con la del notebook, que
+    tenía siete: su población, "con finalidad informada", sigue siendo la de la finalidad
+    declarada. Cae a 0,0216 frente al 0,0474 de la receta (el 4.9 midió 0,0470 con la lista del
+    EDA sobre train), sigue significativa y `mismo_orden` sale en False.
+    """
+    prev = dato_real[0]
+    split = cargar_split()
+    for ajustar in (
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ):
+        ajustar(prev, split, split)
+    train = split.loc[split.split.eq("train"), ["SK_ID_CURR", "TARGET"]]
+    unido = unir_previous(train, agregar_previous(prev))
+    receta = cargar_receta("previous_application")
+    tabla = remedir_receta(unido, unido.TARGET, receta, POBLACIONES).set_index(["tipo", "feature"])
+    assert len(tabla) == 25
+    assert tabla["p"].lt(receta["metodologia"]["alfa_bonferroni"]).all(), tabla["p"]
+
+    cola = ("flag", "PREV_COUNT_COLA")
+    urgente = ("continua", "PREV_URGENT_PURPOSE_RATIO")
+    assert tabla.loc[cola, "n"] == 20_319 and tabla.loc[cola, "mismo_orden"] is True
+    assert tabla.loc[urgente, "n"] == 28_564
+    assert tabla.loc[urgente, "efecto"] == pytest.approx(0.0216, abs=5e-4)
+    assert tabla.loc[urgente, "mismo_orden"] is False
+
+    resto = tabla.drop(index=[cola, urgente])
+    proporcion = resto.n / resto.n_receta
+    assert proporcion.between(0.7, 0.9).all(), proporcion[~proporcion.between(0.7, 0.9)]
+    # eq(True) y no all(): sobre object, un vacío cuenta como verdadero
+    assert resto.mismo_orden.eq(True).all(), resto.index[~resto.mismo_orden.eq(True)].tolist()
+    assert resto.cociente.between(0.95, 1.19).all(), resto.cociente
+    assert tabla.loc[("flag", "HAS_PREV_APPLICATION"), "n"] == 232_793
