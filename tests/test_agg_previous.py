@@ -1874,6 +1874,20 @@ def dato_real():
     return prev, agregar(prev), poblaciones
 
 
+def refijar_sobre_el_split(prev):
+    """Refija los cuatro cortes `medido` de la tabla sobre train y devuelve el split. Sin
+    `cortes`, la agregación y los informes los leen después del registro."""
+    split = cargar_split()
+    for ajustar in (
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ):
+        ajustar(prev, split, split)
+    return split
+
+
 @sin_dato_real
 @pytest.mark.parametrize("poblacion", sorted(PUERTA))
 def test_la_puerta_del_bloque_sobre_el_dato_real(dato_real, poblacion):
@@ -2438,15 +2452,8 @@ def test_sobre_el_split_ninguna_proporcion_gana_con_un_minimo_de_denominador(dat
     157: +3,67pp con 193 únicas rechazadas en train, frente a +1,63pp con 250 en la tabla cruda.
     """
     prev = dato_real[0]
-    split = cargar_split()
-    for ajustar in (
-        ajustar_cola_previous,
-        ajustar_actividad_previous,
-        ajustar_sobreconcesion_previous,
-        ajustar_finalidades_previous,
-    ):
-        ajustar(prev, split, split)
-    informe = informe_denominador_previous(prev, split, split, {n: valor(n) for n in CORTES})
+    split = refijar_sobre_el_split(prev)
+    informe = informe_denominador_previous(prev, split, split)
     for feature, filas in BARRIDO_DENOMINADOR.items():
         medido = [
             (m, int(r.n), redondeada(r.r_rb), int(r.n_fuera), redondeada(r.r_rb_fuera))
@@ -2492,15 +2499,8 @@ def test_sobre_el_split_ninguna_lectura_de_recencia_relativa_gana(dato_real):
     0,1151; y ninguna de las tres de captación supera a la suya.
     """
     prev = dato_real[0]
-    split = cargar_split()
-    for ajustar in (
-        ajustar_cola_previous,
-        ajustar_actividad_previous,
-        ajustar_sobreconcesion_previous,
-        ajustar_finalidades_previous,
-    ):
-        ajustar(prev, split, split)
-    informe = informe_recencia_relativa_previous(prev, split, split, {n: valor(n) for n in CORTES})
+    split = refijar_sobre_el_split(prev)
+    informe = informe_recencia_relativa_previous(prev, split, split)
     global_ = informe.xs("todos", level="estrato")
     for clave, (n, efecto, efecto_abs, redundancia) in RECENCIA_RELATIVA_TRAIN.items():
         fila = global_.loc[clave]
@@ -2531,17 +2531,9 @@ def test_sobre_el_split_lo_provisional_de_previous_sigue_en_el_mismo_orden(dato_
     declarada. Cae a 0,0216 frente al 0,0474 de la receta (el 4.9 midió 0,0470 con la lista del
     EDA sobre train), sigue significativa y `mismo_orden` sale en False.
     """
-    prev = dato_real[0]
-    split = cargar_split()
-    for ajustar in (
-        ajustar_cola_previous,
-        ajustar_actividad_previous,
-        ajustar_sobreconcesion_previous,
-        ajustar_finalidades_previous,
-    ):
-        ajustar(prev, split, split)
+    split = refijar_sobre_el_split(dato_real[0])
     train = split.loc[split.split.eq("train"), ["SK_ID_CURR", "TARGET"]]
-    unido = unir_previous(train, agregar_previous(prev))
+    unido = unir_previous(train, agregar_previous(dato_real[0]))
     receta = cargar_receta("previous_application")
     tabla = remedir_receta(unido, unido.TARGET, receta, POBLACIONES).set_index(["tipo", "feature"])
     assert len(tabla) == 25
@@ -2563,14 +2555,6 @@ def test_sobre_el_split_lo_provisional_de_previous_sigue_en_el_mismo_orden(dato_
     assert tabla.loc[("flag", "HAS_PREV_APPLICATION"), "n"] == 232_793
 
 
-def efecto_bandera(bandera, target):
-    """Marcados, delta en pp y z del contraste de proporciones, el de `EvaluadorSenal`."""
-    marcados = bandera == 1
-    n1, n0 = int(marcados.sum()), int((~marcados).sum())
-    p1, p0, pp = target[marcados].mean(), target[~marcados].mean(), target.mean()
-    return n1, (p1 - p0) * 100, (p1 - p0) / np.sqrt(pp * (1 - pp) * (1 / n1 + 1 / n0))
-
-
 # Los tramos de la celda 20 del notebook: hasta 0,5, de 0,5 a 1, de 1 a 2, de 2 a 4 y más de 4
 # solicitudes al año. El primero se queda sin las dos clases de la bandera, como en el notebook.
 TRAMOS_RITMO = [0, 0.5, 1, 2, 4, 100]
@@ -2585,8 +2569,7 @@ def _delta_por_tramo(unido):
         f = g.PREV_ACTIVIDAD_12M_COLA
         if f.nunique() < 2:
             continue
-        n1, delta, _ = efecto_bandera(f, g.TARGET.to_numpy())
-        deltas[str(k)] = delta
+        deltas[str(k)] = (g.TARGET[f == 1].mean() - g.TARGET[f == 0].mean()) * 100
     return deltas
 
 
@@ -2604,14 +2587,7 @@ def test_la_actividad_reciente_no_sobrevive_al_ritmo(dato_real):
     deltas_crudo = _delta_por_tramo(unir_previous(crudo, agregado))
     assert [round(d, 2) for d in deltas_crudo.values()] == [0.05, -0.51, -0.91, 0.77]
 
-    split = cargar_split()
-    for ajustar in (
-        ajustar_cola_previous,
-        ajustar_actividad_previous,
-        ajustar_sobreconcesion_previous,
-        ajustar_finalidades_previous,
-    ):
-        ajustar(prev, split, split)
+    split = refijar_sobre_el_split(prev)
     train = split.loc[split.split.eq("train"), ["SK_ID_CURR", "TARGET"]]
     deltas_train = _delta_por_tramo(unir_previous(train, agregar_previous(prev)))
     umbral = valor("umbral_flags_pp")
