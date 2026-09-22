@@ -163,11 +163,13 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     2.86, 1.99, 1.61, 1.78, 1.73,         # superaditividad con 2, 3, 4, 5 y 6 años
     # los refijados y contrastes del 4.8, sobre los 232.793 clientes de train con previas
     2.04, 3.31, 1.81,                     # cola del conteo con 11 y 15 solicitudes, y con 10
-    2.31,                                 # cola de actividad con 4 en doce meses
+    2.31, 2.01, 1.31,                     # cola de actividad con 4; el 3 del EDA y el 1 sin cruzar
     0.1208, 0.0837, 0.0820,               # r_rb de la sobreconcesion con 1,1, 1,05 y 1,2
-    4.18, 5.76, 3.85, 1.85,               # delta de las tres finalidades urgentes y de Urgent needs
-    2.26, 1.83, 2.87,                     # adelanto con 365, 270 y 1.095 dias (sin el 3,00 de 730)
-    14.62, 16.81, 2.35, 2.27,             # plazo largo con 60, 66, 48 y 54 cuotas
+    0.1194, 0.12,                         # r_rb de la sobreconcesion en el EDA y en la rejilla fina
+    1.65, 9.28,                           # delta de la bandera de sobreconcesion, de 1,05 a 1,5
+    4.18, 5.76, 3.85, 1.85, 1.93,         # delta de las tres finalidades urgentes y de Urgent needs
+    2.26, 1.83, 2.87, 1.06,               # adelanto con 365, 270, 1.095 y 180 dias (sin el 3,00)
+    14.62, 16.81, 2.35, 2.27, 2.3, 3.9,   # plazo largo con 60, 66, 48, 54 y su rango de delta
     0.0387, 0.0522, 0.0614,               # r_rb de la hora temprana hasta las 7, las 8 y las 9
     0.0342, 0.0654, 0.0769,               # r_rb del conteo con 183, 365 y 730 dias
     2.03, 1.51, 1.68,                     # superaditividad con 3, 4 y 5 años sobre train
