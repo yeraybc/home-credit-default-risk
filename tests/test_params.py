@@ -413,6 +413,22 @@ def test_el_adelanto_y_el_plazo_largo_son_dominio_con_su_contraste(nombre, refer
     assert nombre in con_contraste_pendiente()
 
 
+@pytest.mark.parametrize(
+    ("nombre", "referencia"),
+    [
+        ("prev_ventana_reciente_dias", 365),
+        ("prev_hora_temprana_max", 8),
+        ("prev_relacion_larga_anios", 4),
+    ],
+)
+def test_la_ventana_la_hora_y_la_relacion_larga_de_previous_son_dominio(nombre, referencia):
+    """El valor va escrito a mano: el fixture de previous los lee de `valor()` y se mueve con
+    ellos, así que con la hora a 7 o a 9 ningún test de CI se ponía rojo."""
+    assert parametro(nombre).procedencia == "dominio"
+    assert valor(nombre) == referencia
+    assert nombre in con_contraste_pendiente()
+
+
 def test_el_cap_de_la_antiguedad_del_coche_es_estimado():
     """64 era exactamente el p99, así que el criterio de negocio no sostenía el valor."""
     assert parametro("app_cap_p99_own_car_age").procedencia == "estimado"
