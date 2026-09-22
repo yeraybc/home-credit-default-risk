@@ -1050,6 +1050,24 @@ def test_la_cola_de_actividad_solo_cuenta_lo_de_dentro_de_la_ventana():
         refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *fuera)
 
 
+def test_la_cola_de_actividad_deja_fuera_el_borde_de_la_ventana():
+    """La ventana usa `solicitudes_recientes()`, el mismo borde que `PREV_COUNT_12M` de la
+    agregación: -365 días no cuenta. Con un `>=` a mano en vez de la función compartida el borde
+    contaría, los dos grupos quedarían con la misma cuenta y no habría ningún corte que cruzar.
+    """
+
+    def filas_de(cliente, dia):
+        return [solicitud(cliente, dia), solicitud(cliente, -1000)]
+
+    en_el_borde = (-365, [0] * 30, "train")
+    dentro = (-364, [1] * 8 + [0] * 2, "train")
+    prev, clientes = armar([en_el_borde, dentro], filas_de)
+    informe = ajustar_actividad_previous(prev, clientes, clientes)
+    assert valor("prev_actividad_12m_cola") == 1
+    assert informe.loc[1, "marcados"] == 10
+    assert informe.loc[1, "delta_pp"] == pytest.approx(80.0)
+
+
 def test_refijar_la_cola_de_actividad_otra_vez_exige_sobrescribir():
     refijar(ajustar_actividad_previous, "prev_actividad_12m_cola", *GRUPOS_ACTIVIDAD)
     with pytest.raises(ValueError, match="sobrescribir"):
