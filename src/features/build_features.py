@@ -22,16 +22,20 @@ mueven; lo que baja es el denominador, y la tasa pasa de 8,0729% a 8,0734%.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu
 from sklearn.pipeline import Pipeline
 
-from src.config import cargar_config
+from src.config import cargar_config, ruta
 from src.data.loader import load_table
 from src.features.agg_bureau import vencimiento_a_termino
+from src.features.agg_bureau_balance import puente_credito_cliente
 from src.features.agg_previous import (
     CAPTACION_CALLE,
     agregar_previous,
@@ -49,9 +53,9 @@ from src.features.cleaning import (
     limpiar_bureau,
     limpiar_previous,
 )
-from src.features.params import fijar_operativo, valor
+from src.features.params import fijar_operativo, parametro, valor
 from src.features.pipeline import construir_pipeline
-from src.features.split import construir_split, solo_train
+from src.features.split import cargar_split, construir_split, solo_train
 from src.features.transformers import Winsorizador, registrar_limites
 
 logger = logging.getLogger(__name__)
@@ -74,6 +78,20 @@ REJILLA_VENCIMIENTO_ANIOS = (-np.inf, -5, -2, 0, 2, 5, 10, np.inf)
 # 160), en cociente concedido entre solicitado. El 1,3 heredado del binning no salió de un barrido
 # y perdía dos tercios de la señal de la proporción.
 REJILLA_SOBRECONCESION = (1.05, 1.1, 1.2, 1.3, 1.4, 1.5)
+
+# Los cortes medidos que se consumen fuera del Pipeline, en la agregación, y que por eso se
+# persisten en cortes.json. Los del winsorizador no: viajan dentro del Pipeline ajustado.
+NOMBRE_FICHERO_CORTES = "cortes.json"
+CORTES_AUXILIARES = (
+    "bureau_enddate_tramo_min_anios",
+    "bureau_enddate_tramo_max_anios",
+    "bureau_count_cola",
+    "bb_many_credits_corte",
+    "prev_count_cola",
+    "prev_actividad_12m_cola",
+    "prev_sobreconcesion_corte",
+    "prev_finalidades_urgentes",
+)
 
 # Los mínimos de denominador que barrió el EDA (notebook 04, celda 155): con uno no hay mínimo.
 MINIMOS_DENOMINADOR = (1, 2, 3, 5)
@@ -463,6 +481,128 @@ def ajustar_finalidades_previous(
     fijar_operativo("prev_finalidades_urgentes", elegidas, n_train, sobrescribir)
     logger.info("finalidades urgentes refijadas en %s sobre %s clientes", elegidas, f"{n_train:,}")
     return informe.sort_values("tasa", ascending=False)
+
+
+def refijar_cortes_auxiliares(
+    bureau: pd.DataFrame,
+    bb: pd.DataFrame,
+    prev: pd.DataFrame,
+    base: pd.DataFrame,
+    split: pd.DataFrame | None = None,
+    sobrescribir: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """Corre sobre train los siete refijados de las auxiliares y devuelve sus informes por nombre.
+
+    Las tres tablas van crudas, cada refijado limpia lo suyo, y el puente sale del mismo `bureau`.
+    Fija los ocho de `CORTES_AUXILIARES`, que `guardar_cortes()` persiste para la API.
+    """
+    puente = puente_credito_cliente(bureau)
+    return {
+        "tramo_bureau": ajustar_tramo_bureau(bureau, base, split, sobrescribir),
+        "cola_bureau": ajustar_cola_bureau(bureau, base, split, sobrescribir),
+        "cola_bb": ajustar_cola_bb(bb, puente, base, split, sobrescribir),
+        "cola_previous": ajustar_cola_previous(prev, base, split, sobrescribir),
+        "actividad_previous": ajustar_actividad_previous(prev, base, split, sobrescribir),
+        "sobreconcesion_previous": ajustar_sobreconcesion_previous(prev, base, split, sobrescribir),
+        "finalidades_previous": ajustar_finalidades_previous(prev, base, split, sobrescribir),
+    }
+
+
+def huella_split(split: pd.DataFrame) -> str:
+    """Sha256 del contenido de la partición: `SK_ID_CURR` y `split`, ordenados por cliente.
+
+    Del contenido y no de los bytes del parquet, que cambian con la versión de pyarrow sin que
+    cambie la partición. Sirve para que `cargar_cortes()` detecte un split distinto del que midió
+    los cortes, no para reproducir el fichero.
+    """
+    contenido = split[["SK_ID_CURR", "split"]].sort_values("SK_ID_CURR").reset_index(drop=True)
+    return hashlib.sha256(pd.util.hash_pandas_object(contenido, index=False).values).hexdigest()
+
+
+def _destino_cortes() -> Path:
+    """Ruta del fichero de cortes, como `split._destino()` con la suya."""
+    return ruta("processed_data") / NOMBRE_FICHERO_CORTES
+
+
+def guardar_cortes(
+    split: pd.DataFrame | None = None, destino: Path | None = None, sobrescribir: bool = False
+) -> Path:
+    """Persiste los ocho cortes de `CORTES_AUXILIARES` en `cortes.json`, atados a la huella del
+    split.
+
+    Revienta si alguno todavía no está fijado, antes de escribir nada: no deja un fichero a medias.
+    Como `construir_split()`, no pisa un fichero existente sin `sobrescribir=True`.
+    """
+    ruta_destino = destino or _destino_cortes()
+    if ruta_destino.exists() and not sobrescribir:
+        raise FileExistsError(
+            f"ya hay cortes guardados en {ruta_destino}. Sobrescribirlos deja inválido en "
+            "silencio todo lo agregado con los anteriores. Pasa sobrescribir=True si de verdad "
+            "quieres reemplazarlos."
+        )
+    faltan = [n for n in CORTES_AUXILIARES if parametro(n).valor_operativo is None]
+    if faltan:
+        raise ValueError(
+            f"cortes sin fijar, no se guarda nada: {faltan}. Córrelos con "
+            "refijar_cortes_auxiliares() antes de guardar."
+        )
+    cortes = {}
+    for nombre in CORTES_AUXILIARES:
+        p = parametro(nombre)
+        if isinstance(p.valor_operativo, tuple):
+            valor_json = list(p.valor_operativo)
+        elif isinstance(p.valor_operativo, (int, np.integer)):
+            # entero de verdad, no un float que resulte entero (como el tramo o la sobreconcesión):
+            # se guarda sin ".0" para que valor() devuelva el mismo tipo tras cargar_cortes()
+            valor_json = int(p.valor_operativo)
+        else:
+            valor_json = float(p.valor_operativo)
+        cortes[nombre] = {"valor": valor_json, "n_train": int(p.n_train_operativo)}
+    split_efectivo = split if split is not None else cargar_split()
+    contenido = {"huella_split": huella_split(split_efectivo), "cortes": cortes}
+    ruta_destino.parent.mkdir(parents=True, exist_ok=True)
+    ruta_destino.write_text(json.dumps(contenido, indent=2, ensure_ascii=False, sort_keys=True))
+    logger.info("cortes guardados en %s", ruta_destino)
+    return ruta_destino
+
+
+def cargar_cortes(
+    split: pd.DataFrame | None = None, origen: Path | None = None, sobrescribir: bool = False
+) -> None:
+    """Lee `cortes.json` y fija los ocho cortes con `fijar_operativo()`.
+
+    Revienta si la huella del split no casa con la que guardó el fichero: es lo que impide que la
+    API, o un proceso nuevo, aplique cortes medidos sobre una partición distinta. Revienta también
+    si el fichero no trae exactamente los ocho de `CORTES_AUXILIARES`, ni de más ni de menos.
+    """
+    ruta_origen = origen or _destino_cortes()
+    if not ruta_origen.exists():
+        raise FileNotFoundError(
+            f"no hay cortes en {ruta_origen}. Créalos con refijar_cortes_auxiliares() y "
+            "guardar_cortes() sobre el split de entrenamiento."
+        )
+    contenido = json.loads(ruta_origen.read_text())
+    split_efectivo = split if split is not None else cargar_split()
+    huella_actual = huella_split(split_efectivo)
+    if contenido["huella_split"] != huella_actual:
+        raise ValueError(
+            f"la huella de {ruta_origen} no casa con la del split actual: los cortes se "
+            "midieron sobre otra partición y aplicarlos aquí sería una fuga."
+        )
+    presentes = set(contenido["cortes"])
+    esperados = set(CORTES_AUXILIARES)
+    if presentes != esperados:
+        raise ValueError(
+            f"cortes.json no trae exactamente los ocho esperados. "
+            f"faltan: {sorted(esperados - presentes)}, de más: {sorted(presentes - esperados)}"
+        )
+    for nombre in CORTES_AUXILIARES:
+        entrada = contenido["cortes"][nombre]
+        valor_nuevo = tuple(entrada["valor"]) if isinstance(entrada["valor"], list) else entrada[
+            "valor"
+        ]
+        fijar_operativo(nombre, valor_nuevo, entrada["n_train"], sobrescribir)
+    logger.info("cortes cargados desde %s", ruta_origen)
 
 
 def informe_denominador_previous(

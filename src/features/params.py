@@ -653,9 +653,10 @@ def fijar_operativo(
     Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
     del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
     dejan la segunda cifra con el n de la segunda y nadie se entera. La guarda vale para todo el
-    que refija, que hoy son `ajustar_capa2a()` y los refijados de bureau y bureau_balance en
-    `build_features.py`, cada uno con su test de que refijar otra vez la exige (el de la capa 2a,
-    sobre `registrar_limites()`).
+    que refija, que hoy son `ajustar_capa2a()`, los siete refijados de bureau, bureau_balance y
+    previous_application en `build_features.py`, y `cargar_cortes()`, que la hereda al llamar a
+    esta misma función por cada corte que lee de `cortes.json`. Cada uno con su test de que
+    refijar otra vez la exige (el de la capa 2a, sobre `registrar_limites()`).
     """
     p = parametro(nombre)
     if p.procedencia not in REAJUSTABLES:
