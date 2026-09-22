@@ -159,8 +159,11 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     2.51, 1.92, 3.39,                     # delta con 18 y 17 creditos, y con el p99 mas uno (22)
     # previous_application, que limpiar_previous() cita en su docstring
     0.0118,                               # rank-biserial del conteo de contratos vivos
+    5.96, 8.19,                           # default sin y con previas, docstring de unir_previous()
     # el barrido de la relación larga que el 4.7 cita en params.py al declararla de dominio
     2.86, 1.99, 1.61, 1.78, 1.73,         # superaditividad con 2, 3, 4, 5 y 6 años
+    # el corte de la lista de finalidades urgentes que el 4.6 cita en params.py
+    13.42,                                # tasa de Medicine, la sexta y primera fuera de la lista
     # los refijados y contrastes del 4.8, sobre los 232.793 clientes de train con previas
     2.04, 3.31, 1.81,                     # cola del conteo con 11 y 15 solicitudes, y con 10
     2.31, 2.01, 1.31,                     # cola de actividad con 4; el 3 del EDA y el 1 sin cruzar
