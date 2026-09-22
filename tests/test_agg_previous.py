@@ -2485,6 +2485,8 @@ def test_sobre_el_split_ninguna_lectura_de_recencia_relativa_gana(dato_real):
     continuas = global_[global_["tipo"].eq("continua")]
     ganan = continuas[continuas["efecto"] > continuas["efecto_abs"]]
     assert list(ganan.index) == [("PREV_COUNT_12M_REL", "PREV_COUNT_12M")]
+
+
 # --- el 4.11, la receta remedida sobre train ----------------------------------------------------
 
 
@@ -2529,3 +2531,59 @@ def test_sobre_el_split_lo_provisional_de_previous_sigue_en_el_mismo_orden(dato_
     assert resto.mismo_orden.eq(True).all(), resto.index[~resto.mismo_orden.eq(True)].tolist()
     assert resto.cociente.between(0.95, 1.19).all(), resto.cociente
     assert tabla.loc[("flag", "HAS_PREV_APPLICATION"), "n"] == 232_793
+
+
+def efecto_bandera(bandera, target):
+    """Marcados, delta en pp y z del contraste de proporciones, el de `EvaluadorSenal`."""
+    marcados = bandera == 1
+    n1, n0 = int(marcados.sum()), int((~marcados).sum())
+    p1, p0, pp = target[marcados].mean(), target[~marcados].mean(), target.mean()
+    return n1, (p1 - p0) * 100, (p1 - p0) / np.sqrt(pp * (1 - pp) * (1 / n1 + 1 / n0))
+
+
+# Los tramos de la celda 20 del notebook: hasta 0,5, de 0,5 a 1, de 1 a 2, de 2 a 4 y más de 4
+# solicitudes al año. El primero se queda sin las dos clases de la bandera, como en el notebook.
+TRAMOS_RITMO = [0, 0.5, 1, 2, 4, 100]
+
+
+def _delta_por_tramo(unido):
+    """Delta en pp de PREV_ACTIVIDAD_12M_COLA dentro de cada tramo de PREV_APPLICATIONS_PER_YEAR."""
+    con = unido[unido.HAS_PREV_APPLICATION == 1]
+    tramo = pd.cut(con.PREV_APPLICATIONS_PER_YEAR, TRAMOS_RITMO)
+    deltas = {}
+    for k, g in con.groupby(tramo, observed=True):
+        f = g.PREV_ACTIVIDAD_12M_COLA
+        if f.nunique() < 2:
+            continue
+        n1, delta, _ = efecto_bandera(f, g.TARGET.to_numpy())
+        deltas[str(k)] = delta
+    return deltas
+
+
+@sin_dato_real
+def test_la_actividad_reciente_no_sobrevive_al_ritmo(dato_real):
+    """El pendiente del 4.7: la bandera se conserva solo como término de la interacción.
+
+    Sobre la cruda reproduce la celda 173 (+0,05, -0,51, -0,91 y +0,77pp, con el primer tramo sin
+    las dos clases). Sobre train, con los cuatro cortes refijados, ningún tramo llega al umbral de
+    2pp y los signos siguen sin coincidir: el efecto propio de la bandera no sobrevive tampoco
+    aquí, así que se conserva por el otro motivo, ya cerrado en el 4.7.
+    """
+    prev, agregado, _ = dato_real
+    crudo = load_table("application_train", usecols=["SK_ID_CURR", "TARGET"])
+    deltas_crudo = _delta_por_tramo(unir_previous(crudo, agregado))
+    assert [round(d, 2) for d in deltas_crudo.values()] == [0.05, -0.51, -0.91, 0.77]
+
+    split = cargar_split()
+    for ajustar in (
+        ajustar_cola_previous,
+        ajustar_actividad_previous,
+        ajustar_sobreconcesion_previous,
+        ajustar_finalidades_previous,
+    ):
+        ajustar(prev, split, split)
+    train = split.loc[split.split.eq("train"), ["SK_ID_CURR", "TARGET"]]
+    deltas_train = _delta_por_tramo(unir_previous(train, agregar_previous(prev)))
+    umbral = valor("umbral_flags_pp")
+    assert all(abs(d) < umbral for d in deltas_train.values()), deltas_train
+    assert len({d > 0 for d in deltas_train.values()}) > 1, "los tramos no cambian de signo"
