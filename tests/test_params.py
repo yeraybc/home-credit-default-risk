@@ -180,6 +180,12 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     0.0227, 0.0569,                       # r_rb de los excluidos con 2: calle y sobreconcesion
     1.63, 3.67,                           # delta de la unica rechazada, en la cruda y en train
     0.065, 0.083,                         # p de los excluidos con 2 en el rechazo y la finalidad
+    # el hueco de umbral_continuas_rb que el 5.4 cita en params.py
+    0.0121, 0.0216,                       # los dos extremos de su hueco (nunique y ratio urgente)
+    # el comentario de COLUMNAS_PROVISIONALES en cleaning.py, que el 5.5 reproduce sobre la cruda
+    0.0004,                               # correlacion de FLAG_CONT_MOBILE con TARGET
+    0.94, 3.86, 1.76,                     # sus tres deltas: DEF_30==1, DEF_30>=3 y DEF_30|DEF_60==0
+    0.016, 0.13, 0.20, 4.4e-10,           # sus p: DEF_30==1, ==2, >=3 y DEF_30|DEF_60==0
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
