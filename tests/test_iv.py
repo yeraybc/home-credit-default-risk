@@ -35,7 +35,7 @@ from src.features.iv import (
 from src.features.params import PARAMS, valor
 from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
 from src.features.recipes import cargar_receta
-from src.features.selection import recomendar_codificacion
+from src.features.selection import recomendar_codificacion, tabla_de
 from src.features.split import NOMBRE_FICHERO, cargar_split, solo_train
 
 
@@ -212,15 +212,6 @@ TABLAS = {
 }
 
 
-def _tabla_de(columna):
-    """La auxiliar que produce la columna, por su receta o por su `COLUMNAS_SIN_RECETA`."""
-    for tabla, (_, modulo) in TABLAS.items():
-        nombres = {f["nombre"] for f in cargar_receta(tabla)["features"]}
-        if columna in nombres | set(modulo.COLUMNAS_SIN_RECETA):
-            return tabla
-    return None
-
-
 def _pendientes_de_selection():
     """Las de la tabla principal que `recomendar_codificacion()` deja escritas para el IV."""
     tabla = recomendar_codificacion(pd.DataFrame({c: [0, 1] for c in columnas_declaradas()}))
@@ -265,8 +256,8 @@ def test_toda_candidata_esta_en_el_contrato_de_la_matriz():
 def test_la_presencia_de_cada_candidata_es_la_de_su_tabla():
     """`HAS_BUREAU_BALANCE` va sobre la de bureau, que la contiene; sobre sí misma daría cero."""
     for columna, candidata in CANDIDATAS_IV.items():
-        tabla = _tabla_de(columna)
-        esperada = None if tabla is None else TABLAS[tabla][0]
+        tabla = tabla_de(columna)
+        esperada = TABLAS[tabla][0] if tabla in TABLAS else None
         if columna == "HAS_BUREAU_BALANCE":
             esperada = "HAS_BUREAU_HISTORY"
         assert candidata.presencia == esperada, columna

@@ -6,7 +6,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
+
+from src.features import agg_bureau, agg_bureau_balance, agg_previous
+from src.features.iv import BANDERAS_RARAS
+from src.features.params import valor
+from src.features.recipes import cargar_receta
 
 
 def obtener_categorias(df: pd.DataFrame) -> dict[str, list]:
@@ -365,3 +371,153 @@ DECISIONES_IV: dict[str, DecisionIV] = {
         "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2014, incremental 0,0055"
     ),
 }
+
+
+# --- la redundancia entre tablas del 5.7 ---------------------------------------------------------
+
+TABLA_PRINCIPAL = "application_train"
+
+# cada auxiliar con el módulo que declara lo que añade sin receta
+AUXILIARES = {
+    "bureau": agg_bureau,
+    "bureau_balance": agg_bureau_balance,
+    "previous_application": agg_previous,
+}
+
+
+def _nombres_por_tabla() -> dict[str, set[str]]:
+    return {
+        tabla: {f["nombre"] for f in cargar_receta(tabla)["features"]}
+        | set(modulo.COLUMNAS_SIN_RECETA)
+        for tabla, modulo in AUXILIARES.items()
+    }
+
+
+def tabla_de(columna: str, nombres: dict[str, set[str]] | None = None) -> str:
+    """La tabla que produce la columna: la auxiliar de su receta o de su `COLUMNAS_SIN_RECETA`, y
+    si no está en ninguna, la principal. `BUREAU_OVERDUE_UNION` sale de bureau aunque la receta de
+    bureau_balance la cite como referencia, porque bureau se mira antes.
+
+    `nombres` es para no releer las tres recetas por columna; quien llame desde fuera no lo pasa.
+    """
+    for tabla, de_tabla in (nombres or _nombres_por_tabla()).items():
+        if columna in de_tabla:
+            return tabla
+    return TABLA_PRINCIPAL
+
+
+def columnas_protegidas() -> frozenset[str]:
+    """Las que no pasan por el umbral del 5.8, adelantadas aquí porque el empate del 5.7 las mira:
+    las `control: true` de las recetas, las tres `HAS_*`, los dos documentos, las banderas raras y
+    `PREV_ACTIVIDAD_12M_COLA` como término de `PREV_RELACION_CORTA_ACTIVA`."""
+    recetas = [cargar_receta(tabla)["features"] for tabla in AUXILIARES]
+    controles = {f["nombre"] for receta in recetas for f in receta if f.get("control")}
+    return frozenset(
+        controles
+        | {"HAS_BUREAU_HISTORY", "HAS_BUREAU_BALANCE", "HAS_PREV_APPLICATION"}
+        | {"FLAG_DOCUMENT_3", "FLAG_DOCUMENT_6", "PREV_ACTIVIDAD_12M_COLA"}
+        | set(BANDERAS_RARAS)
+    )
+
+
+def _descartadas() -> set[str]:
+    """Lo que ya sale por su receta o por el 5.6, y por eso no entra al detector."""
+    de_receta = {
+        f["nombre"]
+        for tabla in AUXILIARES
+        for f in cargar_receta(tabla)["features"]
+        if f["decision"] == "descartar"
+    }
+    return de_receta | {c for c, d in DECISIONES_IV.items() if d.decision == "descartar"}
+
+
+# Los dos de dentro de bureau que el 2.3 le dejó al bloque 5. El plan citaba el primero como
+# BUREAU_COUNT_COLA frente a BUREAU_ACTIVE_COUNT (0,692), pero ese par da 0,3167 sobre train: el
+# 0,6919 es el conteo del que se corta la cola. El segundo cruza con ACTIVE_COUNT > 0 (0,7106) y no
+# con el conteo (0,4355), y se mide contra el conteo porque su tramo 0 es el sin ningún activo.
+PARES_DECLARADOS: dict[tuple[str, str], str] = {
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"): (
+        "la cola del conteo sale de BUREAU_LOAN_COUNT, que correlaciona 0,692 con el activo (2.3)"
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_DAYS_CREDIT_UPDATE_FLAG"): (
+        "la señal de la bandera vive en los clientes con algún crédito activo (2.3)"
+    ),
+}
+
+
+def _es_bandera01(serie: pd.Series) -> bool:
+    return bool(serie.dropna().isin((0, 1)).all())
+
+
+def pares_redundantes(train: pd.DataFrame, columnas: list[str] | None = None) -> pd.DataFrame:
+    """Los pares de columnas de tablas distintas que cruzan el umbral de redundancia o caen en la
+    banda de revisión, más los `PARES_DECLARADOS`. No mira el TARGET.
+
+    Entran las numéricas vivas: fuera lo que su receta o el 5.6 ya descartan, porque su salida no
+    depende de este informe (si el 5.8 recupera alguna, se vuelve a pasar con `columnas`). Las
+    categóricas se saltan: `BB_TRAJECTORY`, la única de una auxiliar, se queda en 0,365 de V de
+    Cramér contra las banderas de otras tablas.
+
+    El Pearson va sobre los clientes con las dos columnas, y el umbral según el tipo:
+
+    - dos magnitudes, o bandera y magnitud: por encima de `redundancia_pearson`, y en la banda
+      desde `banda_revision_pearson`;
+    - dos banderas: por encima de `redundancia_cramer`, porque en una 2x2 el |r| es la V;
+    - bandera y magnitud sin negativos, además: la bandera contra `magnitud > 0` por encima de
+      `redundancia_cramer`, que es la redundancia del evento y no de la escala
+      (`metodologia-estadistica` 8.4).
+
+    Cada par sale con sus dos nombres en orden alfabético, que es la clave del registro.
+    """
+    if columnas is None:
+        fuera = _descartadas() | {"SK_ID_CURR", "TARGET"}
+        columnas = [c for c in train.columns if c not in fuera]
+    columnas = [c for c in columnas if pd.api.types.is_numeric_dtype(train[c])]
+    datos = train[columnas].astype(float)
+    bandera = {c: _es_bandera01(datos[c]) for c in columnas}
+    binarizable = [c for c in columnas if not bandera[c] and datos[c].min() >= 0]
+    evento = datos[binarizable].gt(0).where(datos[binarizable].notna()).add_suffix(" > 0")
+    r = pd.concat([datos, evento], axis=1).corr()
+    nombres = _nombres_por_tabla()
+    tabla = {c: tabla_de(c, nombres) for c in columnas}
+    umbral_mm = valor("redundancia_pearson")
+    umbral_ff = valor("redundancia_cramer")
+    banda = valor("banda_revision_pearson")
+
+    filas = []
+    for i, a in enumerate(sorted(columnas)):
+        for b in sorted(columnas)[i + 1 :]:
+            declarado = (a, b) in PARES_DECLARADOS
+            if tabla[a] == tabla[b] and not declarado:
+                continue
+            tipo = {2: "FF", 1: "FM", 0: "MM"}[bandera[a] + bandera[b]]
+            r_ab = r.loc[a, b]
+            r_bin = np.nan
+            if tipo == "FM":
+                f, m = (a, b) if bandera[a] else (b, a)
+                if m in binarizable:
+                    r_bin = r.loc[f, f"{m} > 0"]
+            umbral = umbral_ff if tipo == "FF" else umbral_mm
+            if abs(r_ab) > umbral or abs(r_bin) > umbral_ff:
+                zona = "por encima"
+            elif tipo != "FF" and abs(r_ab) >= banda:
+                zona = "banda"
+            elif declarado:
+                zona = "declarado"
+            else:
+                continue
+            filas.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "tabla_a": tabla[a],
+                    "tabla_b": tabla[b],
+                    "tipo": tipo,
+                    "r": r_ab,
+                    "r_bin": r_bin,
+                    "n": int((datos[a].notna() & datos[b].notna()).sum()),
+                    "zona": zona,
+                    "declarado": declarado,
+                }
+            )
+    return pd.DataFrame(filas).set_index(["a", "b"])

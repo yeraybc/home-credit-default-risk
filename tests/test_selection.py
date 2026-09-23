@@ -9,11 +9,21 @@ las dos fuentes de verdad y en este proyecto ya ha mordido tres veces.
 Sintéticos, así que corren también en un clon limpio.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.features.pipeline import columnas_declaradas
-from src.features.selection import DECISIONES_IV, DecisionIV, recomendar_codificacion
+from src.features.selection import (
+    DECISIONES_IV,
+    PARES_DECLARADOS,
+    TABLA_PRINCIPAL,
+    DecisionIV,
+    columnas_protegidas,
+    pares_redundantes,
+    recomendar_codificacion,
+    tabla_de,
+)
 
 # Las seis donde el pipeline hace otra cosa, con lo que la marca tiene que anunciar. La última no
 # es una entrada de `especificas` sino la rama por defecto del bloque de documento, y sirve
@@ -119,3 +129,134 @@ def test_una_decision_iv_sin_criterio_o_sin_motivo_revienta():
         DecisionIV("conservar", "", "algo")
     with pytest.raises(ValueError, match="declara"):
         DecisionIV("conservar", "algo", " ")
+
+
+# --- el detector de pares redundantes del 5.7 ---------------------------------------------------
+
+N = 20_000
+
+
+def _correlada(base, r, rng):
+    """Una normal con correlación `r` contra `base`, que va estandarizada."""
+    return r * base + np.sqrt(1 - r**2) * rng.standard_normal(len(base))
+
+
+@pytest.fixture
+def plantado():
+    """Un par por cada rama del detector, con nombres reales para que `tabla_de` los reparta.
+
+    Los pares entre tablas: AMT_CREDIT con BB_MONTHS_TOTAL a -0,80 (por encima, y negativo para
+    que el umbral mire el valor absoluto), con BUREAU_DAYS_CREDIT_MIN a -0,65 (banda) y con
+    PREV_CNT_PAYMENT_MEAN a 0,45 (fuera). Dos
+    banderas a unos 0,55, que pasan por ser banderas y no pasarían como magnitudes. Una bandera
+    contra una magnitud que es el mismo evento con una escala que no escala con él. Y dentro de
+    bureau, dos columnas copiadas, que no salen; más una descartada de su receta copiada de otra
+    tabla, que tampoco.
+    """
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal(N)
+    evento = rng.random(N) < 0.3
+    otra = np.where(rng.random(N) < 0.55, evento, rng.random(N) < 0.3)
+    return pd.DataFrame(
+        {
+            "SK_ID_CURR": np.arange(N),
+            "TARGET": rng.integers(0, 2, N),
+            "AMT_CREDIT": base,
+            "BB_MONTHS_TOTAL": _correlada(base, -0.80, rng),
+            "BUREAU_DAYS_CREDIT_MIN": _correlada(base, -0.65, rng),
+            "PREV_CNT_PAYMENT_MEAN": _correlada(base, 0.45, rng),
+            "HAS_BUREAU_HISTORY": evento.astype("int8"),
+            "HAS_PREV_APPLICATION": otra.astype(float),
+            "BB_OVERDUE_UNION": evento.astype(float),
+            "PREV_REFUSED_COUNT": evento * rng.lognormal(0, 2, N),
+            "BUREAU_CLOSED_COUNT": base * 2,
+            "BUREAU_LOAN_COUNT": base * 3,
+            "BB_N_CREDITS_WBAL": base * 4,
+            "BB_TRAJECTORY": pd.Categorical(rng.choice(["a", "b"], N)),
+        }
+    )
+
+
+def test_el_fixture_del_detector_planta_lo_que_dice(plantado):
+    """Guardián: si el fixture pierde un caso de borde, los tests de abajo pasan sin probar nada."""
+    r = plantado.drop(columns="BB_TRAJECTORY").corr()
+    assert r.loc["AMT_CREDIT", "BB_MONTHS_TOTAL"] == pytest.approx(-0.80, abs=0.02)
+    assert r.loc["AMT_CREDIT", "BUREAU_DAYS_CREDIT_MIN"] == pytest.approx(-0.65, abs=0.02)
+    assert r.loc["AMT_CREDIT", "PREV_CNT_PAYMENT_MEAN"] == pytest.approx(0.45, abs=0.02)
+    assert 0.50 < r.loc["HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION"] < 0.60
+    # el mismo evento, pero la magnitud no llega ni a la banda en bruto
+    assert abs(r.loc["BB_OVERDUE_UNION", "PREV_REFUSED_COUNT"]) < 0.60
+    assert tabla_de("BUREAU_CLOSED_COUNT") == tabla_de("BUREAU_LOAN_COUNT") == "bureau"
+    assert tabla_de("BB_N_CREDITS_WBAL") == "bureau_balance"
+    assert tabla_de("AMT_CREDIT") == TABLA_PRINCIPAL
+
+
+def test_el_detector_saca_por_encima_y_banda_y_deja_fuera_lo_de_debajo(plantado):
+    pares = pares_redundantes(plantado)
+    assert pares.loc[("AMT_CREDIT", "BB_MONTHS_TOTAL"), "zona"] == "por encima"
+    assert pares.loc[("AMT_CREDIT", "BUREAU_DAYS_CREDIT_MIN"), "zona"] == "banda"
+    assert ("AMT_CREDIT", "PREV_CNT_PAYMENT_MEAN") not in pares.index
+
+
+def test_dos_banderas_cruzan_con_la_v_y_no_con_el_umbral_de_magnitudes(plantado):
+    pares = pares_redundantes(plantado)
+    fila = pares.loc[("HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION")]
+    assert (fila["tipo"], fila["zona"]) == ("FF", "por encima")
+
+
+def test_una_bandera_y_una_magnitud_cruzan_por_el_evento_binarizado(plantado):
+    fila = pares_redundantes(plantado).loc[("BB_OVERDUE_UNION", "PREV_REFUSED_COUNT")]
+    assert fila["tipo"] == "FM"
+    assert fila["r_bin"] == pytest.approx(1.0)
+    assert fila["zona"] == "por encima"
+
+
+def test_una_magnitud_con_negativos_no_se_binariza(plantado):
+    """`> 0` no es un evento en una columna de días con signo."""
+    datos = plantado.assign(PREV_REFUSED_COUNT=plantado["PREV_REFUSED_COUNT"] - 1)
+    pares = pares_redundantes(datos)
+    assert ("BB_OVERDUE_UNION", "PREV_REFUSED_COUNT") not in pares.index
+
+
+def test_dentro_de_una_misma_tabla_solo_salen_los_declarados(plantado):
+    pares = pares_redundantes(plantado)
+    assert ("BUREAU_CLOSED_COUNT", "BUREAU_LOAN_COUNT") not in pares.index
+    # el mismo par entre tablas sí sale: lo que lo deja fuera es la tabla, no la cifra
+    assert ("AMT_CREDIT", "BUREAU_CLOSED_COUNT") in pares.index
+
+
+def test_un_par_declarado_sale_aunque_no_cruce_nada():
+    rng = np.random.default_rng(1)
+    datos = pd.DataFrame(
+        {
+            "BUREAU_ACTIVE_COUNT": rng.standard_normal(N),
+            "BUREAU_LOAN_COUNT": rng.standard_normal(N),
+        }
+    )
+    pares = pares_redundantes(datos)
+    assert pares.loc[("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"), "zona"] == "declarado"
+    assert pares["declarado"].all()
+
+
+def test_una_columna_descartada_por_su_receta_no_entra(plantado):
+    pares = pares_redundantes(plantado)
+    assert "BB_N_CREDITS_WBAL" not in set(pares.index.get_level_values("a")) | set(
+        pares.index.get_level_values("b")
+    )
+    # guardián: con la lista de columnas explícita sí entra, así que la deja fuera la receta
+    columnas = ["AMT_CREDIT", "BB_N_CREDITS_WBAL"]
+    assert ("AMT_CREDIT", "BB_N_CREDITS_WBAL") in pares_redundantes(plantado, columnas).index
+
+
+def test_los_pares_declarados_van_en_orden_alfabetico_y_dentro_de_bureau():
+    for a, b in PARES_DECLARADOS:
+        assert a < b
+        assert tabla_de(a) == tabla_de(b) == "bureau"
+
+
+def test_las_protegidas_incluyen_las_de_control_y_las_tres_de_presencia():
+    protegidas = columnas_protegidas()
+    assert {"HAS_BUREAU_HISTORY", "HAS_BUREAU_BALANCE", "HAS_PREV_APPLICATION"} <= protegidas
+    # las cuatro `control: true` de las recetas, leídas y no escritas a mano
+    assert {"PREV_HISTORIAL_RECORTADO", "PREV_DAYS_DECISION_MAX"} <= protegidas
+    assert len(protegidas) == 10
