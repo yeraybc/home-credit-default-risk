@@ -594,3 +594,108 @@ def informe_redundancia(train: pd.DataFrame, pares: pd.DataFrame | None = None) 
             }
         )
     return pd.DataFrame(filas).set_index(["a", "b"])
+
+
+@dataclass(frozen=True)
+class DecisionRedundancia:
+    """La resolución de un par de `informe_redundancia()`, con la cifra que la sostiene en
+    `motivo`, nunca consumida."""
+
+    queda: tuple[str, ...]
+    motivo: str
+
+    def __post_init__(self) -> None:
+        if not self.queda or not self.motivo.strip():
+            raise ValueError("una decisión de redundancia declara queda y motivo")
+
+
+# Los 15 pares del 5.7 sobre los 245.993 de train: los 13 que cruzan el umbral o la banda entre
+# tablas más los 2 declarados dentro de bureau (PARES_DECLARADOS). Congelado con
+# `informe_redundancia()`, no se recalcula al importar: el 5.8 lee esto para saber qué columna
+# sale por redundancia sin volver a ensamblar nada.
+DECISIONES_REDUNDANCIA: dict[tuple[str, str], DecisionRedundancia] = {
+    ("BB_MANY_CREDITS_FLAG", "BUREAU_COUNT_COLA"): DecisionRedundancia(
+        ("BUREAU_COUNT_COLA",),
+        "r=0,9981, la misma cola del conteo refijada en 18 por las dos tablas (2.3 y 3.9); "
+        "incremental 0,0000 en las dos direcciones, empatan en IV (0,0022) y queda "
+        "BUREAU_COUNT_COLA, de la tabla que hizo el refijado original",
+    ),
+    ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"),
+        "r=0,6227, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0219 "
+        "y 0,0371, las dos por encima de min_iv), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_REPORTED", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_REPORTED", "BUREAU_LOAN_COUNT"),
+        "r=0,6932, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0233 "
+        "y 0,0220), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_CLOSED_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL",),
+        "r=0,8037, por encima del umbral; BB_MONTHS_TOTAL llega a min_iv sobre "
+        "BUREAU_CLOSED_COUNT (incremental 0,0293) y BUREAU_CLOSED_COUNT no llega sobre ella "
+        "(0,0123), así que solo se queda BB_MONTHS_TOTAL",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_DAYS_CREDIT_MIN"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL", "BUREAU_DAYS_CREDIT_MIN"),
+        "r=-0,6047, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0213 "
+        "y 0,0447), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL", "BUREAU_LOAN_COUNT"),
+        "r=0,7989, por encima del umbral pero cada una aporta sobre la otra (incremental "
+        "0,1077 y 0,0745), así que se quedan las dos",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_HAS_ANY_OVERDUE"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "r=0,8502; ninguna aporta sobre la otra (incremental 0,0109 y 0,0001, las dos por "
+        "debajo de min_iv), queda BB_OVERDUE_UNION por mayor IV marginal (0,0300 frente a "
+        "0,0196)",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_MAX_OVERDUE_EVER"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "cruza binarizado (r_bin=0,8936, r en bruto solo 0,0945 porque la magnitud no escala "
+        "con el evento); ninguna aporta sobre la otra (incremental 0,0065 y 0,0029), queda "
+        "BB_OVERDUE_UNION por mayor IV marginal (0,0323 frente a 0,0293)",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_OVERDUE_UNION"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "r=0,8667; ninguna aporta sobre la otra (incremental 0,0070 y 0,0000), queda "
+        "BB_OVERDUE_UNION por mayor IV marginal (0,0300 frente a 0,0234)",
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_DAYS_CREDIT_UPDATE_FLAG"): DecisionRedundancia(
+        ("BUREAU_ACTIVE_COUNT",),
+        "declarado en el 2.3: cruza binarizado (r_bin=0,7106 contra ACTIVE_COUNT > 0, r en "
+        "bruto 0,4355); BUREAU_ACTIVE_COUNT llega a min_iv sobre la bandera (incremental "
+        "0,0319) y la bandera no llega sobre el conteo (0,0063), así que solo se queda "
+        "BUREAU_ACTIVE_COUNT",
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"),
+        "declarado en el 2.3: r=0,6919, en la banda; cada una aporta sobre la otra "
+        "(incremental 0,0995 y 0,0583), así que se quedan las dos",
+    ),
+    ("BUREAU_ANNUITY_ACTIVE_RATIO", "HAS_BUREAU_BALANCE"): DecisionRedundancia(
+        ("HAS_BUREAU_BALANCE",),
+        "cruza binarizado (r_bin=0,7420, r en bruto 0,6152 porque el ratio no escala con el "
+        "evento); HAS_BUREAU_BALANCE es protegida y BUREAU_ANNUITY_ACTIVE_RATIO no llega a "
+        "min_iv sobre ella (incremental 0,0078), así que solo se queda la protegida",
+    ),
+    ("BUREAU_CREDITS_WITH_ANNUITY_COUNT", "HAS_BUREAU_BALANCE"): DecisionRedundancia(
+        ("HAS_BUREAU_BALANCE",),
+        "cruza binarizado (r_bin=0,7420, r en bruto 0,5373); HAS_BUREAU_BALANCE es protegida y "
+        "BUREAU_CREDITS_WITH_ANNUITY_COUNT no llega a min_iv sobre ella (incremental 0,0048), "
+        "así que solo se queda la protegida",
+    ),
+    ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"): DecisionRedundancia(
+        ("HAS_BUREAU_HISTORY",),
+        "r=-0,7903, que el EDA no había anticipado; HAS_BUREAU_HISTORY es protegida y "
+        "FLAG_EXT_SOURCE_3_NULL no llega a min_iv sobre ella (incremental 0,0010), así que "
+        "solo se queda la protegida",
+    ),
+    ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"): DecisionRedundancia(
+        ("HAS_BUREAU_HISTORY",),
+        "r=0,9667; HAS_BUREAU_HISTORY es protegida y HAS_BUREAU_INFO no llega a min_iv sobre "
+        "ella (incremental 0,0015), así que solo se queda la protegida",
+    ),
+}

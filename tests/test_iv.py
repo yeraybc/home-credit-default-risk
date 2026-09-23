@@ -35,7 +35,13 @@ from src.features.iv import (
 from src.features.params import PARAMS, valor
 from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
 from src.features.recipes import cargar_receta
-from src.features.selection import recomendar_codificacion, tabla_de
+from src.features.selection import (
+    DECISIONES_REDUNDANCIA,
+    informe_redundancia,
+    pares_redundantes,
+    recomendar_codificacion,
+    tabla_de,
+)
 from src.features.split import NOMBRE_FICHERO, cargar_split, solo_train
 
 
@@ -781,3 +787,49 @@ def test_el_incremental_sobre_ext3_reproduce_la_puerta_del_5_6(train_ensamblado)
             incremental, abs=5e-4
         ), nombre
         assert bool(informe.loc[nombre, "llega"]) == llega, nombre
+
+
+# --- 5.7, redundancia entre tablas --------------------------------------------------------------
+
+
+@sin_dato_real_ensamblado
+def test_la_redundancia_entre_tablas_reproduce_la_puerta_del_5_7(train_ensamblado):
+    """Los 15 pares de `DECISIONES_REDUNDANCIA`, con el mismo `queda` que da `informe_redundancia`
+    sobre train, y cada Pearson y cada IV recomputados por un camino que no pasa por
+    `selection.py`: `np.corrcoef` para la correlación y `_tramo_codigo`/`_iv_de_codigos`, el
+    mismo camino independiente del 5.5 y el 5.6, para el IV marginal y el incremental."""
+    train = train_ensamblado
+    pares = pares_redundantes(train)
+    assert set(pares.index) == set(DECISIONES_REDUNDANCIA)
+
+    inf = informe_redundancia(train, pares)
+    alfa, n_bins_max = valor("suavizado_woe"), valor("n_bins_max")
+
+    for (a, b), decision in DECISIONES_REDUNDANCIA.items():
+        fila = inf.loc[(a, b)]
+        assert fila["queda"] == decision.queda, (a, b)
+
+        dentro = (train[a].notna() & train[b].notna()).to_numpy()
+        va = train.loc[dentro, a].to_numpy(dtype=float)
+        vb = train.loc[dentro, b].to_numpy(dtype=float)
+        assert np.corrcoef(va, vb)[0, 1] == pytest.approx(pares.loc[(a, b), "r"], abs=5e-4), (a, b)
+
+        y = train.loc[dentro, "TARGET"].to_numpy()
+        codigo_a = _tramo_codigo(train.loc[dentro, a], n_bins_max)
+        codigo_b = _tramo_codigo(train.loc[dentro, b], n_bins_max)
+
+        iv_a, _ = _iv_de_codigos(codigo_a, y, alfa)
+        iv_b, _ = _iv_de_codigos(codigo_b, y, alfa)
+        assert iv_a == pytest.approx(fila["iv_a"], abs=5e-4), (a, b)
+        assert iv_b == pytest.approx(fila["iv_b"], abs=5e-4), (a, b)
+
+        def _incremental(codigo_serie, codigo_estrato):
+            total = sum(
+                (codigo_estrato == nivel).sum()
+                * _iv_de_codigos(codigo_serie, y, alfa, mask=(codigo_estrato == nivel))[0]
+                for nivel in np.unique(codigo_estrato)
+            )
+            return total / len(codigo_serie)
+
+        assert _incremental(codigo_a, codigo_b) == pytest.approx(fila["inc_a"], abs=5e-4), (a, b)
+        assert _incremental(codigo_b, codigo_a) == pytest.approx(fila["inc_b"], abs=5e-4), (a, b)
