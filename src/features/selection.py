@@ -321,4 +321,47 @@ DECISIONES_IV: dict[str, DecisionIV] = {
         "frente a 0,0082 de solo vivas), al revés de lo medido sobre la tabla cruda sin split "
         "(0,0842 frente a 0,0856); no se construye columna y sigue PREV_FUTURE_DUE_MAX",
     ),
+    # el incremental sobre EXT_SOURCE_3 (pendiente del 4.10 y del 2.3 cerrado en el 2.3): 13
+    # columnas de bureau y bureau_balance con |Pearson| >= solape_ext3_min (0,20) sobre train,
+    # cinco pasan min_iv (0,02) dentro de con historial y ocho no; degradada y no descartar,
+    # porque el 5.8 da el corte final con la redundancia y la banda de revisión delante
+    "BUREAU_CREDITS_PER_YEAR": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,4214, incremental 0,0240"
+    ),
+    "BUREAU_DAYS_CREDIT_MAX": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3896, incremental 0,0311"
+    ),
+    "BUREAU_ACTIVE_COUNT": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3888, incremental 0,0075"
+    ),
+    "BUREAU_DAYS_CREDIT_UPDATE_FLAG": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3481, incremental 0,0136"
+    ),
+    "BB_MONTHS_SINCE_LAST_DPD_REL": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3149, incremental 0,0300"
+    ),
+    "BB_RECENT_DPD_FLAG_REL": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2992, incremental 0,0084"
+    ),
+    "BB_OVERDUE_UNION": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2681, incremental 0,0118"
+    ),
+    "BB_ANY_DPD_FLAG": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2370, incremental 0,0115"
+    ),
+    "BUREAU_DAYS_CREDIT_MIN": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2263, incremental 0,0281"
+    ),
+    "BB_CREDITS_WITH_DPD_COUNT": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2261, incremental 0,0056"
+    ),
+    "BUREAU_OVERDUE_UNION": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2186, incremental 0,0059"
+    ),
+    "BUREAU_DEBT_CREDIT_RATIO": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2034, incremental 0,0373"
+    ),
+    "BUREAU_HAS_ANY_OVERDUE": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2014, incremental 0,0055"
+    ),
 }

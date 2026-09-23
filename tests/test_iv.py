@@ -20,7 +20,9 @@ from src.features.iv import (
     NULO,
     Candidata,
     calcular_iv,
+    columnas_solapadas_ext3,
     informe_building_info,
+    informe_incremental_ext3,
     informe_iv,
     informe_mora_activa,
     informe_solo_vivas,
@@ -671,3 +673,89 @@ def test_la_lectura_de_solo_vivas_no_gana_sobre_train(train_ensamblado):
         0.0067, abs=5e-5
     )
     assert not informe.loc["PREV_FUTURE_DUE_VIVAS", "llega"]
+
+
+def test_columnas_solapadas_ext3_incluye_r_alto_y_excluye_r_bajo():
+    """Dos columnas reales de la receta de bureau (`BUREAU_DEBT_CREDIT_RATIO`, con `decision:
+    conservar`, y `BUREAU_LOAN_COUNT`, con `decision: degradada`), construidas con un Pearson
+    contra `EXT_SOURCE_3` de 0,25 y 0,15: solo la primera pasa `solape_ext3_min` (0,20)."""
+    rng = np.random.default_rng(21)
+    n = 20_000
+    ext3 = rng.normal(size=n)
+    alta = 0.25 * ext3 + np.sqrt(1 - 0.25**2) * rng.normal(size=n)
+    baja = 0.15 * ext3 + np.sqrt(1 - 0.15**2) * rng.normal(size=n)
+    train = pd.DataFrame(
+        {
+            "HAS_BUREAU_HISTORY": np.ones(n, dtype="int8"),
+            "HAS_BUREAU_BALANCE": np.zeros(n, dtype="int8"),
+            "BUREAU_DEBT_CREDIT_RATIO": alta,
+            "BUREAU_LOAN_COUNT": baja,
+            "EXT_SOURCE_3": ext3,
+        }
+    )
+    r = columnas_solapadas_ext3(train)
+    assert "BUREAU_DEBT_CREDIT_RATIO" in r.index
+    assert abs(r["BUREAU_DEBT_CREDIT_RATIO"]) >= 0.20
+    assert "BUREAU_LOAN_COUNT" not in r.index
+
+
+def test_informe_incremental_ext3_mide_dentro_de_su_tabla_y_no_sobre_todo_train():
+    """Una columna sin señal propia dentro de con historial (constante salvo ruido), pero cuya
+    presencia (dentro/fuera de con historial) sí separa el TARGET: medida sin restringir a la
+    población de su tabla, su IV sale inflado por esa presencia; `informe_incremental_ext3()`,
+    que restringe antes de medir, no se lo lleva."""
+    rng = np.random.default_rng(9)
+    # 40.000 por lado: con menos, la varianza del binning por sí sola infla el IV dentro por
+    # ruido de muestreo, sin que haya ninguna señal que restringir esté quitando
+    n_con, n_sin = 40_000, 40_000
+    historia = np.r_[np.ones(n_con), np.zeros(n_sin)]
+    ext3 = rng.normal(size=n_con + n_sin)
+    # dentro de con historial: correlación 0,25 con ext3, y el TARGET no depende de la columna
+    dentro = 0.25 * ext3[:n_con] + np.sqrt(1 - 0.25**2) * rng.normal(size=n_con)
+    columna = np.r_[dentro, [np.nan] * n_sin]
+    y_dentro = rng.random(n_con) < 0.06  # tasa plana dentro, sin señal propia de la columna
+    y_sin = rng.random(n_sin) < 0.20  # el grupo sin historial es de mucho más riesgo
+    y = np.r_[y_dentro, y_sin].astype(int)
+    train = pd.DataFrame(
+        {
+            "HAS_BUREAU_HISTORY": historia.astype("int8"),
+            "HAS_BUREAU_BALANCE": np.zeros(n_con + n_sin, dtype="int8"),
+            "BUREAU_DEBT_CREDIT_RATIO": columna,
+            "EXT_SOURCE_3": ext3,
+            "TARGET": y,
+        }
+    )
+    informe = informe_incremental_ext3(train)
+    dentro_iv = informe.loc["BUREAU_DEBT_CREDIT_RATIO", "iv_dentro_de_su_tabla"]
+    sin_restringir = calcular_iv(pd.Series(columna), pd.Series(y))
+    assert dentro_iv < 0.005, "la restricción a con historial tiene que dejarlo sin señal"
+    assert sin_restringir > 0.05, "el fixture perdió la señal de presencia que hay que evitar"
+
+
+PUERTA_5_6_SOLAPE_EXT3 = {
+    "BUREAU_CREDITS_PER_YEAR": (-0.4214, 0.0240, True),
+    "BUREAU_DAYS_CREDIT_MAX": (-0.3896, 0.0311, True),
+    "BUREAU_ACTIVE_COUNT": (-0.3888, 0.0075, False),
+    "BUREAU_DAYS_CREDIT_UPDATE_FLAG": (-0.3481, 0.0136, False),
+    "BB_MONTHS_SINCE_LAST_DPD_REL": (-0.3149, 0.0300, True),
+    "BB_RECENT_DPD_FLAG_REL": (-0.2992, 0.0084, False),
+    "BB_OVERDUE_UNION": (-0.2681, 0.0118, False),
+    "BB_ANY_DPD_FLAG": (-0.2370, 0.0115, False),
+    "BUREAU_DAYS_CREDIT_MIN": (-0.2263, 0.0281, True),
+    "BB_CREDITS_WITH_DPD_COUNT": (-0.2261, 0.0056, False),
+    "BUREAU_OVERDUE_UNION": (-0.2186, 0.0059, False),
+    "BUREAU_DEBT_CREDIT_RATIO": (-0.2034, 0.0373, True),
+    "BUREAU_HAS_ANY_OVERDUE": (-0.2014, 0.0055, False),
+}
+
+
+@sin_dato_real_ensamblado
+def test_el_incremental_sobre_ext3_reproduce_la_puerta_del_5_6(train_ensamblado):
+    informe = informe_incremental_ext3(train_ensamblado)
+    assert len(informe) == len(PUERTA_5_6_SOLAPE_EXT3)
+    for nombre, (r, incremental, llega) in PUERTA_5_6_SOLAPE_EXT3.items():
+        assert informe.loc[nombre, "pearson_ext3"] == pytest.approx(r, abs=5e-4), nombre
+        assert informe.loc[nombre, "incremental_sobre_ext3"] == pytest.approx(
+            incremental, abs=5e-4
+        ), nombre
+        assert bool(informe.loc[nombre, "llega"]) == llega, nombre

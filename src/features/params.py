@@ -211,6 +211,15 @@ PARAMS: dict[str, Parametro] = {
         "tramos máximos del binning con el que se calculan IV y WoE",
         "convención de binning del proyecto",
     ),
+    "solape_ext3_min": Parametro(
+        0.20,
+        "dominio",
+        "Pearson mínimo contra EXT_SOURCE_3 para que una columna de bureau o bureau_balance "
+        "tenga que demostrar IV incremental antes de conservarse (5.6). El EDA llamó solape a "
+        "partir de 0,212 (BUREAU_DEBT_CREDIT_RATIO) y la mora quedó en 0,025 o menos: 0,20 "
+        "separa las dos familias sin cortar ninguna a la mitad",
+        "eda-bureau, historial-auditorias; eda-bureau-balance 5B.5",
+    ),
     # Las tres fronteras de la franja horaria de la solicitud. Son de dominio y no se reestiman:
     # salen de dónde empieza y acaba una jornada laboral, no de mirar la tasa de default. El EDA
     # las eligió con ese criterio ("pedir fuera de horario puede señalar un perfil distinto") y su

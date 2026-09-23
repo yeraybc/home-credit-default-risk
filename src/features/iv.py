@@ -12,8 +12,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.features.agg_bureau import COLUMNAS_SIN_RECETA as _SIN_RECETA_BUREAU
+from src.features.agg_bureau_balance import COLUMNAS_SIN_RECETA as _SIN_RECETA_BB
 from src.features.agg_previous import lectura_solo_vivas
 from src.features.params import valor
+from src.features.recipes import cargar_receta
 
 # El nulo es un nivel más para agrupar y para el WoE, así que necesita una clave con la que
 # contarlo y agruparlo. Va como cadena y no como `object()` porque tiene que sobrevivir a un
@@ -411,3 +414,85 @@ def informe_solo_vivas(train: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
         incremental_vivas_sobre_actual=[np.nan, incremental],
         llega=[np.nan, bool(incremental >= valor("min_iv"))],
     )
+
+
+# La decisión de las poblaciones que la receta conserva o deja sin ella, para el 5.6: las que
+# entran al incremental sobre EXT_SOURCE_3 son las que un default (o mejor) razonable de bureau y
+# bureau_balance podría seguir usando, con su tabla como estrato de presencia.
+_DECISIONES_QUE_SIGUEN_VIVAS = ("conservar", "iv", "degradada")
+
+
+def _columnas_vivas(tabla: str, columnas_sin_receta: dict[str, str]) -> list[str]:
+    receta = cargar_receta(tabla)
+    de_receta = [
+        f["nombre"] for f in receta["features"] if f.get("decision") in _DECISIONES_QUE_SIGUEN_VIVAS
+    ]
+    return sorted(set(de_receta) | set(columnas_sin_receta))
+
+
+def columnas_solapadas_ext3(train: pd.DataFrame) -> pd.Series:
+    """Pearson contra `EXT_SOURCE_3`, dentro de con historial de su tabla, de toda columna de
+    `bureau` y `bureau_balance` que la receta conserva (o que va en `COLUMNAS_SIN_RECETA`).
+
+    No mira el TARGET, así que se fija antes de ver ningún IV. Solo las que llegan a
+    `solape_ext3_min` en valor absoluto pasan al incremental del 5.6; `previous_application` no
+    entra, por decisión del EDA (su máximo es 0,2652 y los scores son de buró, no ven la relación
+    con el propio prestamista). Una columna no numérica (`BB_TRAJECTORY`, categórica) se salta:
+    el Pearson no se define sobre categorías.
+    """
+    poblaciones = {
+        "bureau": (
+            _columnas_vivas("bureau", _SIN_RECETA_BUREAU),
+            train["HAS_BUREAU_HISTORY"].eq(1),
+        ),
+        "bureau_balance": (
+            _columnas_vivas("bureau_balance", _SIN_RECETA_BB),
+            train["HAS_BUREAU_BALANCE"].eq(1),
+        ),
+    }
+    r = {}
+    for columnas, mascara in poblaciones.values():
+        dentro = train[mascara]
+        for c in columnas:
+            if c not in dentro.columns or not pd.api.types.is_numeric_dtype(dentro[c]):
+                continue
+            valor_r = dentro[c].astype(float).corr(dentro["EXT_SOURCE_3"])
+            if pd.notna(valor_r):
+                r[c] = valor_r
+    serie = pd.Series(r).sort_values(key=abs, ascending=False)
+    minimo = valor("solape_ext3_min")
+    return serie[serie.abs() >= minimo]
+
+
+def informe_incremental_ext3(train: pd.DataFrame) -> pd.DataFrame:
+    """El IV incremental sobre `EXT_SOURCE_3` de cada columna de `columnas_solapadas_ext3()`.
+
+    **Criterio, escrito antes de medir:** dentro de la población con historial de su tabla, si el
+    IV incremental sobre `EXT_SOURCE_3` no llega a `min_iv`, la columna queda `degradada` (sigue
+    en la matriz, marcada) y no `descartar`: el 5.8 da el corte final con la redundancia y la
+    banda de revisión delante.
+    """
+    presencia = {
+        "BUREAU": ("HAS_BUREAU_HISTORY", tuple(_columnas_vivas("bureau", _SIN_RECETA_BUREAU))),
+        "BB": ("HAS_BUREAU_BALANCE", tuple(_columnas_vivas("bureau_balance", _SIN_RECETA_BB))),
+    }
+    solapadas = columnas_solapadas_ext3(train)
+    filas = []
+    for nombre, r in solapadas.items():
+        columna_presencia = next(
+            col_presencia for col_presencia, columnas in presencia.values() if nombre in columnas
+        )
+        dentro = train[train[columna_presencia].eq(1)]
+        marginal = calcular_iv(dentro[nombre], dentro["TARGET"])
+        incremental = iv_condicionado(dentro[nombre], dentro["EXT_SOURCE_3"], dentro["TARGET"])
+        filas.append(
+            {
+                "feature": nombre,
+                "pearson_ext3": r,
+                "n": int(dentro[nombre].notna().sum()),
+                "iv_dentro_de_su_tabla": marginal,
+                "incremental_sobre_ext3": incremental,
+                "llega": bool(incremental >= valor("min_iv")),
+            }
+        )
+    return pd.DataFrame(filas).set_index("feature")
