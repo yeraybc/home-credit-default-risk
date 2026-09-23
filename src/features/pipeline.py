@@ -710,8 +710,10 @@ def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd
 
     Con `pipeline` ya ajustado añade el `salen`, que es donde está la única cifra que no se puede
     contar a mano: el OHE entrega 14 columnas y saca 52, y esa expansión es la diferencia entre
-    las 180 de entrada y las 218 de la matriz. Sin él, `salen` va a nulo en vez de desaparecer,
-    para que el informe no cambie de forma según con qué se le llame.
+    las 180 que declara `REPARTO` (no las 178 que de verdad recibe `ajustar_pipeline()`: las dos
+    que faltan las construye `RatiosPosteriores()` detrás del winsorizador) y las 218 de la matriz.
+    Sin él, `salen` va a nulo en vez de desaparecer, para que el informe no cambie de forma según
+    con qué se le llame.
 
     `salen` sale de `output_indices_` del `ColumnTransformer` y no de recontar niveles, que sería
     reimplementar lo que el codificador ya sabe. Cuenta lo que emite el reparto de buckets: el

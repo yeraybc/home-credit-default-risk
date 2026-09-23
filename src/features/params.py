@@ -95,7 +95,8 @@ PARAMS: dict[str, Parametro] = {
         "metodologia-estadistica 8.4",
     ),
     # Declarado en el 5.4 con los r_rb de train ya vistos: el 2.3, el 3.10 y el 4.11 los remidieron,
-    # y la propuesta del 5.4 midió las 40 continuas de las tres recetas sobre los 245.993 de train.
+    # y la propuesta del 5.4 midió las 39 continuas provisionales de las tres recetas sobre los
+    # 245.993 de train.
     # El 0,02 cae en su hueco, entre 0,0121 y 0,0216, y deja cuatro debajo (BB_STATUS_WORST,
     # BB_N_CREDITS_WBAL, BUREAU_LOAN_COUNT y BUREAU_CREDIT_TYPE_NUNIQUE). No descarta por sí solo:
     # es la lectura que va al lado del IV.
