@@ -7,7 +7,12 @@ import pytest
 from src.config import ruta
 from src.data.loader import TABLE_FILES, load_table
 from src.features import agg_bureau, agg_bureau_balance, agg_previous
-from src.features.build_features import cargar_cortes, ensamblar_auxiliares, preparar_application
+from src.features.build_features import (
+    NOMBRE_FICHERO_CORTES,
+    cargar_cortes,
+    ensamblar_auxiliares,
+    preparar_application,
+)
 from src.features.cleaning import COLUMNAS_PROVISIONALES
 from src.features.iv import (
     BANDERAS_RARAS,
@@ -371,8 +376,9 @@ sin_dato_real_ensamblado = pytest.mark.skipif(
         (ruta("raw_data") / TABLE_FILES[t]).exists()
         for t in ("bureau", "bureau_balance", "previous_application", "application_train")
     )
-    or not (ruta("processed_data") / NOMBRE_FICHERO).exists(),
-    reason="data/raw o el split no viajan con el repo",
+    or not (ruta("processed_data") / NOMBRE_FICHERO).exists()
+    or not (ruta("processed_data") / NOMBRE_FICHERO_CORTES).exists(),
+    reason="data/raw, el split o cortes.json no viajan con el repo",
 )
 
 # El `iv_lectura` de cada candidata (el sin presencia si la declara, si no el marginal) y si llega
