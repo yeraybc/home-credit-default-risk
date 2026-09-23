@@ -58,6 +58,7 @@ from src.features.cleaning import (
     limpiar_bureau,
     limpiar_previous,
 )
+from src.features.eval import EvaluadorSenal
 from src.features.params import fijar_operativo, parametro, valor
 from src.features.pipeline import construir_pipeline
 from src.features.split import cargar_split, construir_split, solo_train
@@ -673,9 +674,9 @@ def cargar_cortes(
         )
     for nombre in CORTES_AUXILIARES:
         entrada = contenido["cortes"][nombre]
-        valor_nuevo = tuple(entrada["valor"]) if isinstance(entrada["valor"], list) else entrada[
-            "valor"
-        ]
+        valor_nuevo = (
+            tuple(entrada["valor"]) if isinstance(entrada["valor"], list) else entrada["valor"]
+        )
         fijar_operativo(nombre, valor_nuevo, entrada["n_train"], sobrescribir)
     logger.info("cortes cargados desde %s", ruta_origen)
 
@@ -851,9 +852,7 @@ def informe_recencia_relativa_previous(
                         "tipo": "flag" if flag else "continua",
                         "n": len(d),
                         "n_marcados": int(d["valor"].sum()) if flag else np.nan,
-                        "n_solo_abs": int(
-                            (dentro["valor"].isna() & dentro["abs"].notna()).sum()
-                        ),
+                        "n_solo_abs": int((dentro["valor"].isna() & dentro["abs"].notna()).sum()),
                         "efecto": _delta_bandera(d) if flag else efecto,
                         "p": p,
                         "efecto_abs": _delta_bandera(contra) if flag else efecto_abs,
@@ -996,3 +995,39 @@ def informe_base(
             },
         ]
     )
+
+
+def informe_provisionales_application(df: pd.DataFrame) -> pd.DataFrame:
+    """Remide con `EvaluadorSenal` los dos `COLUMNAS_PROVISIONALES` de `application_train`.
+
+    Cada uno con el `remedir` que declara: sirve tanto sobre la tabla cruda, para reproducir las
+    cifras del comentario de `cleaning.py` antes de fijarlas en test, como sobre `solo_train()`,
+    que es la remedición real de la capa 2b.
+
+    `FLAG_CONT_MOBILE` se midió en el EDA por correlación de Pearson, no por delta de flag, así
+    que aquí van las dos: `pearson_r` (columna aparte, solo en su fila) y el delta con
+    `EvaluadorSenal` para que conviva en la misma tabla que el resto.
+
+    `DEF_60_CNT_SOCIAL_CIRCLE` está anidada en `DEF_30_CNT_SOCIAL_CIRCLE`: con `DEF_30` a cero no
+    hay ni un caso de `DEF_60` por encima de cero, así que su efecto propio se mide dentro de cada
+    estrato de `DEF_30` (1, 2 y 3 o más) y no en marginal. Al revés, el de `DEF_30` se mide dentro
+    de los clientes sin ningún `DEF_60`, la única población donde separar los dos no es circular.
+    """
+    ev = EvaluadorSenal(df, df["TARGET"])
+    d30, d60 = df["DEF_30_CNT_SOCIAL_CIRCLE"], df["DEF_60_CNT_SOCIAL_CIRCLE"]
+    flag30, flag60 = d30.gt(0).to_numpy(), d60.gt(0).to_numpy()
+
+    ev.evaluar_flags(
+        [
+            ("FLAG_CONT_MOBILE", df["FLAG_CONT_MOBILE"].to_numpy()),
+            ("DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==1", flag60, d30.eq(1).to_numpy(), "DEF_30==1"),
+            ("DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==2", flag60, d30.eq(2).to_numpy(), "DEF_30==2"),
+            ("DEF_60_CNT_SOCIAL_CIRCLE | DEF_30>=3", flag60, d30.ge(3).to_numpy(), "DEF_30>=3"),
+            ("DEF_30_CNT_SOCIAL_CIRCLE | DEF_60==0", flag30, d60.eq(0).to_numpy(), "DEF_60==0"),
+        ]
+    )
+
+    tabla = pd.DataFrame(ev.fb_flags).set_index("feature")
+    tabla["pearson_r"] = np.nan
+    tabla.loc["FLAG_CONT_MOBILE", "pearson_r"] = df["FLAG_CONT_MOBILE"].corr(df["TARGET"])
+    return tabla

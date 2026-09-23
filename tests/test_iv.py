@@ -5,9 +5,25 @@ import pandas as pd
 import pytest
 
 from src.config import ruta
-from src.data.loader import TABLE_FILES
-from src.features.build_features import preparar_application
-from src.features.iv import NULO, calcular_iv, iv_condicionado, tabla_woe, tramos
+from src.data.loader import TABLE_FILES, load_table
+from src.features import agg_bureau, agg_bureau_balance, agg_previous
+from src.features.build_features import cargar_cortes, ensamblar_auxiliares, preparar_application
+from src.features.cleaning import COLUMNAS_PROVISIONALES
+from src.features.iv import (
+    BANDERAS_RARAS,
+    CANDIDATAS_IV,
+    NULO,
+    Candidata,
+    calcular_iv,
+    informe_iv,
+    iv_condicionado,
+    tabla_woe,
+    tramos,
+)
+from src.features.params import valor
+from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
+from src.features.recipes import cargar_receta
+from src.features.selection import recomendar_codificacion
 from src.features.split import NOMBRE_FICHERO, cargar_split, solo_train
 
 
@@ -174,6 +190,89 @@ def test_un_tramo_del_estrato_sin_malos_aporta_cero_y_cada_tramo_pesa_lo_que_mid
     assert iv_condicionado(serie, estrato, y) == pytest.approx(solo_b["iv"].sum() * 0.75)
 
 
+# --- la lista cerrada del 5.5 -----------------------------------------------------------------
+
+# cada auxiliar con su bandera de presencia, y los módulos que declaran lo que añaden sin receta
+TABLAS = {
+    "bureau": ("HAS_BUREAU_HISTORY", agg_bureau),
+    "bureau_balance": ("HAS_BUREAU_BALANCE", agg_bureau_balance),
+    "previous_application": ("HAS_PREV_APPLICATION", agg_previous),
+}
+
+
+def _tabla_de(columna):
+    """La auxiliar que produce la columna, por su receta o por su `COLUMNAS_SIN_RECETA`."""
+    for tabla, (_, modulo) in TABLAS.items():
+        nombres = {f["nombre"] for f in cargar_receta(tabla)["features"]}
+        if columna in nombres | set(modulo.COLUMNAS_SIN_RECETA):
+            return tabla
+    return None
+
+
+def _pendientes_de_selection():
+    """Las de la tabla principal que `recomendar_codificacion()` deja escritas para el IV."""
+    tabla = recomendar_codificacion(pd.DataFrame({c: [0, 1] for c in columnas_declaradas()}))
+    deja = tabla["Estrategia Recomendada"].str.contains("IV") | tabla["Detalle"].str.contains(
+        "decide con el IV|decide el IV|cae por IV|se toma con el IV"
+    )
+    return set(tabla.loc[deja, "Variable"])
+
+
+def test_la_lista_del_iv_contiene_todo_lo_que_sus_fuentes_dejan_al_iv():
+    """Una `decision: iv` nueva en una receta, o una columna sin receta nueva, la hace fallar."""
+    fuentes = {
+        f["nombre"]
+        for tabla in TABLAS
+        for f in cargar_receta(tabla)["features"]
+        if f["decision"] == "iv"
+    }
+    assert len(fuentes) == 11
+    selection = _pendientes_de_selection()
+    assert len(selection) == 8, selection
+    fuentes |= selection
+    for _, modulo in TABLAS.values():
+        fuentes |= set(modulo.COLUMNAS_SIN_RECETA)
+    fuentes |= set(COLUMNAS_PROVISIONALES) | set(BANDERAS_RARAS)
+    assert fuentes <= set(CANDIDATAS_IV), sorted(fuentes - set(CANDIDATAS_IV))
+    assert len(CANDIDATAS_IV) == 38
+
+
+def test_las_de_receta_son_decision_iv_en_la_suya():
+    """Al revés: lo que la lista atribuye a una receta sigue siendo `decision: iv` en ella."""
+    for columna, candidata in CANDIDATAS_IV.items():
+        if candidata.fuente.startswith("receta de "):
+            tabla = candidata.fuente.removeprefix("receta de ")
+            decision = {f["nombre"]: f["decision"] for f in cargar_receta(tabla)["features"]}
+            assert decision.get(columna) == "iv", columna
+
+
+def test_toda_candidata_esta_en_el_contrato_de_la_matriz():
+    assert set(CANDIDATAS_IV) <= set(columnas_declaradas())
+
+
+def test_la_presencia_de_cada_candidata_es_la_de_su_tabla():
+    """`HAS_BUREAU_BALANCE` va sobre la de bureau, que la contiene; sobre sí misma daría cero."""
+    for columna, candidata in CANDIDATAS_IV.items():
+        tabla = _tabla_de(columna)
+        esperada = None if tabla is None else TABLAS[tabla][0]
+        if columna == "HAS_BUREAU_BALANCE":
+            esperada = "HAS_BUREAU_HISTORY"
+        assert candidata.presencia == esperada, columna
+        assert candidata.presencia is None or candidata.presencia in PRESENCIA_AUX
+
+
+def test_las_banderas_raras_son_candidatas():
+    assert set(BANDERAS_RARAS) <= set(CANDIDATAS_IV)
+
+
+@pytest.mark.parametrize("fuente, motivo", [("", "algo"), ("algo", " ")])
+def test_una_candidata_sin_fuente_o_sin_motivo_revienta(fuente, motivo):
+    with pytest.raises(ValueError, match="fuente y motivo"):
+        Candidata(fuente, motivo)
+    # y en la otra dirección, con las dos no revienta
+    Candidata("algo", "algo")
+
+
 # --- la puerta contra el dato real --------------------------------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -207,3 +306,179 @@ def test_el_iv_de_ext_source_3_sobre_train_sale_igual_por_un_camino_independient
     assert calcular_iv(x, y) == pytest.approx(independiente, abs=1e-12)
     assert calcular_iv(x, y) == pytest.approx(0.3280, abs=5e-5)
     assert tabla_woe(tramos(x), y)["n"].tolist() == n.tolist()
+
+
+# --- informe_iv() en sintético, para que corra en CI y no solo en la puerta local --------------
+
+
+def test_informe_iv_sin_presencia_quita_la_senal_del_grupo_ausente():
+    """Una candidata constante donde hay historial y ausente donde no: el sin presencia sale en
+    cero (un único tramo dentro de cada nivel de la presencia) y el marginal se queda con toda la
+    señal de la bandera, que es justo la que el 5.5 decidió no dejar pasar a la lectura.
+    """
+    rng = np.random.default_rng(0)
+    n = 4_000
+    presencia = rng.integers(0, 2, n)
+    x = np.where(presencia == 1, 5.0, np.nan)
+    p_base = np.where(presencia == 1, 0.05, 0.15)
+    y = pd.Series((rng.random(n) < p_base).astype(int))
+    train = pd.DataFrame({"X": x, "HAS_X": presencia, "TARGET": y})
+
+    informe = informe_iv(train, {"X": Candidata("test", "sintética", "HAS_X")})
+    assert informe.loc["X", "iv"] > 0.1, "el fixture perdió la señal de la bandera de presencia"
+    assert informe.loc["X", "iv_sin_presencia"] < 1e-6
+    assert informe.loc["X", "iv_lectura"] == informe.loc["X", "iv_sin_presencia"]
+    assert not informe.loc["X", "llega"]
+
+
+def test_informe_iv_revienta_con_una_candidata_ausente_del_frame():
+    train = pd.DataFrame({"X": [0, 1, 0, 1], "TARGET": [0, 1, 0, 1]})
+    with pytest.raises(KeyError, match="Y"):
+        informe_iv(train, {"Y": Candidata("test", "sintética")})
+    # la otra dirección: presente en el frame, no revienta
+    informe_iv(train, {"X": Candidata("test", "sintética")})
+
+
+def test_informe_iv_revienta_sin_target():
+    train = pd.DataFrame({"X": [0, 1, 0, 1]})
+    with pytest.raises(KeyError, match="TARGET"):
+        informe_iv(train, {"X": Candidata("test", "sintética")})
+
+
+def test_informe_iv_marca_las_raras_aunque_no_lleguen():
+    rng = np.random.default_rng(3)
+    n = 2_000
+    train = pd.DataFrame(
+        {
+            "BUREAU_NEGATIVE_LIMIT_FLAG": rng.integers(0, 2, n),
+            "TARGET": rng.integers(0, 2, n),
+        }
+    )
+    informe = informe_iv(train, {"BUREAU_NEGATIVE_LIMIT_FLAG": Candidata("test", "sintética")})
+    assert informe.loc["BUREAU_NEGATIVE_LIMIT_FLAG", "iv_lectura"] < valor("min_iv")
+    assert not informe.loc["BUREAU_NEGATIVE_LIMIT_FLAG", "llega"]
+    assert informe.loc["BUREAU_NEGATIVE_LIMIT_FLAG", "rara"]
+
+
+# --- la puerta del informe de IV sobre el dato real -------------------------------------------
+
+sin_dato_real_ensamblado = pytest.mark.skipif(
+    not all(
+        (ruta("raw_data") / TABLE_FILES[t]).exists()
+        for t in ("bureau", "bureau_balance", "previous_application", "application_train")
+    )
+    or not (ruta("processed_data") / NOMBRE_FICHERO).exists(),
+    reason="data/raw o el split no viajan con el repo",
+)
+
+# El `iv_lectura` de cada candidata (el sin presencia si la declara, si no el marginal) y si llega
+# a `min_iv` (0,02). Recomputados por un camino que no pasa por `iv.py`.
+PUERTA_IV = {
+    "HAS_BUREAU_FINANCIAL_DETAIL": (0.0005, False),
+    "HAS_BEEN_PROLONGED": (0.0009, False),
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX": (0.0282, True),
+    "BUREAU_ANNUITY_ACTIVE_RATIO": (0.0078, False),
+    "BUREAU_CREDIT_TYPE_NUNIQUE": (0.0001, False),
+    "BB_MANY_CREDITS_FLAG": (0.0007, False),
+    "BB_MONTHS_TOTAL": (0.0124, False),
+    "BB_DPD_MONTHS_COUNT": (0.0076, False),
+    "BB_CREDITS_WITH_DPD_COUNT": (0.0052, False),
+    "PREV_EARLY_HOUR_RATIO": (0.0139, False),
+    "PREV_DAYS_DECISION_MAX": (0.0093, False),
+    "LIVE_CITY_NOT_WORK_CITY": (0.0138, False),
+    "REG_REGION_NOT_WORK_REGION": (0.0008, False),
+    "REG_REGION_NOT_LIVE_REGION": (0.0003, False),
+    "LIVE_REGION_NOT_WORK_REGION": (0.0002, False),
+    "FLAG_PHONE": (0.0078, False),
+    "FLAG_WORK_PHONE": (0.0105, False),
+    "FLAG_EMAIL": (0.0, False),
+    "NAME_HOUSING_TYPE": (0.0155, False),
+    "FONDKAPREMONT_MODE": (0.0115, False),
+    "HOUSETYPE_MODE": (0.0215, True),
+    "WALLSMATERIAL_MODE": (0.0268, True),
+    "EMERGENCYSTATE_MODE": (0.0236, True),
+    "BUILDING_INFO_COUNT": (0.0212, True),
+    "BUREAU_HAS_FOREIGN_CURRENCY": (0.0002, False),
+    "BUREAU_HAS_CURRENT_OVERDUE": (0.0099, False),
+    "BUREAU_COUNT_COLA": (0.0016, False),
+    "BB_MONTHS_REPORTED": (0.0021, False),
+    "BB_TRAJECTORY": (0.0121, False),
+    "PREV_RELACION_CORTA_ACTIVA": (0.0175, False),
+    "BB_STATUS_WORST": (0.0010, False),
+    "BB_RECOVERED_DPD_FLAG": (0.0003, False),
+    "BB_N_CREDITS_WBAL": (0.0017, False),
+    "HAS_BUREAU_BALANCE": (0.0015, False),
+    "FLAG_CONT_MOBILE": (0.0, False),
+    "DEF_60_CNT_SOCIAL_CIRCLE": (0.0015, False),
+    "BUREAU_NEGATIVE_LIMIT_FLAG": (0.0020, False),
+    "PREV_REFUSED_LONG_TERM_FLAG": (0.0004, False),
+}
+
+
+def _tramo_codigo(serie, n_bins_max):
+    """El tramo de `tramos()`, pero con `np.searchsorted`/`pd.factorize` y no `qcut`/`groupby`."""
+    numerica = pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_bool_dtype(serie)
+    if numerica and serie.nunique() > 2:
+        v = serie.to_numpy(dtype=float)
+        presente = ~np.isnan(v)
+        bordes = np.unique(np.quantile(v[presente], np.linspace(0, 1, n_bins_max + 1)))
+        codigo = np.where(presente, np.searchsorted(bordes[1:-1], v, side="left"), -1)
+        return codigo + 1  # el 0 queda para el NULO
+    codigo, _ = pd.factorize(serie.astype(object).where(serie.notna(), NULO))
+    return codigo
+
+
+def _iv_de_codigos(codigo, y, alfa, mask=None):
+    if mask is not None:
+        codigo, y = codigo[mask], y[mask]
+    if len(np.unique(y)) < 2:
+        return 0.0, 0
+    n = np.bincount(codigo)
+    malos = np.bincount(codigo, weights=y)
+    buenos = n - malos
+    prior = alfa * malos.sum() / n.sum()
+    pm = (malos + prior) / malos.sum()
+    pb = (buenos + alfa - prior) / buenos.sum()
+    return float(((pm - pb) * np.log(pm / pb)).sum()), int(n.sum())
+
+
+@sin_dato_real_ensamblado
+def test_el_informe_de_iv_reproduce_la_puerta_del_5_5():
+    """Los 38 `iv_lectura` sobre los 245.993 de train, cada uno por un camino que no pasa por
+    `iv.py`: `np.quantile` + `np.searchsorted` + `np.bincount` para el marginal (`pd.factorize`
+    en las categóricas y banderas), y la ponderación de `iv_condicionado()` repetida a mano para
+    el sin presencia.
+    """
+    split = cargar_split()
+    base = preparar_application()
+    bureau = load_table("bureau", reduce_memory=False)
+    bb = load_table("bureau_balance")
+    prev = load_table("previous_application", reduce_memory=False)
+    cargar_cortes(split, sobrescribir=True)
+    matriz = ensamblar_auxiliares(base, bureau, bb, prev)
+    matriz = matriz.merge(split[["SK_ID_CURR", "split"]], on="SK_ID_CURR", how="left")
+    train = solo_train(matriz, split)
+    assert len(train) == 245_993
+
+    informe = informe_iv(train)
+    assert len(informe) == 38
+    alfa, n_bins_max = valor("suavizado_woe"), valor("n_bins_max")
+    y = train["TARGET"].to_numpy()
+
+    for nombre, (esperado_lectura, esperado_llega) in PUERTA_IV.items():
+        candidata = CANDIDATAS_IV[nombre]
+        codigo = _tramo_codigo(train[nombre], n_bins_max)
+        marginal, _ = _iv_de_codigos(codigo, y, alfa)
+        if candidata.presencia is None:
+            lectura = marginal
+        else:
+            grupo = _tramo_codigo(train[candidata.presencia], n_bins_max)
+            total = 0.0
+            for nivel in np.unique(grupo):
+                iv_nivel, n_nivel = _iv_de_codigos(codigo, y, alfa, mask=(grupo == nivel))
+                total += n_nivel * iv_nivel
+            lectura = total / len(train)
+        assert lectura == pytest.approx(esperado_lectura, abs=5e-5), nombre
+        assert lectura == pytest.approx(informe.loc[nombre, "iv_lectura"], abs=1e-9), nombre
+        assert bool(lectura >= valor("min_iv")) == esperado_llega, nombre
+        assert bool(informe.loc[nombre, "llega"]) == esperado_llega, nombre

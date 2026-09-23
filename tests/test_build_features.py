@@ -24,7 +24,8 @@ from src.features.build_features import (
     preparar_application,
 )
 from src.features.cleaning import filas_a_eliminar
-from src.features.split import cargar_split, mascara
+from src.features.params import alfa_bonferroni
+from src.features.split import cargar_split, mascara, solo_train
 
 # --- puerta de salida del punto 1.1, medida contra el dato real ------------------------------
 FILAS_CRUDAS = 307_511
@@ -310,6 +311,69 @@ def test_las_provisionales_llegan_a_la_matriz(base):
 
     for col in COLUMNAS_PROVISIONALES:
         assert col in base.columns
+
+
+# --- la remedición del 5.5 de los dos provisionales de application_train ---------------------
+
+
+def test_informe_provisionales_reproduce_el_comentario_de_cleaning_sobre_la_tabla_cruda(cruda):
+    """Antes de remedir sobre train, los estratos tienen que reproducir las cifras del comentario
+    de `COLUMNAS_PROVISIONALES` (`cleaning.py`), medidas sobre las 307.511 filas crudas. Si no
+    cuadran, los estratos de `DEF_30_CNT_SOCIAL_CIRCLE` están mal definidos.
+    """
+    from src.features.build_features import informe_provisionales_application
+
+    informe = informe_provisionales_application(cruda)
+    assert informe.loc["FLAG_CONT_MOBILE", "pearson_r"] == pytest.approx(0.0004, abs=5e-5)
+    assert informe.loc["FLAG_CONT_MOBILE", "n_pos"] == 306_937
+
+    esperado = {
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==1": (0.9419, 0.01623, 19_862),
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==2": (1.8476, 0.1344, 4_529),
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30>=3": (3.8636, 0.1997, 1_378),
+        "DEF_30_CNT_SOCIAL_CIRCLE | DEF_60==0": (1.7590, 4.421e-10, 9_397),
+    }
+    for fila, (efecto, p, n_pos) in esperado.items():
+        assert informe.loc[fila, "efecto"] == pytest.approx(efecto, abs=5e-4), fila
+        assert informe.loc[fila, "p"] == pytest.approx(p, rel=1e-3), fila
+        assert informe.loc[fila, "n_pos"] == n_pos, fila
+
+
+def test_informe_provisionales_remedido_sobre_train():
+    """La remedición real del 5.5, sobre los 245.993 de train y no sobre la tabla cruda.
+
+    `FLAG_CONT_MOBILE` sigue sin sostenerse (r casi nulo, incluso cambia de signo), lo que dice su
+    campo `remedir`. `DEF_60_CNT_SOCIAL_CIRCLE` sigue sin efecto propio dentro de los tres
+    estratos de `DEF_30` (ningún p pasa `alfa_bonferroni`), y `DEF_30` sigue separando dentro de
+    los clientes sin `DEF_60`, con una p que no ha perdido su orden de magnitud.
+    """
+    from src.features.build_features import informe_provisionales_application
+
+    train = solo_train(preparar_application(), cargar_split())
+    assert len(train) == 245_993
+    informe = informe_provisionales_application(train)
+
+    assert informe.loc["FLAG_CONT_MOBILE", "pearson_r"] == pytest.approx(-0.0009, abs=5e-5)
+    assert informe.loc["FLAG_CONT_MOBILE", "p"] > 0.5
+
+    esperado = {
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==1": (1.0202, 0.019507, 15_847),
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30==2": (1.6999, 0.220667, 3_581),
+        "DEF_60_CNT_SOCIAL_CIRCLE | DEF_30>=3": (5.0343, 0.134812, 1_102),
+        "DEF_30_CNT_SOCIAL_CIRCLE | DEF_60==0": (1.6886, 7.761e-08, 7_564),
+    }
+    for fila, (efecto, p, n_pos) in esperado.items():
+        assert informe.loc[fila, "efecto"] == pytest.approx(efecto, abs=5e-4), fila
+        assert informe.loc[fila, "p"] == pytest.approx(p, rel=1e-3), fila
+        assert informe.loc[fila, "n_pos"] == n_pos, fila
+    # los tres estratos de DEF_30 siguen sin significación dentro de su propia familia: los cinco
+    # contrastes que este informe emite (FLAG_CONT_MOBILE y los cuatro de DEF_30/DEF_60)
+    alfa = alfa_bonferroni(5)
+    for fila in esperado:
+        if fila != "DEF_30_CNT_SOCIAL_CIRCLE | DEF_60==0":
+            assert informe.loc[fila, "p"] > alfa, fila
+        else:
+            assert informe.loc[fila, "p"] < alfa, fila
 
 
 # --- puerta de salida del punto 1.3, los 3xp99 reestimados sobre el split --------------------

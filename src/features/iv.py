@@ -7,6 +7,8 @@ ni criterios a medida del resultado. La lectura del IV es la escala de credit sc
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -25,6 +27,10 @@ def _clave(serie: pd.Series) -> pd.Series:
     return serie.astype(object).where(serie.notna(), NULO)
 
 
+def _numerica_no_booleana(serie: pd.Series) -> bool:
+    return pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_bool_dtype(serie)
+
+
 def tramos(serie: pd.Series) -> pd.Series:
     """El tramo de cada fila, con el binning que se fijó antes de medir.
 
@@ -37,8 +43,7 @@ def tramos(serie: pd.Series) -> pd.Series:
     - El NaN, siempre tramo propio: conserva el signo del grupo ausente, que en `bureau` es de
       más riesgo y en `previous_application` de menos.
     """
-    numerica = pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_bool_dtype(serie)
-    if numerica and serie.nunique() > 2:
+    if _numerica_no_booleana(serie) and serie.nunique() > 2:
         corte = pd.qcut(serie, valor("n_bins_max"), duplicates="drop")
         # categórica y no object: los intervalos y la clave del nulo no se ordenan entre sí
         return corte.cat.add_categories(NULO).fillna(NULO)
@@ -125,3 +130,148 @@ def iv_condicionado(
             continue
         total += dentro.sum() * tabla_woe(clave[dentro], y, alfa)["iv"].sum()
     return total / len(serie)
+
+
+@dataclass(frozen=True)
+class Candidata:
+    """Una columna que espera al IV, con de dónde sale y por qué.
+
+    `presencia` es la bandera de su tabla, o `None` en las de la tabla principal. Con ella la
+    lectura contra `min_iv` se hace sin la señal del grupo ausente, que el modelo ya recibe por la
+    `HAS_*` y que el pipeline no le da a la columna (la bandera va a 0 y la continua a mediana).
+    """
+
+    fuente: str
+    motivo: str
+    presencia: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.fuente.strip() or not self.motivo.strip():
+            raise ValueError("una candidata al IV declara fuente y motivo")
+
+
+_BUREAU, _BB, _PREV = "HAS_BUREAU_HISTORY", "HAS_BUREAU_BALANCE", "HAS_PREV_APPLICATION"
+_GEO = "selection.py, pendiente de IV"
+_EDIFICIO = "bloque edificio"
+
+# La lista cerrada del 5.5, escrita antes de medir ningún IV. Las 38 salen de siete fuentes, y el
+# motivo de las que vienen de receta es su `estado`.
+CANDIDATAS_IV: dict[str, Candidata] = {
+    # las 11 `decision: iv` de las recetas
+    "HAS_BUREAU_FINANCIAL_DETAIL": Candidata("receta de bureau", "IV (banda débil)", _BUREAU),
+    "HAS_BEEN_PROLONGED": Candidata("receta de bureau", "IV (banda débil)", _BUREAU),
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX": Candidata("receta de bureau", "IV (secundaria)", _BUREAU),
+    "BUREAU_ANNUITY_ACTIVE_RATIO": Candidata("receta de bureau", "IV (secundaria)", _BUREAU),
+    "BUREAU_CREDIT_TYPE_NUNIQUE": Candidata("receta de bureau", "IV (secundaria)", _BUREAU),
+    "BB_MANY_CREDITS_FLAG": Candidata(
+        "receta de bureau_balance", "IV (no pasa Bonferroni); su corte bajó de 22 a 18", _BB
+    ),
+    "BB_MONTHS_TOTAL": Candidata(
+        "receta de bureau_balance", "IV (descarte ya no estructural)", _BB
+    ),
+    "BB_DPD_MONTHS_COUNT": Candidata("receta de bureau_balance", "IV (secundaria)", _BB),
+    "BB_CREDITS_WITH_DPD_COUNT": Candidata("receta de bureau_balance", "IV (secundaria)", _BB),
+    "PREV_EARLY_HOUR_RATIO": Candidata("receta de previous_application", "IV (banda débil)", _PREV),
+    "PREV_DAYS_DECISION_MAX": Candidata(
+        "receta de previous_application", "IV (banda débil), además control", _PREV
+    ),
+    # las que selection.py deja al IV: tres de región y una de ciudad, y las tres de contacto
+    "LIVE_CITY_NOT_WORK_CITY": Candidata(_GEO, "redundante con REG_CITY_NOT_WORK_CITY"),
+    "REG_REGION_NOT_WORK_REGION": Candidata(_GEO, "las de región, un orden por debajo de ciudad"),
+    "REG_REGION_NOT_LIVE_REGION": Candidata(_GEO, "las de región, un orden por debajo de ciudad"),
+    "LIVE_REGION_NOT_WORK_REGION": Candidata(_GEO, "redundante con REG_REGION_NOT_WORK_REGION"),
+    "FLAG_PHONE": Candidata("selection.py, contacto", "sin decisión propia en el EDA"),
+    "FLAG_WORK_PHONE": Candidata("selection.py, contacto", "sin decisión propia en el EDA"),
+    "FLAG_EMAIL": Candidata("selection.py, contacto", "la más clara del bloque a caerse"),
+    "NAME_HOUSING_TYPE": Candidata(
+        "selection.py, vivienda", "el pipeline no fusiona niveles: la puerta es de rareza"
+    ),
+    # el bloque edificio: el EDA dejó las categóricas entre binarizar y eliminar
+    "FONDKAPREMONT_MODE": Candidata(_EDIFICIO, "binarizar o eliminar, 68% de nulos"),
+    "HOUSETYPE_MODE": Candidata(_EDIFICIO, "binarizar o eliminar, 50% de nulos"),
+    "WALLSMATERIAL_MODE": Candidata(_EDIFICIO, "OHE, binarizar o eliminar, 50% de nulos"),
+    "EMERGENCYSTATE_MODE": Candidata(_EDIFICIO, "binarizar o eliminar, 47% de nulos"),
+    "BUILDING_INFO_COUNT": Candidata(_EDIFICIO, "el 5.6 la decide frente a HAS_BUILDING_INFO"),
+    # las seis de COLUMNAS_SIN_RECETA, sin receta con la que compararlas
+    "BUREAU_HAS_FOREIGN_CURRENCY": Candidata(
+        "COLUMNAS_SIN_RECETA", "efecto medido en el 2.3", _BUREAU
+    ),
+    "BUREAU_HAS_CURRENT_OVERDUE": Candidata(
+        "COLUMNAS_SIN_RECETA", "la mora activa leída de la foto; el 5.6 elige lectura", _BUREAU
+    ),
+    "BUREAU_COUNT_COLA": Candidata(
+        "COLUMNAS_SIN_RECETA", "la cola del conteo, pendiente 5", _BUREAU
+    ),
+    "BB_MONTHS_REPORTED": Candidata("COLUMNAS_SIN_RECETA", "denominador, no explicativa", _BB),
+    "BB_TRAJECTORY": Candidata("COLUMNAS_SIN_RECETA", "el peor recorrido del cliente", _BB),
+    "PREV_RELACION_CORTA_ACTIVA": Candidata(
+        "COLUMNAS_SIN_RECETA", "la interacción del pendiente 7", _PREV
+    ),
+    # los cuatro efectos que en el 3.10 no se distinguen de cero. HAS_BUREAU_BALANCE se lee sobre
+    # la presencia de bureau, que la contiene: sobre sí misma daría cero por construcción
+    "BB_STATUS_WORST": Candidata(
+        "efecto nulo del 3.10", "sin significación dentro de los morosos", _BB
+    ),
+    "BB_RECOVERED_DPD_FLAG": Candidata("efecto nulo del 3.10", "sin significación", _BB),
+    "BB_N_CREDITS_WBAL": Candidata("efecto nulo del 3.10", "sin significación", _BB),
+    "HAS_BUREAU_BALANCE": Candidata("efecto nulo del 3.10", "sin significación", _BUREAU),
+    # los dos descartes provisionales de application_train, que se remiden además aparte
+    "FLAG_CONT_MOBILE": Candidata("COLUMNAS_PROVISIONALES", "sin señal en el EDA"),
+    "DEF_60_CNT_SOCIAL_CIRCLE": Candidata("COLUMNAS_PROVISIONALES", "señal prestada de DEF_30"),
+    # las dos banderas raras, que llevan su n y no se descartan por un IV bajo
+    "BUREAU_NEGATIVE_LIMIT_FLAG": Candidata("bandera rara", "conservar (severidad)", _BUREAU),
+    "PREV_REFUSED_LONG_TERM_FLAG": Candidata("bandera rara", "conservar (severidad)", _PREV),
+}
+
+BANDERAS_RARAS: tuple[str, ...] = ("BUREAU_NEGATIVE_LIMIT_FLAG", "PREV_REFUSED_LONG_TERM_FLAG")
+
+
+def _es_bandera(serie: pd.Series) -> bool:
+    """El complemento de la rama continua de `tramos()`: numérica con dos valores o menos."""
+    return _numerica_no_booleana(serie) and serie.nunique() <= 2
+
+
+def informe_iv(train: pd.DataFrame, candidatas: dict[str, Candidata] | None = None) -> pd.DataFrame:
+    """El IV de cada candidata sobre train, marginal y sin la presencia de su tabla.
+
+    Revienta nombrando lo que falte, antes de medir nada: una candidata que no está en `train` (un
+    nombre cambiado, por ejemplo) no puede desaparecer del informe en silencio.
+
+    `iv_lectura` es la cifra que se compara contra `min_iv`: el sin presencia si la candidata la
+    declara (`iv_condicionado()` reutilizado tal cual, con `presencia` como estrato de dos niveles),
+    y si no el marginal. Reutiliza `calcular_iv()`, `tramos()` e `iv_condicionado()`; no hay código
+    de IV nuevo aquí.
+    """
+    candidatas = CANDIDATAS_IV if candidatas is None else candidatas
+    faltan = [c for c in candidatas if c not in train.columns]
+    if faltan:
+        raise KeyError(f"candidatas al IV ausentes del frame: {faltan}")
+    if "TARGET" not in train.columns:
+        raise KeyError("informe_iv() necesita TARGET en el frame")
+    objetivo = train["TARGET"]
+    min_iv = valor("min_iv")
+
+    filas = []
+    for nombre, candidata in candidatas.items():
+        serie = train[nombre]
+        bandera = _es_bandera(serie)
+        iv = calcular_iv(serie, objetivo)
+        iv_sin_presencia = np.nan
+        if candidata.presencia is not None:
+            iv_sin_presencia = iv_condicionado(serie, train[candidata.presencia], objetivo)
+        lectura = iv if candidata.presencia is None else iv_sin_presencia
+        filas.append(
+            {
+                "feature": nombre,
+                "fuente": candidata.fuente,
+                "n": int(serie.notna().sum()),
+                "n_marcados": int(serie.sum()) if bandera else np.nan,
+                "n_tramos": len(tramos(serie).cat.categories),
+                "iv": iv,
+                "iv_sin_presencia": iv_sin_presencia,
+                "iv_lectura": lectura,
+                "llega": bool(lectura >= min_iv),
+                "rara": nombre in BANDERAS_RARAS,
+            }
+        )
+    return pd.DataFrame(filas).set_index("feature")
