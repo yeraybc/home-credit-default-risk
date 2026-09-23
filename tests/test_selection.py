@@ -12,7 +12,8 @@ Sintéticos, así que corren también en un clon limpio.
 import pandas as pd
 import pytest
 
-from src.features.selection import recomendar_codificacion
+from src.features.pipeline import columnas_declaradas
+from src.features.selection import DECISIONES_IV, DecisionIV, recomendar_codificacion
 
 # Las seis donde el pipeline hace otra cosa, con lo que la marca tiene que anunciar. La última no
 # es una entrada de `especificas` sino la rama por defecto del bloque de documento, y sirve
@@ -98,3 +99,23 @@ def test_la_rama_por_defecto_sigue_existiendo_para_lo_no_declarado(tabla):
     recomendaciones = recomendar_codificacion(tabla.assign(FLAG_INVENTADA=[0, 1]))
 
     assert _detalle(recomendaciones, "FLAG_INVENTADA") == DETALLE_GENERICO
+
+
+# --- el registro de selección del 5.6 -----------------------------------------------------------
+
+
+def test_toda_decision_iv_que_no_descarta_apunta_a_una_columna_de_la_matriz():
+    """Un `conservar`, `iv` o `degradada` sin columna real dejaría un nombre suelto en el
+    registro que nadie podría reconciliar con la matriz. Un `descartar` no tiene por qué apuntar
+    a nada, que es justo el caso de la tripartita de la mora: no se construyó columna."""
+    declaradas = columnas_declaradas()
+    for feature, decision in DECISIONES_IV.items():
+        if decision.decision != "descartar":
+            assert feature in declaradas, feature
+
+
+def test_una_decision_iv_sin_criterio_o_sin_motivo_revienta():
+    with pytest.raises(ValueError, match="declara"):
+        DecisionIV("conservar", "", "algo")
+    with pytest.raises(ValueError, match="declara"):
+        DecisionIV("conservar", "algo", " ")

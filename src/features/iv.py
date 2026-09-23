@@ -309,3 +309,48 @@ def informe_mora_activa(train: pd.DataFrame) -> pd.DataFrame:
             for nombre, serie in lecturas.items()
         }
     ).T
+
+
+def tripartita_mora(train: pd.DataFrame) -> pd.Series:
+    """Con mora (`BUREAU_OVERDUE_UNION` = 1), reportada a cero (unión a 0 con historial de mora
+    reportado) o sin reportar (unión a 0 y sin historial), NaN sin `HAS_BUREAU_HISTORY`."""
+    union, historial = train["BUREAU_OVERDUE_UNION"], train["HAS_BUREAU_OVERDUE_HISTORY"]
+    niveles = np.select(
+        [union.eq(1), historial.eq(1)], ["con_mora", "reportada_cero"], default="sin_reportar"
+    )
+    return pd.Series(niveles, index=train.index).where(train["HAS_BUREAU_HISTORY"].eq(1))
+
+
+def informe_tripartita_mora(train: pd.DataFrame) -> pd.DataFrame:
+    """El pendiente 2: si separar el cero del nulo dentro de `BUREAU_OVERDUE_UNION` aporta IV.
+
+    **Criterio, escrito antes de medir:** gana la tripartita si su IV incremental sobre la unión
+    (`iv_condicionado()`, dentro de los clientes con historial) llega a `min_iv`. Si no, sigue la
+    unión y no se construye columna.
+
+    Una fila por nivel, con su n y su tasa. Dos filas aparte, sin n ni tasa: `union` y
+    `tripartita`, con el IV marginal de cada codificación sin la presencia de la tabla, para que
+    quede constancia de que la tripartita tampoco gana sola; e `incremental_sobre_union`, con el
+    IV que la tripartita añade sobre la unión y si llega a `min_iv`.
+    """
+    con_historial = train[train["HAS_BUREAU_HISTORY"].eq(1)]
+    tripartita = tripartita_mora(con_historial)
+    union, objetivo = con_historial["BUREAU_OVERDUE_UNION"], con_historial["TARGET"]
+    presencia = con_historial["HAS_BUREAU_HISTORY"]
+    incremental = iv_condicionado(tripartita, union, objetivo)
+
+    tasas = con_historial.groupby(tripartita)["TARGET"].agg(n="size", tasa="mean")
+    resumen = pd.DataFrame(
+        {
+            "n": [np.nan, np.nan, np.nan],
+            "tasa": [np.nan, np.nan, np.nan],
+            "iv": [
+                iv_condicionado(union, presencia, objetivo),
+                iv_condicionado(tripartita, presencia, objetivo),
+                incremental,
+            ],
+            "llega": [np.nan, np.nan, bool(incremental >= valor("min_iv"))],
+        },
+        index=["union", "tripartita", "incremental_sobre_union"],
+    )
+    return pd.concat([tasas.assign(iv=np.nan, llega=np.nan), resumen])

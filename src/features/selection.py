@@ -300,4 +300,11 @@ DECISIONES_IV: dict[str, DecisionIV] = {
         "empata con BUREAU_CURRENT_OVERDUE_SUM > 0 en 0,0099 (2.688 vs 2.687 marcados); gana la "
         "foto porque no pierde al cliente cuya única mora activa está en otra moneda",
     ),
+    "tripartita_mora": DecisionIV(
+        "descartar",
+        "IV incremental sobre BUREAU_OVERDUE_UNION >= min_iv (0,02), dentro de con historial",
+        "el incremental es 0,0014, muy por debajo de 0,02: separar reportada a cero (6,79%, "
+        "n=90.085) de sin reportar (7,38%, n=62.863) no añade nada sobre la unión (9,55% vs "
+        "7,03%); no se construye columna y sigue BUREAU_OVERDUE_UNION",
+    ),
 }

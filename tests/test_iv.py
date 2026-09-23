@@ -22,9 +22,11 @@ from src.features.iv import (
     calcular_iv,
     informe_iv,
     informe_mora_activa,
+    informe_tripartita_mora,
     iv_condicionado,
     tabla_woe,
     tramos,
+    tripartita_mora,
 )
 from src.features.params import valor
 from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
@@ -545,3 +547,59 @@ def test_la_mora_activa_empata_y_decide_la_construccion(train_ensamblado):
     assert informe.loc["BUREAU_HAS_CURRENT_OVERDUE", "iv_sin_presencia"] == pytest.approx(
         informe.loc["BUREAU_CURRENT_OVERDUE_SUM > 0", "iv_sin_presencia"], abs=1e-4
     )
+
+
+def _fixture_tripartita_mora(diferencia_pp: float):
+    """1.000 con historial: 400 con mora, 300 reportada a cero, 300 sin reportar. La tasa de los
+    dos niveles sin mora difiere `diferencia_pp`, y el resto no tiene historial (`sin_reportar`
+    implícito por HAS_BUREAU_HISTORY a 0, no confundir con el nivel de la tripartita)."""
+    rng = np.random.default_rng(11)
+    n_con_mora, n_cero, n_sin_reportar = 400, 300, 300
+    union = np.r_[np.ones(n_con_mora), np.zeros(n_cero), np.zeros(n_sin_reportar)]
+    historia = np.r_[np.ones(n_con_mora), np.ones(n_cero), np.zeros(n_sin_reportar)]
+    tasa_cero, tasa_sin_reportar = 0.06, 0.06 + diferencia_pp / 100
+    y_cero = rng.random(n_cero) < tasa_cero
+    y_sin_reportar = rng.random(n_sin_reportar) < tasa_sin_reportar
+    y_con_mora = rng.random(n_con_mora) < 0.15
+    objetivo = np.r_[y_con_mora, y_cero, y_sin_reportar].astype(int)
+    return pd.DataFrame(
+        {
+            "HAS_BUREAU_HISTORY": np.ones(n_con_mora + n_cero + n_sin_reportar, dtype="int8"),
+            "BUREAU_OVERDUE_UNION": union,
+            "HAS_BUREAU_OVERDUE_HISTORY": historia,
+            "TARGET": objetivo,
+        }
+    )
+
+
+def test_la_tripartita_de_mora_gana_con_diferencia_plantada_y_no_sin_ella():
+    con_diferencia = informe_tripartita_mora(_fixture_tripartita_mora(diferencia_pp=15))
+    assert con_diferencia.loc["incremental_sobre_union", "llega"]
+    sin_diferencia = informe_tripartita_mora(_fixture_tripartita_mora(diferencia_pp=0))
+    assert not sin_diferencia.loc["incremental_sobre_union", "llega"]
+
+
+def test_la_tripartita_de_mora_es_nan_sin_historial():
+    train = _fixture_tripartita_mora(diferencia_pp=10)
+    train.loc[0, "HAS_BUREAU_HISTORY"] = 0
+    niveles = tripartita_mora(train)
+    assert niveles.iloc[0] != niveles.iloc[0]  # NaN
+
+
+PUERTA_5_6_TRIPARTITA_MORA = {
+    "con_mora": (57_927, 0.0955),
+    "reportada_cero": (90_085, 0.0679),
+    "sin_reportar": (62_863, 0.0738),
+}
+
+
+@sin_dato_real_ensamblado
+def test_la_tripartita_de_mora_no_gana_sobre_train(train_ensamblado):
+    """El incremental sobre la unión no llega a min_iv: separar el cero reportado del nulo no
+    aporta más que la unión sola, así que el pendiente 2 se cierra sin construir columna."""
+    informe = informe_tripartita_mora(train_ensamblado)
+    for nivel, (n, tasa) in PUERTA_5_6_TRIPARTITA_MORA.items():
+        assert informe.loc[nivel, "n"] == n, nivel
+        assert informe.loc[nivel, "tasa"] == pytest.approx(tasa, abs=5e-5), nivel
+    assert informe.loc["incremental_sobre_union", "iv"] == pytest.approx(0.0014, abs=5e-5)
+    assert not informe.loc["incremental_sobre_union", "llega"]
