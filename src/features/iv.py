@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.features.agg_previous import lectura_solo_vivas
 from src.features.params import valor
 
 # El nulo es un nivel más para agrupar y para el WoE, así que necesita una clave con la que
@@ -378,4 +379,35 @@ def informe_building_info(train: pd.DataFrame) -> pd.DataFrame:
             "llega": bool(incremental >= valor("min_iv")),
         },
         index=["BUILDING_INFO_COUNT"],
+    )
+
+
+def informe_solo_vivas(train: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+    """`PREV_FUTURE_DUE_MAX` (el fin previsto, cuente o no la operación como terminada) frente a
+    la lectura de solo vivas (`lectura_solo_vivas()`), el pendiente del 4.5.
+
+    **Criterio, escrito antes de medir:** entra la de solo vivas como columna nueva si su IV
+    incremental sobre la actual (`iv_condicionado()`, dentro de quien tiene previas) llega a
+    `min_iv`. Si no, la actual se queda tal cual.
+    """
+    vivas = lectura_solo_vivas(prev).reindex(train["SK_ID_CURR"]).to_numpy()
+    actual, presencia, objetivo = (
+        train["PREV_FUTURE_DUE_MAX"],
+        train["HAS_PREV_APPLICATION"],
+        train["TARGET"],
+    )
+    vivas = pd.Series(vivas, index=train.index)
+    incremental = iv_condicionado(vivas, actual, objetivo)
+    return pd.DataFrame(
+        {
+            "n": [int(actual.notna().sum()), int(vivas.notna().sum())],
+            "iv_sin_presencia": [
+                iv_condicionado(actual, presencia, objetivo),
+                iv_condicionado(vivas, presencia, objetivo),
+            ],
+        },
+        index=["PREV_FUTURE_DUE_MAX", "PREV_FUTURE_DUE_VIVAS"],
+    ).assign(
+        incremental_vivas_sobre_actual=[np.nan, incremental],
+        llega=[np.nan, bool(incremental >= valor("min_iv"))],
     )

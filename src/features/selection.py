@@ -314,4 +314,11 @@ DECISIONES_IV: dict[str, DecisionIV] = {
         "cuántos campos del edificio tiene un cliente no separa más que tener alguno o no; sale "
         "y se queda HAS_BUILDING_INFO",
     ),
+    "PREV_FUTURE_DUE_VIVAS": DecisionIV(
+        "descartar",
+        "IV incremental sobre PREV_FUTURE_DUE_MAX >= min_iv (0,02), dentro de con previas",
+        "el incremental es 0,0067; sobre train la actual tiene más IV sin presencia (0,0116 "
+        "frente a 0,0082 de solo vivas), al revés de lo medido sobre la tabla cruda sin split "
+        "(0,0842 frente a 0,0856); no se construye columna y sigue PREV_FUTURE_DUE_MAX",
+    ),
 }

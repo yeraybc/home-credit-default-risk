@@ -23,6 +23,7 @@ from src.features.iv import (
     informe_building_info,
     informe_iv,
     informe_mora_activa,
+    informe_solo_vivas,
     informe_tripartita_mora,
     iv_condicionado,
     tabla_woe,
@@ -647,3 +648,26 @@ def test_building_info_count_no_gana_sobre_train(train_ensamblado):
         0.00015, abs=5e-5
     )
     assert not informe.loc["BUILDING_INFO_COUNT", "llega"]
+
+
+PUERTA_5_6_SOLO_VIVAS = {
+    "PREV_FUTURE_DUE_MAX": (118_400, 0.0116),
+    "PREV_FUTURE_DUE_VIVAS": (85_565, 0.0082),
+}
+
+
+@sin_dato_real_ensamblado
+def test_la_lectura_de_solo_vivas_no_gana_sobre_train(train_ensamblado):
+    """El incremental de la lectura de solo vivas sobre la actual no llega a min_iv, así que no
+    se construye columna nueva y `PREV_FUTURE_DUE_MAX` se queda como está. Es una desviación de
+    lo citado en CLAUDE.md (donde ganaba sobre la tabla cruda, sin split): medido sobre train la
+    actual tiene más IV sin presencia (0,0116 frente a 0,0082) y el incremental es 0,0067."""
+    prev = load_table("previous_application", reduce_memory=False)
+    informe = informe_solo_vivas(train_ensamblado, prev)
+    for nombre, (n, iv) in PUERTA_5_6_SOLO_VIVAS.items():
+        assert informe.loc[nombre, "n"] == n, nombre
+        assert informe.loc[nombre, "iv_sin_presencia"] == pytest.approx(iv, abs=5e-5), nombre
+    assert informe.loc["PREV_FUTURE_DUE_VIVAS", "incremental_vivas_sobre_actual"] == pytest.approx(
+        0.0067, abs=5e-5
+    )
+    assert not informe.loc["PREV_FUTURE_DUE_VIVAS", "llega"]
