@@ -751,9 +751,11 @@ def configurar_selector() -> SelectorIV:
     """El `SelectorIV` que `construir_pipeline()` monta al final, con las cuatro listas de origen
     del 5.8.
 
-    Las candidatas son `CANDIDATAS_IV` menos lo que `descartes_fijos()` ya saca sin mirar el IV
-    (`BUILDING_INFO_COUNT`, descartada en el 5.6), más las cuatro `DEGRADADAS_DE_RECETA` con la
-    presencia de su tabla. La presencia de `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
+    Las candidatas son `CANDIDATAS_IV` menos las 7 que `descartes_fijos()` ya saca sin mirar el
+    IV (`BUILDING_INFO_COUNT` del 5.6, los tres efectos nulos del 3.10, dos degradadas del 5.6
+    que también eran candidatas de receta y `BUREAU_ANNUITY_ACTIVE_RATIO` del 5.7), más las
+    cuatro `DEGRADADAS_DE_RECETA` con la presencia de su tabla: 38 - 7 + 4 = 35. La presencia de
+    `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
     mide dentro de quien tiene la tabla (`X[presencia] == 1`) y no pondera por cobertura, que es
     el cambio de criterio decidido en el 5.8 (antes lo hacía `iv_condicionado()`, y en
     `bureau_balance` la ponderación restaba más cobertura que señal de bandera).

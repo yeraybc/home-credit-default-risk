@@ -9,6 +9,8 @@ las dos fuentes de verdad y en este proyecto ya ha mordido tres veces.
 Sintéticos, así que corren también en un clon limpio.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -588,7 +590,7 @@ class _SelectorFalso:
 
 
 def _pipeline_falso(iv):
-    return type("_PipelineFalso", (), {"named_steps": {"seleccion": _SelectorFalso(iv)}})()
+    return SimpleNamespace(named_steps={"seleccion": _SelectorFalso(iv)})
 
 
 @pytest.fixture
