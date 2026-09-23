@@ -20,6 +20,7 @@ from src.features.iv import (
     NULO,
     Candidata,
     calcular_iv,
+    informe_building_info,
     informe_iv,
     informe_mora_activa,
     informe_tripartita_mora,
@@ -603,3 +604,46 @@ def test_la_tripartita_de_mora_no_gana_sobre_train(train_ensamblado):
         assert informe.loc[nivel, "tasa"] == pytest.approx(tasa, abs=5e-5), nivel
     assert informe.loc["incremental_sobre_union", "iv"] == pytest.approx(0.0014, abs=5e-5)
     assert not informe.loc["incremental_sobre_union", "llega"]
+
+
+def _fixture_building_info(diferencia_pp: float, n_por_conteo: int = 200):
+    """1.000 clientes: 500 sin ningún dato del edificio y 500 con, repartidos en cinco conteos
+    (1, 4, 7, 10, 13). `diferencia_pp` es cuánto se separan entre sí los conteos altos y bajos
+    dentro de quien tiene dato; sin ella el conteo no añade nada a la bandera."""
+    rng = np.random.default_rng(5)
+    conteos = [1, 4, 7, 10, 13]
+    filas = []
+    for conteo in conteos:
+        tasa = 0.06 - (diferencia_pp / 100) * (conteo - 7) / 6
+        y = rng.random(n_por_conteo) < tasa
+        filas.append(pd.DataFrame({"BUILDING_INFO_COUNT": conteo, "TARGET": y.astype(int)}))
+    con_dato = pd.concat(filas, ignore_index=True)
+    sin_dato = pd.DataFrame(
+        {
+            "BUILDING_INFO_COUNT": 0,
+            "TARGET": (rng.random(len(con_dato)) < 0.12).astype(int),
+        }
+    )
+    todos = pd.concat([con_dato, sin_dato], ignore_index=True)
+    todos["HAS_BUILDING_INFO"] = todos["BUILDING_INFO_COUNT"].gt(0).astype(int)
+    return todos
+
+
+def test_building_info_count_gana_con_gradiente_plantado_y_no_sin_el():
+    con_gradiente = informe_building_info(_fixture_building_info(diferencia_pp=20))
+    assert con_gradiente.loc["BUILDING_INFO_COUNT", "llega"]
+    sin_gradiente = informe_building_info(_fixture_building_info(diferencia_pp=0))
+    assert not sin_gradiente.loc["BUILDING_INFO_COUNT", "llega"]
+
+
+@sin_dato_real_ensamblado
+def test_building_info_count_no_gana_sobre_train(train_ensamblado):
+    """El incremental sobre HAS_BUILDING_INFO no llega a min_iv: entre quien tiene algún dato del
+    edificio, cuántos campos tiene no separa más que tenerlo o no, así que se queda la bandera."""
+    informe = informe_building_info(train_ensamblado)
+    assert informe.loc["BUILDING_INFO_COUNT", "n_con_dato"] == 127_709
+    assert informe.loc["BUILDING_INFO_COUNT", "iv_marginal"] == pytest.approx(0.0212, abs=5e-5)
+    assert informe.loc["BUILDING_INFO_COUNT", "incremental_sobre_bandera"] == pytest.approx(
+        0.00015, abs=5e-5
+    )
+    assert not informe.loc["BUILDING_INFO_COUNT", "llega"]

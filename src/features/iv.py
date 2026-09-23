@@ -354,3 +354,28 @@ def informe_tripartita_mora(train: pd.DataFrame) -> pd.DataFrame:
         index=["union", "tripartita", "incremental_sobre_union"],
     )
     return pd.concat([tasas.assign(iv=np.nan, llega=np.nan), resumen])
+
+
+def informe_building_info(train: pd.DataFrame) -> pd.DataFrame:
+    """`BUILDING_INFO_COUNT` frente a `HAS_BUILDING_INFO`, la pregunta que su propio docstring
+    en `application.py` dejó abierta.
+
+    **Criterio, escrito antes de medir:** entra el conteo si su IV incremental sobre la bandera
+    (`iv_condicionado()`, dentro de quien tiene algún dato del edificio) llega a `min_iv`. Si no,
+    sale y se queda solo la bandera.
+    """
+    conteo, bandera, objetivo = (
+        train["BUILDING_INFO_COUNT"],
+        train["HAS_BUILDING_INFO"],
+        train["TARGET"],
+    )
+    incremental = iv_condicionado(conteo, bandera, objetivo)
+    return pd.DataFrame(
+        {
+            "n_con_dato": int(bandera.sum()),
+            "iv_marginal": calcular_iv(conteo, objetivo),
+            "incremental_sobre_bandera": incremental,
+            "llega": bool(incremental >= valor("min_iv")),
+        },
+        index=["BUILDING_INFO_COUNT"],
+    )

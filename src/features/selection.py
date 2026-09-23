@@ -307,4 +307,11 @@ DECISIONES_IV: dict[str, DecisionIV] = {
         "n=90.085) de sin reportar (7,38%, n=62.863) no añade nada sobre la unión (9,55% vs "
         "7,03%); no se construye columna y sigue BUREAU_OVERDUE_UNION",
     ),
+    "BUILDING_INFO_COUNT": DecisionIV(
+        "descartar",
+        "IV incremental sobre HAS_BUILDING_INFO >= min_iv (0,02), dentro de quien tiene dato",
+        "el incremental es 0,00015, muy por debajo de 0,02, aunque el marginal (0,0212) llega: "
+        "cuántos campos del edificio tiene un cliente no separa más que tener alguno o no; sale "
+        "y se queda HAS_BUILDING_INFO",
+    ),
 }
