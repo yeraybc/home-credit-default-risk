@@ -102,14 +102,17 @@ def test_la_huella_cambia_si_un_cliente_se_mueve_de_parte(split):
 def test_guardar_y_cargar_da_los_mismos_valores_y_tipos(cortes_guardados):
     """Pasa cuando debe pasar: un proceso nuevo recupera exactamente lo que se guardó."""
     split, destino = cortes_guardados
-    esperados = {n: (valor(n), type(valor(n))) for n in VALORES_SINTETICOS}
+    esperados = {
+        n: (valor(n), type(valor(n)), parametro(n).n_train_operativo) for n in VALORES_SINTETICOS
+    }
 
     _vaciar_los_ocho()
     cargar_cortes(split, destino)
 
-    for nombre, (v, tipo) in esperados.items():
+    for nombre, (v, tipo, n_train) in esperados.items():
         assert valor(nombre) == v
         assert type(valor(nombre)) is tipo, f"{nombre} cambió de tipo en la ida y vuelta"
+        assert parametro(nombre).n_train_operativo == n_train, f"{nombre} perdió su n_train"
 
 
 def test_cargar_con_la_huella_de_otro_split_revienta(cortes_guardados):
@@ -253,15 +256,16 @@ def test_guardar_y_cargar_sobre_el_dato_real(tmp_path):
         split,
         split,
     )
-    # solo el valor: el tipo exacto (int frente a float) ya lo fija el test sintético de arriba.
-    # Aquí el operativo en caliente sale en np.float64 (numpy lo produce al calcular) y el
-    # recargado en float nativo (lo que guarda json.dumps), y son el mismo número.
-    esperados = {n: valor(n) for n in PUERTA}
+    # solo el valor y el n_train: el tipo exacto (int frente a float) ya lo fija el test
+    # sintético de arriba. Aquí el operativo en caliente sale en np.float64 (numpy lo produce al
+    # calcular) y el recargado en float nativo (lo que guarda json.dumps), y son el mismo número.
+    esperados = {n: (valor(n), parametro(n).n_train_operativo) for n in PUERTA}
     destino = tmp_path / "cortes.json"
     guardar_cortes(split, destino)
 
     _vaciar_los_ocho()
     cargar_cortes(split, destino)
 
-    for nombre, v in esperados.items():
+    for nombre, (v, n_train) in esperados.items():
         assert valor(nombre) == v
+        assert parametro(nombre).n_train_operativo == n_train, f"{nombre} perdió su n_train"
