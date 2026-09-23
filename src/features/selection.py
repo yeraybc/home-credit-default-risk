@@ -495,8 +495,9 @@ def pares_redundantes(train: pd.DataFrame, columnas: list[str] | None = None) ->
     banda = valor("banda_revision_pearson")
 
     filas = []
-    for i, a in enumerate(sorted(columnas)):
-        for b in sorted(columnas)[i + 1 :]:
+    ordenadas = sorted(columnas)
+    for i, a in enumerate(ordenadas):
+        for b in ordenadas[i + 1 :]:
             declarado = (a, b) in PARES_DECLARADOS
             if tabla[a] == tabla[b] and not declarado:
                 continue
