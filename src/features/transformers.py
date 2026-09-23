@@ -21,7 +21,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
-from src.features.iv import NULO, _clave, tabla_woe
+from src.features.iv import NULO, _clave, calcular_iv, tabla_woe
 from src.features.params import fijar_operativo, parametro, valor
 
 # Qué columna lleva qué corte del registro. Declarado y no derivado del frame que llegue, por lo
@@ -449,3 +449,148 @@ def registrar_limites(winsorizador: Winsorizador, sobrescribir: bool = False) ->
             CORTES_WINSOR[columna], limite, winsorizador.n_ajuste_[columna], sobrescribir
         )
     return informe
+
+
+# --- SelectorIV, capa 2b, bloque 5 -----------------------------------------------------------
+
+
+def _resolver_origen(origen: str, columnas: Iterable[str]) -> tuple[str, ...] | None:
+    """Las columnas físicas de un origen: la columna tal cual, o su grupo `origen_nivel` del
+    `OneHotEncoder`. `None` si ninguna de las dos existe."""
+    columnas = list(columnas)
+    if origen in columnas:
+        return (origen,)
+    grupo = tuple(c for c in columnas if c.startswith(f"{origen}_"))
+    return grupo or None
+
+
+class SelectorIV(BaseEstimator, TransformerMixin):
+    """Saca del frame lo que no aporta capacidad predictiva propia, capa 2b: el TARGET entra al
+    cálculo del IV, así que se ajusta solo sobre el 80% de entrenamiento.
+
+    Va al final del `Pipeline` (`sklearn.md`), después del filtro de varianza, así que ve la
+    matriz ya con sus 218 columnas: lo que en el frame de capa 1 era una categórica llega aquí
+    expandida por el `OneHotEncoder`. Por eso este transformer no decide columna a columna sino
+    por **origen**: un origen es la columna tal cual (una continua, una bandera, o una categórica
+    ya reducida a un solo número como `BB_TRAJECTORY`, declarada en `categoricas`), o el grupo
+    `origen_nivel` que deja el `OneHotEncoder`, resuelto por el prefijo con `_resolver_origen()`.
+
+    Tres listas de origen y no de columna física, las tres en `__init__` para que `clone` y
+    joblib las lleven intactas:
+
+    - `candidatas`: origen -> columna de presencia de su tabla, o `None` si no la tiene. Sale si
+      su IV no llega a `min_iv` y no está protegido. Con presencia, el IV se mide **dentro de
+      quien tiene la tabla** (`X[presencia] == 1`) y no marginal, que es lo que corrige la señal
+      prestada de la bandera: una columna imputada a una constante para quien no tiene tabla
+      puede separar el TARGET sin decir nada de sí misma, solo por reproducir la partición de la
+      presencia.
+    - `descartes`: origen -> motivo. Sale siempre, sin mirar el IV: son decisiones ya congeladas
+      del 5.6 y el 5.7 (`descartes_fijos()` en `selection.py`).
+    - `protegidas`: se quedan pase lo que pase. Se les mide el IV igual, para el registro, pero
+      no decide nada.
+
+    Todo lo que no esté en ninguna de las tres listas **pasa intacto**: las tres solo cubren lo
+    que tiene una decisión de IV o de redundancia detrás, y son una fracción pequeña de las 218
+    columnas de la matriz. `transform` filtra por exclusión y no por una lista blanca, que es lo
+    que hace que una columna sin decisión propia no desaparezca por no estar declarada.
+
+    Reutiliza `calcular_iv()` y el binning de `tramos()` (vía `iv.py`); no hay aritmética de IV
+    nueva aquí.
+    """
+
+    def __init__(
+        self,
+        candidatas: dict[str, str | None] | None = None,
+        descartes: dict[str, str] | None = None,
+        protegidas: Iterable[str] = (),
+        categoricas: Iterable[str] = (),
+    ) -> None:
+        self.candidatas = candidatas
+        self.descartes = descartes
+        self.protegidas = protegidas
+        self.categoricas = categoricas
+
+    def _serie_iv(self, origen: str, X: pd.DataFrame, categoricas: set) -> pd.Series:
+        """La serie que mide `calcular_iv()`: la columna tal cual, o la categoría reconstruida a
+        partir de su grupo de dummies. Cada combinación de dummies es su propio nivel, y no hace
+        falta la clave del nulo de `iv.py`: la matriz que ve este paso ya no trae ningún NaN."""
+        columnas = self.columnas_[origen]
+        if len(columnas) == 1 and origen not in categoricas:
+            return X[columnas[0]]
+        bloque = X[list(columnas)].astype(str).agg("|".join, axis=1)
+        codigo, _ = pd.factorize(bloque)
+        return pd.Series(codigo, index=X.index).astype("category")
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> SelectorIV:
+        """Mide el IV de cada origen y decide quién sale. Se llama sobre `solo_train()`.
+
+        Revienta antes de medir nada, no a mitad: sin `y`, si algo está descartado y protegido a
+        la vez, o si algún origen declarado no resuelve en `X` (nombrando todos los que faltan,
+        no solo el primero).
+        """
+        if y is None:
+            raise ValueError(
+                "SelectorIV es capa 2b y necesita el TARGET: sin él no hay IV que calcular"
+            )
+        candidatas = {} if self.candidatas is None else dict(self.candidatas)
+        descartes = {} if self.descartes is None else dict(self.descartes)
+        protegidas = set(self.protegidas)
+        categoricas = set(self.categoricas)
+
+        cruzados = set(descartes) & protegidas
+        if cruzados:
+            raise ValueError(f"descartado y protegido a la vez: {sorted(cruzados)}")
+
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.n_features_in_ = X.shape[1]
+
+        origenes = sorted(set(candidatas) | set(descartes) | protegidas)
+        columnas: dict[str, tuple[str, ...]] = {}
+        faltan = []
+        for origen in origenes:
+            resuelto = _resolver_origen(origen, X.columns)
+            if resuelto is None:
+                faltan.append(origen)
+            else:
+                columnas[origen] = resuelto
+        if faltan:
+            raise KeyError(f"orígenes del SelectorIV ausentes del frame: {sorted(faltan)}")
+        self.columnas_ = columnas
+
+        objetivo = pd.Series(np.asarray(y), index=X.index)
+        min_iv = valor("min_iv")
+        self.iv_: dict[str, float] = {}
+        self.motivos_: dict[str, str] = {}
+        salen = []
+        for origen in origenes:
+            serie = self._serie_iv(origen, X, categoricas)
+            presencia = candidatas.get(origen)
+            if presencia is not None:
+                dentro = (X[presencia] == 1).to_numpy()
+                iv = calcular_iv(serie[dentro], objetivo[dentro])
+            else:
+                iv = calcular_iv(serie, objetivo)
+            self.iv_[origen] = iv
+
+            if origen in descartes:
+                self.motivos_[origen] = descartes[origen]
+                salen.append(origen)
+            elif origen not in protegidas and origen in candidatas and iv < min_iv:
+                self.motivos_[origen] = f"IV {iv:.4f} por debajo de min_iv ({min_iv:.4f})"
+                salen.append(origen)
+
+        columnas_que_salen = {c for origen in salen for c in columnas[origen]}
+        self.quedan_ = tuple(c for c in X.columns if c not in columnas_que_salen)
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Devuelve `X` sin las columnas de lo que salió. Estricto donde el `fit` es permisivo:
+        si algo que sobrevivió al ajuste falta aquí, revienta en vez de servir una matriz
+        distinta de la que vio el modelo."""
+        check_is_fitted(self)
+        _exigir_ajustadas(X, self.quedan_)
+        return X[list(self.quedan_)]
+
+    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
+        check_is_fitted(self)
+        return np.asarray(self.quedan_, dtype=object)
