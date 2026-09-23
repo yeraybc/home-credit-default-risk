@@ -53,6 +53,7 @@ ESTADO_AJUSTADO = {
     "woe": "tablas_",
     "tgt": "encodings_",
     "varianza": "variances_",
+    "seleccion": "iv_",
 }
 
 
@@ -68,9 +69,14 @@ def _bloque(n, semilla, *, ingreso, hora, dia, organizacion, ocupacion, rara):
     frame[COL_TRAYECTORIA] = pd.Series(
         [niveles[i % len(niveles)] for i in range(n)], dtype=TRAYECTORIAS
     )
+    # el nivel minoritario tiene que quedarse por debajo de n_min_categoria y el mayoritario por
+    # encima: con las dos mitades iguales, AgrupadorDeRaras las funde a las dos en el mismo
+    # residual (ninguna llega al mínimo) y la columna sale constante, que `varianza` se lleva
+    # antes de que el `seleccion` del 5.8 pueda mirar el origen que declara
+    minoria = min(n // 4, max(1, n - valor("n_min_categoria")))
     for c in CATEGORICAS_OHE:
         if c not in (COL_FRANJA, COL_DIA):
-            frame[c] = "comun"
+            frame[c] = (["comun"] * (n - minoria)) + (["otro"] * minoria)
     frame[COL_DIA] = dia
     frame.loc[frame.index[:2], "NAME_INCOME_TYPE"] = rara
     frame[COL_EDUCACION] = [JERARQUIA_EDUCACION[i % 5] for i in range(n)]

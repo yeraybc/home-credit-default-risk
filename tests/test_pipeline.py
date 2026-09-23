@@ -48,6 +48,7 @@ from src.features.pipeline import (
     aplicar_dominio,
     columnas_declaradas,
     construir_pipeline,
+    construir_pipeline_sin_seleccion,
     franja_horaria,
     informe_buckets,
     verificar_contrato_columnas,
@@ -236,7 +237,7 @@ def test_lo_que_sale_de_los_buckets_suma_la_matriz(entrada, objetivo):
     lo que sale de él. Se contrasta contra la matriz de verdad y no contra una suma escrita a
     mano, que es lo que la haría envejecer sola.
     """
-    p = construir_pipeline().fit(entrada, objetivo)
+    p = construir_pipeline_sin_seleccion().fit(entrada, objetivo)
     inf = informe_buckets(entrada, p)
     salida = p.transform(entrada)
 
@@ -357,10 +358,11 @@ def test_el_fixture_da_riesgo_diferencial_a_la_organizacion(entrada, objetivo):
 def test_la_varianza_se_lleva_la_columna_constante(entrada, objetivo):
     """La red que justifica el paso: hoy no elimina nada, y con una constante sí debe."""
     con_constante = entrada.assign(**{BINARIAS[0]: 0})
-    salida = construir_pipeline().fit_transform(con_constante, objetivo)
+    salida = construir_pipeline_sin_seleccion().fit_transform(con_constante, objetivo)
 
     assert BINARIAS[0] not in salida.columns
-    assert BINARIAS[0] in construir_pipeline().fit_transform(entrada, objetivo).columns
+    intacta = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo)
+    assert BINARIAS[0] in intacta.columns
 
 
 def test_el_dia_recodificado_sobrevive_a_una_segunda_pasada(entrada):
@@ -563,7 +565,7 @@ def test_el_total_de_columnas_de_salida_cuadra_bucket_a_bucket(entrada, objetivo
         + len(BANDERAS_AUX)  # el bucket de constante 0
         + 1  # el ordinal de BB_TRAYECTORY
     )
-    salida = construir_pipeline().fit_transform(entrada, objetivo)
+    salida = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo)
 
     assert salida.shape[1] == esperado
 
@@ -655,11 +657,11 @@ def test_el_umbral_de_varianza_sale_de_params(entrada, objetivo):
     """Igual con el suelo del filtro final: subirlo tiene que llevarse columnas."""
     from src.features.params import PARAMS, Parametro
 
-    antes = construir_pipeline().fit_transform(entrada, objetivo).shape[1]
+    antes = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo).shape[1]
     viejo = PARAMS["app_umbral_varianza"]
     PARAMS["app_umbral_varianza"] = Parametro(0.2, "dominio", viejo.descripcion, viejo.fuente)
 
-    assert construir_pipeline().fit_transform(entrada, objetivo).shape[1] < antes
+    assert construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo).shape[1] < antes
 
 
 def test_el_nivel_educativo_no_visto_queda_por_debajo_de_la_escala(entrada, objetivo):
@@ -793,7 +795,7 @@ def test_el_suelo_a_cero_no_distingue_las_protegidas_de_las_demas(entrada, objet
 
     viejo = PARAMS["app_umbral_varianza"]
     PARAMS["app_umbral_varianza"] = Parametro(0.5, "dominio", viejo.descripcion, viejo.fuente)
-    salida = construir_pipeline().fit_transform(entrada, objetivo)
+    salida = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo)
 
     assert not set(COLUMNAS_PROTEGIDAS_DE_VARIANZA) & set(salida.columns)
 
@@ -811,7 +813,7 @@ def test_las_protegidas_son_binarias_de_la_matriz(entrada):
 def test_la_bandera_de_auxiliar_se_imputa_a_cero_y_no_a_la_mediana(entrada, objetivo):
     """La razón de la decisión, reproducida sobre el fixture: la mitad de las 30 tiene mayoría
     de unos, como en el dato real pasa con dos de ellas, y ahí la mediana pondría un 1."""
-    salida = construir_pipeline().fit_transform(entrada, objetivo)
+    salida = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo)
 
     for bandera in BANDERAS_AUX:
         nulos = entrada[bandera].isna()
@@ -831,7 +833,7 @@ def test_el_fixture_de_banderas_aux_separa_la_constante_de_la_mediana(entrada):
 def test_la_trayectoria_sale_ordinal_con_el_sin_dato_fuera_de_escala(entrada, objetivo):
     """`BB_TRAJECTORY` en una columna, con los cuatro niveles en el orden de `TRAYECTORIAS` y el
     NaN en `CODIGO_SIN_TRAYECTORIA`, no en el nivel medio de la escala."""
-    salida = construir_pipeline().fit_transform(entrada, objetivo)
+    salida = construir_pipeline_sin_seleccion().fit_transform(entrada, objetivo)
     niveles = list(TRAYECTORIAS.categories)
 
     nulos = entrada[COL_TRAYECTORIA].isna()
@@ -843,7 +845,7 @@ def test_la_trayectoria_sale_ordinal_con_el_sin_dato_fuera_de_escala(entrada, ob
 
 def test_la_trayectoria_no_vista_tambien_sale_en_codigo_sin_dato(entrada, objetivo):
     """Una categoría que el `fit` no vio nunca no puede colarse como un nivel intermedio."""
-    pipeline = construir_pipeline().fit(entrada, objetivo)
+    pipeline = construir_pipeline_sin_seleccion().fit(entrada, objetivo)
     con_nivel_nuevo = entrada.assign(**{COL_TRAYECTORIA: "nivel jamas visto"})
 
     salida = pipeline.transform(con_nivel_nuevo)

@@ -473,7 +473,13 @@ def test_la_columna_que_la_limpieza_elimina_no_llega_a_winsorizarse(base, winsor
 # COLUMNAS_CON_FEATURES: ese es solo la capa 1 de application_train, sin las auxiliares, y sigue
 # en 101 porque el 5.3 no lo toca.
 COLUMNAS_DEL_COLUMNTRANSFORMER = 180
-COLUMNAS_DE_LA_MATRIZ_FINAL = 218
+# lo que emite el ColumnTransformer, antes del SelectorIV: no se mueve con el 5.8, porque
+# informe_buckets() lee output_indices_ del propio ColumnTransformer y no ve lo que pasa detrás
+COLUMNAS_QUE_EMITE_EL_COLUMNTRANSFORMER = 218
+# la matriz que de verdad entrega ajustar_pipeline(), con el SelectorIV del 5.8 al final:
+# descarta lo del 5.6 y el 5.7 que llega a la matriz (24 columnas) y las candidatas cuyo IV no
+# llega a min_iv, medido sobre los 245.993 de train (PUERTA_5_8 en test_iv.py)
+COLUMNAS_DE_LA_MATRIZ_FINAL = 164
 COLUMNAS_DE_OHE = 52
 BUCKETS = {"num": 93, "ohe": 14, "ord": 1, "woe": 1, "tgt": 1, "bin": 39, "cero": 30, "tray": 1}
 
@@ -496,17 +502,17 @@ def test_la_matriz_final_sale_de_180_columnas_y_da_218(base_ensamblada):
     assert previo.shape[1] == COLUMNAS_DEL_COLUMNTRANSFORMER
     assert dict(zip(informe["bucket"], informe["entran"])) == BUCKETS
     assert sum(BUCKETS.values()) == COLUMNAS_DEL_COLUMNTRANSFORMER
-    assert salida.shape[1] == COLUMNAS_DE_LA_MATRIZ_FINAL
     assert len(salida) == len(entrenamiento)
     assert int(salida.isna().sum().sum()) == 0, "la matriz no puede salir con ningún NaN"
     # las dos cifras de la puerta salen del informe y no de contarlas a mano
     assert informe.set_index("bucket").loc["ohe", "salen"] == COLUMNAS_DE_OHE
-    assert informe["salen"].sum() == COLUMNAS_DE_LA_MATRIZ_FINAL
+    assert informe["salen"].sum() == COLUMNAS_QUE_EMITE_EL_COLUMNTRANSFORMER
 
 
 @sin_csv
 def test_el_ohe_expande_sus_14_columnas_en_52(base_ensamblada):
-    """El resto de la aritmética: 93 + 52 + 1 + 1 + 1 + 39 + 30 + 1 son las 218."""
+    """El resto de la aritmética: 93 + 52 + 1 + 1 + 1 + 39 + 30 + 1 son las 218 que emite el
+    ColumnTransformer, antes de que el SelectorIV del 5.8 saque las suyas."""
     from src.features.build_features import ajustar_pipeline
     from src.features.split import cargar_split
 
@@ -514,7 +520,23 @@ def test_el_ohe_expande_sus_14_columnas_en_52(base_ensamblada):
     ohe = pipeline.named_steps["columnas"].named_transformers_["ohe"]
 
     assert len(ohe.named_steps["codifica"].get_feature_names_out()) == COLUMNAS_DE_OHE
-    assert sum(BUCKETS.values()) - BUCKETS["ohe"] + COLUMNAS_DE_OHE == COLUMNAS_DE_LA_MATRIZ_FINAL
+    assert (
+        sum(BUCKETS.values()) - BUCKETS["ohe"] + COLUMNAS_DE_OHE
+        == COLUMNAS_QUE_EMITE_EL_COLUMNTRANSFORMER
+    )
+
+
+@sin_csv
+def test_el_selector_iv_deja_la_matriz_en_164(base_ensamblada):
+    """La puerta del 5.8: lo que de verdad sale de `ajustar_pipeline()`, después del
+    `SelectorIV`. `PUERTA_5_8` en `tests/test_iv.py` fija el IV de cada candidata que sostiene
+    este número."""
+    from src.features.build_features import ajustar_pipeline
+    from src.features.split import cargar_split
+
+    _, salida = ajustar_pipeline(base_ensamblada, cargar_split())
+
+    assert salida.shape[1] == COLUMNAS_DE_LA_MATRIZ_FINAL
 
 
 @sin_csv

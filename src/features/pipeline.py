@@ -1,8 +1,10 @@
 """El `Pipeline` de las capas 2 montado, con su `ColumnTransformer` dentro.
 
-Convierte 180 columnas heterogéneas en una matriz numérica de 218 con nombres. Se ajusta **solo
-sobre el 80% de entrenamiento**: dos de sus pasos estiman parámetros sobre covariables y tres los
-estiman con el TARGET.
+Convierte 180 columnas heterogéneas en una matriz numérica con nombres. El `ColumnTransformer`
+entrega 218, y desde el 5.8 el `SelectorIV` del final las deja en 164, sacando lo que no aporta
+capacidad predictiva propia o ya estaba descartado por el 5.6 o el 5.7. Se ajusta **solo sobre el
+80% de entrenamiento**: dos de sus pasos estiman parámetros sobre covariables y tres los estiman
+con el TARGET, el `SelectorIV` entre ellos desde el 5.8.
 
 **Ojo con ese 180, que es otro.** La capa 1 deja 180 columnas contando `TARGET` y `SK_ID_CURR`, o
 sea 178 features, y lo que ve el `ColumnTransformer` son esas 178 más los dos ratios que añade el
@@ -29,9 +31,13 @@ El orden de los pasos no es libre y lo fija `sklearn.md`:
    construidos y la hora ya convertida en franja.
 5. `columnas`, el `ColumnTransformer` que reparte cada bucket a su codificación.
 6. `varianza`, la red contra la columna que se quede constante.
-
-El `SelectorIV` que el boceto de `sklearn.md` dibuja al final **no está**: `iv.py` es del bloque 5
-y este pipeline se cierra en el `VarianceThreshold`.
+7. `seleccion`, el `SelectorIV` del 5.8: saca lo que no aporta capacidad predictiva propia por
+   IV, más lo que el 5.6 y el 5.7 ya habían decidido sacar. Va montado por
+   `selection.configurar_selector()`, no aquí: sus cuatro listas de origen (candidatas,
+   descartes fijos, protegidas y categóricas) son decisiones del bloque 5 y `pipeline.py` no las
+   conoce. `construir_pipeline()` lo importa dentro de la función y no arriba del módulo, porque
+   `selection.py` ya importa este módulo a nivel de módulo, y un import cruzado arriba cerraría
+   un ciclo.
 
 **Pendiente declarado, para que no viva solo en el docstring que lo comete:** `aplicar_dominio()`
 es capa 1 por la regla de la fase, porque no estima nada y no cruza filas, y sin embargo vive
@@ -628,6 +634,9 @@ def construir_pipeline() -> Pipeline:
     un array de numpy y se pierden los nombres de columna, que hacen falta enteros para SHAP en
     la Fase 5, para el scorecard y para el contrato de la API.
     """
+    # importado aquí y no arriba del módulo: selection.py ya importa pipeline a nivel de módulo
+    from src.features.selection import configurar_selector
+
     ohe = Pipeline(
         [
             ("agrupa", AgrupadorDeRaras()),
@@ -698,8 +707,20 @@ def construir_pipeline() -> Pipeline:
             # a 1. Está por el fold del CV de la Fase 4 donde esa bandera sí se quede constante y
             # el número de columnas cambie entre folds.
             ("varianza", VarianceThreshold(threshold=valor("app_umbral_varianza"))),
+            ("seleccion", configurar_selector()),
         ]
     ).set_output(transform="pandas")
+
+
+def construir_pipeline_sin_seleccion() -> Pipeline:
+    """El mismo montaje de `construir_pipeline()`, sin el `SelectorIV` del final.
+
+    Para los tests que aíslan la mecánica de un bucket (imputación, codificación, el
+    `VarianceThreshold` en sí) de la selección por IV del 5.8, que es una decisión de negocio
+    ajena a esa mecánica: el `SelectorIV` de producción puede sacar una columna concreta que un
+    fixture sintético monta a propósito, con nombre real, para probar otra cosa.
+    """
+    return Pipeline(construir_pipeline().steps[:-1]).set_output(transform="pandas")
 
 
 def informe_buckets(datos: pd.DataFrame, pipeline: Pipeline | None = None) -> pd.DataFrame:

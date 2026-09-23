@@ -10,9 +10,10 @@ import numpy as np
 import pandas as pd
 
 from src.features import agg_bureau, agg_bureau_balance, agg_previous, pipeline
-from src.features.iv import BANDERAS_RARAS, calcular_iv, iv_condicionado
+from src.features.iv import BANDERAS_RARAS, CANDIDATAS_IV, calcular_iv, iv_condicionado
 from src.features.params import valor
 from src.features.recipes import cargar_receta
+from src.features.transformers import SelectorIV
 
 
 def obtener_categorias(df: pd.DataFrame) -> dict[str, list]:
@@ -720,6 +721,54 @@ DECISIONES_REDUNDANCIA: dict[tuple[str, str], DecisionRedundancia] = {
         "HAS_BUREAU_HISTORY (incremental 0,0015)",
     ),
 }
+
+
+# --- el SelectorIV del 5.8 -------------------------------------------------------------------
+
+# la presencia de cada tabla auxiliar, para las candidatas que no vienen de `CANDIDATAS_IV`. Es
+# el mismo vocabulario de `pipeline.PRESENCIA_AUX`, cruzado en test contra esa lista
+PRESENCIA_DE_TABLA: dict[str, str] = {
+    "bureau": "HAS_BUREAU_HISTORY",
+    "bureau_balance": "HAS_BUREAU_BALANCE",
+    "previous_application": "HAS_PREV_APPLICATION",
+}
+
+# las 4 `degradada` de receta (denominador o fuente de una bandera, decisión del punto 3 del
+# 5.8) que vuelven al IV con la presencia de su tabla, y no salen fijas como las 8 del 5.6
+DEGRADADAS_DE_RECETA: tuple[str, ...] = (
+    "BUREAU_LOAN_COUNT",
+    "PREV_APPLICATION_COUNT",
+    "PREV_COUNT_12M",
+    "PREV_REFUSED_COUNT",
+)
+
+
+def configurar_selector() -> SelectorIV:
+    """El `SelectorIV` que `construir_pipeline()` monta al final, con las cuatro listas de origen
+    del 5.8.
+
+    Las candidatas son `CANDIDATAS_IV` menos lo que `descartes_fijos()` ya saca sin mirar el IV
+    (`BUILDING_INFO_COUNT`, descartada en el 5.6), más las cuatro `DEGRADADAS_DE_RECETA` con la
+    presencia de su tabla. La presencia de `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
+    mide dentro de quien tiene la tabla (`X[presencia] == 1`) y no pondera por cobertura, que es
+    el cambio de criterio decidido en el 5.8 (antes lo hacía `iv_condicionado()`, y en
+    `bureau_balance` la ponderación restaba más cobertura que señal de bandera).
+    """
+    descartes = descartes_fijos()
+    candidatas = {
+        nombre: candidata.presencia
+        for nombre, candidata in CANDIDATAS_IV.items()
+        if nombre not in descartes
+    }
+    nombres = _nombres_por_tabla()
+    for nombre in DEGRADADAS_DE_RECETA:
+        candidatas[nombre] = PRESENCIA_DE_TABLA[tabla_de(nombre, nombres)]
+    return SelectorIV(
+        candidatas=candidatas,
+        descartes=descartes,
+        protegidas=columnas_protegidas(),
+        categoricas=(pipeline.COL_TRAYECTORIA,),
+    )
 
 
 # --- la selección final del 5.8 ------------------------------------------------------------------
