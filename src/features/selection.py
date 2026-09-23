@@ -4,6 +4,8 @@ src.features.selection: Métodos de selección de variables y cálculo de métri
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 
@@ -266,3 +268,36 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(recoms)
+
+
+# --- el registro de selección del 5.6, que el 5.8 consume ---------------------------------------
+
+
+@dataclass(frozen=True)
+class DecisionIV:
+    """Una de las cinco decisiones del 5.6, con su criterio y su motivo.
+
+    `decision` es del vocabulario cerrado de las recetas (conservar | iv | degradada | descartar |
+    control | referencia). La cifra que sostiene la decisión va en `motivo`, nunca consumida.
+    """
+
+    decision: str
+    criterio: str
+    motivo: str
+
+    def __post_init__(self) -> None:
+        if not self.decision.strip() or not self.criterio.strip() or not self.motivo.strip():
+            raise ValueError("una decisión del 5.6 declara decision, criterio y motivo")
+
+
+# Las cinco decisiones que el EDA dejó pendientes de IV, cerradas en el 5.6 sobre los 245.993
+# clientes de train. `BUREAU_HAS_CURRENT_OVERDUE` es la única que ya estaba en CANDIDATAS_IV;
+# las otras cuatro no compiten contra min_iv, así que no van ahí.
+DECISIONES_IV: dict[str, DecisionIV] = {
+    "BUREAU_HAS_CURRENT_OVERDUE": DecisionIV(
+        "conservar",
+        "mayor IV sin presencia; empate en la cuarta cifra decae a la construcción",
+        "empata con BUREAU_CURRENT_OVERDUE_SUM > 0 en 0,0099 (2.688 vs 2.687 marcados); gana la "
+        "foto porque no pierde al cliente cuya única mora activa está en otra moneda",
+    ),
+}

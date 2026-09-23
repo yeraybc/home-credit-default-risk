@@ -21,6 +21,7 @@ from src.features.iv import (
     Candidata,
     calcular_iv,
     informe_iv,
+    informe_mora_activa,
     iv_condicionado,
     tabla_woe,
     tramos,
@@ -469,12 +470,13 @@ def _iv_de_codigos(codigo, y, alfa, mask=None):
     return float(((pm - pb) * np.log(pm / pb)).sum()), int(n.sum())
 
 
-@sin_dato_real_ensamblado
-def test_el_informe_de_iv_reproduce_la_puerta_del_5_5():
-    """Los 38 `iv_lectura` sobre los 245.993 de train, cada uno por un camino que no pasa por
-    `iv.py`: `np.quantile` + `np.searchsorted` + `np.bincount` para el marginal (`pd.factorize`
-    en las categóricas y banderas), y la ponderación de `iv_condicionado()` repetida a mano para
-    el sin presencia.
+@pytest.fixture(scope="module")
+def train_ensamblado():
+    """Los 245.993 de train con las 180 columnas de capa 1, para toda la puerta del 5.5 y el 5.6.
+
+    Se ensambla una sola vez por módulo: `ensamblar_auxiliares()` sobre las tres auxiliares y
+    `cargar_cortes()` con los ocho del 5.1 son el gasto caro del test, y ninguna de las decisiones
+    del 5.6 cambia el frame de entrada.
     """
     split = cargar_split()
     base = preparar_application()
@@ -486,7 +488,17 @@ def test_el_informe_de_iv_reproduce_la_puerta_del_5_5():
     matriz = matriz.merge(split[["SK_ID_CURR", "split"]], on="SK_ID_CURR", how="left")
     train = solo_train(matriz, split)
     assert len(train) == 245_993
+    return train
 
+
+@sin_dato_real_ensamblado
+def test_el_informe_de_iv_reproduce_la_puerta_del_5_5(train_ensamblado):
+    """Los 38 `iv_lectura` sobre los 245.993 de train, cada uno por un camino que no pasa por
+    `iv.py`: `np.quantile` + `np.searchsorted` + `np.bincount` para el marginal (`pd.factorize`
+    en las categóricas y banderas), y la ponderación de `iv_condicionado()` repetida a mano para
+    el sin presencia.
+    """
+    train = train_ensamblado
     informe = informe_iv(train)
     assert len(informe) == 38
     alfa, n_bins_max = valor("suavizado_woe"), valor("n_bins_max")
@@ -509,3 +521,27 @@ def test_el_informe_de_iv_reproduce_la_puerta_del_5_5():
         assert lectura == pytest.approx(informe.loc[nombre, "iv_lectura"], abs=1e-9), nombre
         assert bool(lectura >= valor("min_iv")) == esperado_llega, nombre
         assert bool(informe.loc[nombre, "llega"]) == esperado_llega, nombre
+
+
+# --- 5.6, las decisiones que esperaban al IV --------------------------------------------------
+
+PUERTA_5_6_MORA_ACTIVA = {
+    "BUREAU_HAS_CURRENT_OVERDUE": (210_875, 2_688, 0.0099),
+    "BUREAU_CURRENT_OVERDUE_SUM > 0": (210_848, 2_687, 0.0099),
+}
+
+
+@sin_dato_real_ensamblado
+def test_la_mora_activa_empata_y_decide_la_construccion(train_ensamblado):
+    """Las dos lecturas de la mora activa dan el mismo IV sin presencia en la cuarta cifra
+    decimal, así que la decisión del 5.6 (conservar la foto) es de construcción y no de IV: la
+    foto no pierde al cliente cuya única mora activa está en otra moneda.
+    """
+    informe = informe_mora_activa(train_ensamblado)
+    for nombre, (n, n_marcados, iv) in PUERTA_5_6_MORA_ACTIVA.items():
+        assert informe.loc[nombre, "n"] == n, nombre
+        assert informe.loc[nombre, "n_marcados"] == n_marcados, nombre
+        assert informe.loc[nombre, "iv_sin_presencia"] == pytest.approx(iv, abs=5e-5), nombre
+    assert informe.loc["BUREAU_HAS_CURRENT_OVERDUE", "iv_sin_presencia"] == pytest.approx(
+        informe.loc["BUREAU_CURRENT_OVERDUE_SUM > 0", "iv_sin_presencia"], abs=1e-4
+    )

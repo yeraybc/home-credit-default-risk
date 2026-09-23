@@ -278,3 +278,34 @@ def informe_iv(train: pd.DataFrame, candidatas: dict[str, Candidata] | None = No
             }
         )
     return pd.DataFrame(filas).set_index("feature")
+
+
+# --- las decisiones del 5.6 ---------------------------------------------------------------------
+
+
+def informe_mora_activa(train: pd.DataFrame) -> pd.DataFrame:
+    """Las dos lecturas de la mora activa de `bureau`, sin la presencia de la tabla.
+
+    `BUREAU_HAS_CURRENT_OVERDUE` lee el `> 0` de la foto y `BUREAU_CURRENT_OVERDUE_SUM > 0` el de la
+    suma limpia, con su NaN fuera (la codificación de la receta), así que difieren en quien tiene
+    mora solo en otra moneda o toda su deuda en otra moneda.
+
+    **Criterio, escrito antes de medir:** entra la de mayor IV; si no difieren en la cuarta cifra
+    decimal, decide la construcción y entra la foto, que no pierde la mora en moneda extranjera.
+    """
+    suma = train["BUREAU_CURRENT_OVERDUE_SUM"]
+    lecturas = {
+        "BUREAU_HAS_CURRENT_OVERDUE": train["BUREAU_HAS_CURRENT_OVERDUE"],
+        "BUREAU_CURRENT_OVERDUE_SUM > 0": suma.gt(0).astype(float).where(suma.notna()),
+    }
+    presencia, objetivo = train["HAS_BUREAU_HISTORY"], train["TARGET"]
+    return pd.DataFrame(
+        {
+            nombre: {
+                "n": int(serie.notna().sum()),
+                "n_marcados": int(serie.sum()),
+                "iv_sin_presencia": iv_condicionado(serie, presencia, objetivo),
+            }
+            for nombre, serie in lecturas.items()
+        }
+    ).T
