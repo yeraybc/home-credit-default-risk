@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.features import agg_bureau, agg_bureau_balance, agg_previous
+from src.features import agg_bureau, agg_bureau_balance, agg_previous, pipeline
 from src.features.iv import BANDERAS_RARAS, calcular_iv, iv_condicionado
 from src.features.params import valor
 from src.features.recipes import cargar_receta
@@ -408,14 +408,21 @@ def tabla_de(columna: str, nombres: dict[str, set[str]] | None = None) -> str:
 
 def columnas_protegidas() -> frozenset[str]:
     """Las que no pasan por el umbral del 5.8, adelantadas aquí porque el empate del 5.7 las mira:
-    las `control: true` de las recetas, las tres `HAS_*`, los dos documentos, las banderas raras y
-    `PREV_ACTIVIDAD_12M_COLA` como término de `PREV_RELACION_CORTA_ACTIVA`."""
+    las `control: true` de las recetas, las tres `HAS_*` (`pipeline.PRESENCIA_AUX`), los dos
+    documentos protegidos del filtro de varianza (`pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`),
+    las banderas raras y `PREV_ACTIVIDAD_12M_COLA` como término de `PREV_RELACION_CORTA_ACTIVA`.
+
+    Las dos listas de `pipeline.py` se importan y no se copian, que copiarlas es la misma trampa
+    de las dos fuentes de verdad que ya ha mordido tres veces en este proyecto: un tercer
+    documento protegido en `pipeline.py` no se enteraría aquí.
+    """
     recetas = [cargar_receta(tabla)["features"] for tabla in AUXILIARES]
     controles = {f["nombre"] for receta in recetas for f in receta if f.get("control")}
     return frozenset(
         controles
-        | {"HAS_BUREAU_HISTORY", "HAS_BUREAU_BALANCE", "HAS_PREV_APPLICATION"}
-        | {"FLAG_DOCUMENT_3", "FLAG_DOCUMENT_6", "PREV_ACTIVIDAD_12M_COLA"}
+        | set(pipeline.PRESENCIA_AUX)
+        | set(pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA)
+        | {"PREV_ACTIVIDAD_12M_COLA"}
         | set(BANDERAS_RARAS)
     )
 
@@ -456,7 +463,10 @@ def pares_redundantes(train: pd.DataFrame, columnas: list[str] | None = None) ->
     Entran las numéricas vivas: fuera lo que su receta o el 5.6 ya descartan, porque su salida no
     depende de este informe (si el 5.8 recupera alguna, se vuelve a pasar con `columnas`). Las
     categóricas se saltan: `BB_TRAJECTORY`, la única de una auxiliar, se queda en 0,365 de V de
-    Cramér contra las banderas de otras tablas.
+    Cramér contra las 55 banderas vivas de otras tablas (auditoría del 5.7), y en 0,1548 contra
+    las magnitudes con el mismo binning de `tramos()` que usa el IV; una V de Cramér directa
+    contra una magnitud sin binar es engañosa (sale por encima de 0,9 contra `EXT_SOURCE_1`), que
+    es el motivo de no comparar la categórica contra la magnitud en bruto.
 
     El Pearson va sobre los clientes con las dos columnas, y el umbral según el tipo:
 
