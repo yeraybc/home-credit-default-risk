@@ -192,7 +192,7 @@ def _verificar_union(unido: pd.DataFrame, base: pd.DataFrame, etiqueta: str) -> 
 
 
 def _fijar_tipos(unido: pd.DataFrame, agregado: pd.DataFrame) -> pd.DataFrame:
-    """Castea a float64 las columnas que trajo el agregado, salvo `BB_TRAYECTORY`.
+    """Castea a float64 las columnas que trajo el agregado, salvo `BB_TRAJECTORY`.
 
     Es la frontera que construye la matriz la que exige el contrato de esquema, no cada pieza:
     `agregar_bureau()`, `agregar_bureau_balance()` y `agregar_previous()` siguen siendo
@@ -622,22 +622,19 @@ def guardar_cortes(
             f"cortes sin fijar, no se guarda nada: {faltan}. Córrelos con "
             "refijar_cortes_auxiliares() antes de guardar."
         )
-    cortes = {}
-    for nombre in CORTES_AUXILIARES:
-        p = parametro(nombre)
-        if isinstance(p.valor_operativo, tuple):
-            valor_json = list(p.valor_operativo)
-        elif isinstance(p.valor_operativo, (int, np.integer)):
-            # entero de verdad, no un float que resulte entero (como el tramo o la sobreconcesión):
-            # se guarda sin ".0" para que valor() devuelva el mismo tipo tras cargar_cortes()
-            valor_json = int(p.valor_operativo)
-        else:
-            valor_json = float(p.valor_operativo)
-        cortes[nombre] = {"valor": valor_json, "n_train": int(p.n_train_operativo)}
+    cortes = {
+        n: {"valor": parametro(n).valor_operativo, "n_train": parametro(n).n_train_operativo}
+        for n in CORTES_AUXILIARES
+    }
     split_efectivo = split if split is not None else cargar_split()
     contenido = {"huella_split": huella_split(split_efectivo), "cortes": cortes}
     ruta_destino.parent.mkdir(parents=True, exist_ok=True)
-    ruta_destino.write_text(json.dumps(contenido, indent=2, ensure_ascii=False, sort_keys=True))
+    # json ya conserva int frente a float (el 18 sin ".0", el 2.0 con él) y la tupla va como lista;
+    # el `default` solo lo usa un escalar de numpy que no sea float, como np.int64
+    texto = json.dumps(
+        contenido, indent=2, ensure_ascii=False, sort_keys=True, default=lambda o: o.item()
+    )
+    ruta_destino.write_text(texto)
     logger.info("cortes guardados en %s", ruta_destino)
     return ruta_destino
 

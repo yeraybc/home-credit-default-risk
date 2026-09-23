@@ -575,7 +575,6 @@ def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia(base_e
         PRESENCIA_POR_BANDERA,
         PRESENCIA_POR_BLOQUE,
         PRESENCIA_POR_COLUMNA,
-        RESIDUO_IMPUTACION_SIN_RASTRO,
         RESIDUO_PRESENCIA_POR_COLUMNA,
         aplicar_dominio,
     )
@@ -634,22 +633,16 @@ def test_toda_numerica_con_nulos_declara_de_donde_se_recupera_su_ausencia(base_e
         residuo = int((nulo & ~sin_bureau & previo[bandera].ne(0)).sum())
         assert residuo == RESIDUO_PRESENCIA_CASI_EXACTA[numerica]
 
-    # grupo D: sin rastro, con su residuo entre quien sí tiene la tabla de origen. Sin `continue`
-    # para el que falte en RESIDUO_IMPUTACION_SIN_RASTRO: los dos tienen que declarar exactamente
-    # las mismas columnas, y un `continue` lo saltaría en silencio en vez de fallar (patrón 7)
-    assert set(IMPUTACION_SIN_RASTRO) == set(RESIDUO_IMPUTACION_SIN_RASTRO)
+    # grupo D: sin rastro, con su residuo entre quien sí tiene la tabla de origen
     con_bureau = previo["HAS_BUREAU_HISTORY"].eq(1)
     con_previas = previo["HAS_PREV_APPLICATION"].eq(1)
-    for numerica in IMPUTACION_SIN_RASTRO:
+    for numerica, esperado in IMPUTACION_SIN_RASTRO.items():
         grupo = con_bureau if numerica.startswith("BUREAU") else con_previas
         if numerica in ("AMT_GOODS_PRICE", "LTV", "EXT_SOURCE_2"):
             residuo = int(previo[numerica].isna().sum())
         else:
             residuo = int((previo[numerica].isna() & grupo).sum())
-        assert residuo == RESIDUO_IMPUTACION_SIN_RASTRO[numerica], (
-            f"{numerica}: residuo medido {residuo}, esperado "
-            f"{RESIDUO_IMPUTACION_SIN_RASTRO[numerica]}"
-        )
+        assert residuo == esperado, f"{numerica}: residuo medido {residuo}, esperado {esperado}"
 
 
 @sin_csv

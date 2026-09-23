@@ -340,6 +340,23 @@ def test_informe_iv_sin_presencia_quita_la_senal_del_grupo_ausente():
     assert not informe.loc["X", "llega"]
 
 
+def test_informe_iv_no_cuenta_el_tramo_vacio_del_nulo():
+    """n_tramos cuenta los tramos con dato, no los declarados: una continua sin NaN no arrastra
+    el hueco de tramos() para el nulo, y una bandera sin NaN se queda en sus dos niveles."""
+    rng = np.random.default_rng(1)
+    n = 2_000
+    continua = rng.normal(size=n)
+    bandera = rng.integers(0, 2, n)
+    y = pd.Series((rng.random(n) < 0.08).astype(int))
+    train = pd.DataFrame({"X": continua, "B": bandera, "TARGET": y})
+
+    informe = informe_iv(
+        train, {"X": Candidata("test", "sintética"), "B": Candidata("test", "sintética")}
+    )
+    assert informe.loc["X", "n_tramos"] == valor("n_bins_max")
+    assert informe.loc["B", "n_tramos"] == 2
+
+
 def test_informe_iv_revienta_con_una_candidata_ausente_del_frame():
     train = pd.DataFrame({"X": [0, 1, 0, 1], "TARGET": [0, 1, 0, 1]})
     with pytest.raises(KeyError, match="Y"):

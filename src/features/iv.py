@@ -266,7 +266,10 @@ def informe_iv(train: pd.DataFrame, candidatas: dict[str, Candidata] | None = No
                 "fuente": candidata.fuente,
                 "n": int(serie.notna().sum()),
                 "n_marcados": int(serie.sum()) if bandera else np.nan,
-                "n_tramos": len(tramos(serie).cat.categories),
+                # nunique() y no len(categories): la rama continua de tramos() añade el nulo
+                # como categoría aunque la serie no traiga ninguno, y contarla infla n_tramos
+                # en uno para toda continua sin NaN
+                "n_tramos": int(tramos(serie).nunique()),
                 "iv": iv,
                 "iv_sin_presencia": iv_sin_presencia,
                 "iv_lectura": lectura,

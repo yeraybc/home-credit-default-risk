@@ -156,9 +156,9 @@ BINARIAS: tuple[str, ...] = (
     "FLAG_EXT_SOURCE_3_NULL",
 )
 
-# --- las 79 columnas que las tres auxiliares añaden, repartidas por bucket (punto 5.3) --------
-# Se escriben a mano, como las dos listas de arriba, y el guardián de que no falte ni sobre
-# ninguna es `test_las_79_del_ensamblado_son_exactamente_las_del_reparto_de_buckets`
+# Las 79 columnas que las tres auxiliares añaden, repartidas por bucket (punto 5.3). Se escriben
+# a mano, como las dos listas de arriba, y el guardián de que no falte ni sobre ninguna es
+# `test_las_79_del_ensamblado_son_exactamente_las_del_reparto_de_buckets`
 # (tests/test_ensamblado.py), que las cruza contra lo que `ensamblar_auxiliares()` produce de
 # verdad sobre el fixture sintético, o sea en CI y sin CSV.
 
@@ -326,6 +326,7 @@ PRESENCIA_POR_BANDERA: dict[str, str] = {
     "PREV_APPLICATIONS_PER_YEAR": "HAS_PREV_APPLICATION",
 }
 
+
 # Seis de `bureau_balance` que se recuperan por otra columna de la propia matriz y no por su
 # HAS_*. El valor es una función y no un nombre, con el mismo criterio que `POBLACIONES` en
 # `agg_bureau.py`: la condición no siempre es una columna sola (un umbral), y una función es lo
@@ -335,22 +336,30 @@ PRESENCIA_POR_BANDERA: dict[str, str] = {
 # trayectoria evaluable, pero son banderas de sí/no y van al bucket de constante 0, no aquí. El
 # residuo que queda fuera de esta recuperación, entre quien sí tiene panel mensual, medido sobre
 # los 245.993 de entrenamiento, va en `RESIDUO_PRESENCIA_POR_COLUMNA`.
+def _sin_panel_mensual(d: pd.DataFrame) -> pd.Series:
+    """Sin bureau_balance, o con él y ningún mes reportado: la población de BB_STATUS_WORST,
+    BB_CREDITS_WITH_DPD_COUNT y BB_DPD_MONTHS_COUNT, las tres con el mismo residuo (1.903)."""
+    return d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0)
+
+
+def _sin_mora_alguna_vez(d: pd.DataFrame) -> pd.Series:
+    """Sin bureau_balance, o con él y ninguna mora: la población de las dos
+    BB_MONTHS_SINCE_LAST_DPD*."""
+    return d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_ANY_DPD_FLAG"].eq(0)
+
+
 PRESENCIA_POR_COLUMNA: dict[str, Callable[[pd.DataFrame], pd.Series]] = {
-    "BB_STATUS_WORST": lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0),
-    "BB_CREDITS_WITH_DPD_COUNT": (
-        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0)
-    ),
-    "BB_DPD_MONTHS_COUNT": lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_MONTHS_REPORTED"].eq(0),
+    "BB_STATUS_WORST": _sin_panel_mensual,
+    "BB_CREDITS_WITH_DPD_COUNT": _sin_panel_mensual,
+    "BB_DPD_MONTHS_COUNT": _sin_panel_mensual,
     "BB_PCT_MONTHS_DPD": (
-        lambda d: d["HAS_BUREAU_BALANCE"].eq(0)
-        | d["BB_MONTHS_REPORTED"].lt(valor("bb_min_meses_reportados"))
+        lambda d: (
+            d["HAS_BUREAU_BALANCE"].eq(0)
+            | d["BB_MONTHS_REPORTED"].lt(valor("bb_min_meses_reportados"))
+        )
     ),
-    "BB_MONTHS_SINCE_LAST_DPD": (
-        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_ANY_DPD_FLAG"].eq(0)
-    ),
-    "BB_MONTHS_SINCE_LAST_DPD_REL": (
-        lambda d: d["HAS_BUREAU_BALANCE"].eq(0) | d["BB_ANY_DPD_FLAG"].eq(0)
-    ),
+    "BB_MONTHS_SINCE_LAST_DPD": _sin_mora_alguna_vez,
+    "BB_MONTHS_SINCE_LAST_DPD_REL": _sin_mora_alguna_vez,
 }
 RESIDUO_PRESENCIA_POR_COLUMNA: dict[str, int] = {
     "BB_STATUS_WORST": 1_903,
@@ -401,20 +410,7 @@ PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
 # cifras positivas con qué dividir, de quien sí las trae. Los dos residuos más grandes se anotan
 # aparte porque van a pesar en el IV del 5.5: `PREV_URGENT_PURPOSE_RATIO` imputa el 83,02% de
 # train y `PREV_FUTURE_DUE_MAX` el 46,50%.
-IMPUTACION_SIN_RASTRO: tuple[str, ...] = (
-    "AMT_GOODS_PRICE",
-    "LTV",
-    "EXT_SOURCE_2",
-    "BUREAU_DAYS_CREDIT_ENDDATE_MAX",
-    "PREV_CREDIT_APPLICATION_RATIO",
-    "PREV_OVERGRANTED_RATIO",
-    "PREV_CNT_PAYMENT_MEAN",
-    "PREV_DOWN_PAYMENT_RATE_MEAN",
-    "PREV_IMPLIED_COST_MEAN",
-    "PREV_FUTURE_DUE_MAX",
-    "PREV_URGENT_PURPOSE_RATIO",
-)
-RESIDUO_IMPUTACION_SIN_RASTRO: dict[str, int] = {
+IMPUTACION_SIN_RASTRO: dict[str, int] = {
     "AMT_GOODS_PRICE": 232,
     "LTV": 232,
     "EXT_SOURCE_2": 529,
