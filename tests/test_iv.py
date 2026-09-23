@@ -261,7 +261,11 @@ def test_la_presencia_de_cada_candidata_es_la_de_su_tabla():
         assert candidata.presencia is None or candidata.presencia in PRESENCIA_AUX
 
 
-def test_las_banderas_raras_son_candidatas():
+def test_las_banderas_raras_son_estas_dos_y_son_candidatas():
+    """Lista a mano: derivada de `BANDERAS_RARAS`, encogería con ella en vez de romperse, y la
+    rara que saliera perdería su protección frente al umbral de IV sin que nada avisara.
+    """
+    assert set(BANDERAS_RARAS) == {"BUREAU_NEGATIVE_LIMIT_FLAG", "PREV_REFUSED_LONG_TERM_FLAG"}
     assert set(BANDERAS_RARAS) <= set(CANDIDATAS_IV)
 
 
