@@ -430,17 +430,11 @@ def _columnas_vivas(tabla: str, columnas_sin_receta: dict[str, str]) -> list[str
     return sorted(set(de_receta) | set(columnas_sin_receta))
 
 
-def columnas_solapadas_ext3(train: pd.DataFrame) -> pd.Series:
-    """Pearson contra `EXT_SOURCE_3`, dentro de con historial de su tabla, de toda columna de
-    `bureau` y `bureau_balance` que la receta conserva (o que va en `COLUMNAS_SIN_RECETA`).
-
-    No mira el TARGET, así que se fija antes de ver ningún IV. Solo las que llegan a
-    `solape_ext3_min` en valor absoluto pasan al incremental del 5.6; `previous_application` no
-    entra, por decisión del EDA (su máximo es 0,2652 y los scores son de buró, no ven la relación
-    con el propio prestamista). Una columna no numérica (`BB_TRAJECTORY`, categórica) se salta:
-    el Pearson no se define sobre categorías.
-    """
-    poblaciones = {
+def _poblaciones_ext3(train: pd.DataFrame) -> dict[str, tuple[list[str], pd.Series]]:
+    """Las columnas vivas de `bureau` y `bureau_balance`, con la máscara de con historial de su
+    tabla. La comparten `columnas_solapadas_ext3()` e `informe_incremental_ext3()`, para no leer
+    las dos recetas dos veces por informe."""
+    return {
         "bureau": (
             _columnas_vivas("bureau", _SIN_RECETA_BUREAU),
             train["HAS_BUREAU_HISTORY"].eq(1),
@@ -450,6 +444,9 @@ def columnas_solapadas_ext3(train: pd.DataFrame) -> pd.Series:
             train["HAS_BUREAU_BALANCE"].eq(1),
         ),
     }
+
+
+def _pearson_ext3(train: pd.DataFrame, poblaciones: dict) -> dict[str, float]:
     r = {}
     for columnas, mascara in poblaciones.values():
         dentro = train[mascara]
@@ -459,9 +456,25 @@ def columnas_solapadas_ext3(train: pd.DataFrame) -> pd.Series:
             valor_r = dentro[c].astype(float).corr(dentro["EXT_SOURCE_3"])
             if pd.notna(valor_r):
                 r[c] = valor_r
+    return r
+
+
+def columnas_solapadas_ext3(train: pd.DataFrame, poblaciones: dict | None = None) -> pd.Series:
+    """Pearson contra `EXT_SOURCE_3`, dentro de con historial de su tabla, de toda columna de
+    `bureau` y `bureau_balance` que la receta conserva (o que va en `COLUMNAS_SIN_RECETA`).
+
+    No mira el TARGET, así que se fija antes de ver ningún IV. Solo las que llegan a
+    `solape_ext3_min` en valor absoluto pasan al incremental del 5.6; `previous_application` no
+    entra, por decisión del EDA (su máximo es 0,2652 y los scores son de buró, no ven la relación
+    con el propio prestamista). Una columna no numérica (`BB_TRAJECTORY`, categórica) se salta:
+    el Pearson no se define sobre categorías.
+
+    `poblaciones` es para que `informe_incremental_ext3()` reutilice la suya, ya calculada; quien
+    llame desde fuera no lo pasa.
+    """
+    r = _pearson_ext3(train, poblaciones or _poblaciones_ext3(train))
     serie = pd.Series(r).sort_values(key=abs, ascending=False)
-    minimo = valor("solape_ext3_min")
-    return serie[serie.abs() >= minimo]
+    return serie[serie.abs() >= valor("solape_ext3_min")]
 
 
 def informe_incremental_ext3(train: pd.DataFrame) -> pd.DataFrame:
@@ -472,17 +485,12 @@ def informe_incremental_ext3(train: pd.DataFrame) -> pd.DataFrame:
     en la matriz, marcada) y no `descartar`: el 5.8 da el corte final con la redundancia y la
     banda de revisión delante.
     """
-    presencia = {
-        "BUREAU": ("HAS_BUREAU_HISTORY", tuple(_columnas_vivas("bureau", _SIN_RECETA_BUREAU))),
-        "BB": ("HAS_BUREAU_BALANCE", tuple(_columnas_vivas("bureau_balance", _SIN_RECETA_BB))),
-    }
-    solapadas = columnas_solapadas_ext3(train)
+    poblaciones = _poblaciones_ext3(train)
+    solapadas = columnas_solapadas_ext3(train, poblaciones)
+    mascara_de = {c: mascara for columnas, mascara in poblaciones.values() for c in columnas}
     filas = []
     for nombre, r in solapadas.items():
-        columna_presencia = next(
-            col_presencia for col_presencia, columnas in presencia.values() if nombre in columnas
-        )
-        dentro = train[train[columna_presencia].eq(1)]
+        dentro = train[mascara_de[nombre]]
         marginal = calcular_iv(dentro[nombre], dentro["TARGET"])
         incremental = iv_condicionado(dentro[nombre], dentro["EXT_SOURCE_3"], dentro["TARGET"])
         filas.append(
