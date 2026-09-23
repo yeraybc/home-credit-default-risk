@@ -415,15 +415,22 @@ def columnas_protegidas() -> frozenset[str]:
     Las dos listas de `pipeline.py` se importan y no se copian, que copiarlas es la misma trampa
     de las dos fuentes de verdad que ya ha mordido tres veces en este proyecto: un tercer
     documento protegido en `pipeline.py` no se enteraría aquí.
+
+    Desde el 5.8, además, toda fuente de presencia (`fuentes_de_presencia()`) mientras le quede
+    alguna columna recuperada fuera de los descartes: sin ella, la mediana deja de distinguir
+    "vale la mediana" de "no se sabe". Es lo que reabrió dos pares del 5.7.
     """
     recetas = [cargar_receta(tabla)["features"] for tabla in AUXILIARES]
     controles = {f["nombre"] for receta in recetas for f in receta if f.get("control")}
+    brutos = set(_descartes_brutos())
+    de_presencia = {f for f, recuperadas in fuentes_de_presencia().items() if recuperadas - brutos}
     return frozenset(
         controles
         | set(pipeline.PRESENCIA_AUX)
         | set(pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA)
         | {"PREV_ACTIVIDAD_12M_COLA"}
         | set(BANDERAS_RARAS)
+        | de_presencia
     )
 
 
@@ -698,15 +705,81 @@ DECISIONES_REDUNDANCIA: dict[tuple[str, str], DecisionRedundancia] = {
         "BUREAU_CREDITS_WITH_ANNUITY_COUNT no llega a min_iv sobre ella (incremental 0,0048), "
         "así que solo se queda la protegida",
     ),
+    # los dos últimos se reabrieron en el 5.8: sus perdedoras son fuentes de presencia, que desde
+    # entonces van protegidas mientras recuperen alguna columna que siga en la matriz
     ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"): DecisionRedundancia(
-        ("HAS_BUREAU_HISTORY",),
-        "r=-0,7903, que el EDA no había anticipado; HAS_BUREAU_HISTORY es protegida y "
-        "FLAG_EXT_SOURCE_3_NULL no llega a min_iv sobre ella (incremental 0,0010), así que "
-        "solo se queda la protegida",
+        ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"),
+        "r=-0,7903, que el EDA no había anticipado; las dos protegidas desde el 5.8, porque "
+        "FLAG_EXT_SOURCE_3_NULL es la presencia de EXT_SOURCE_3. En el 5.7 salía por no llegar a "
+        "min_iv sobre HAS_BUREAU_HISTORY (incremental 0,0010)",
     ),
     ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"): DecisionRedundancia(
-        ("HAS_BUREAU_HISTORY",),
-        "r=0,9667; HAS_BUREAU_HISTORY es protegida y HAS_BUREAU_INFO no llega a min_iv sobre "
-        "ella (incremental 0,0015), así que solo se queda la protegida",
+        ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"),
+        "r=0,9667; las dos protegidas desde el 5.8, porque HAS_BUREAU_INFO es la presencia de "
+        "las seis AMT_REQ_CREDIT_BUREAU_*. En el 5.7 salía por no llegar a min_iv sobre "
+        "HAS_BUREAU_HISTORY (incremental 0,0015)",
     ),
 }
+
+
+# --- la selección final del 5.8 ------------------------------------------------------------------
+
+
+class _Lector(dict):
+    """Un frame de mentira que anota qué columnas pide una función de `PRESENCIA_POR_COLUMNA`."""
+
+    def __missing__(self, columna: str) -> pd.Series:
+        self[columna] = pd.Series([0.0])
+        return self[columna]
+
+
+def fuentes_de_presencia() -> dict[str, set[str]]:
+    """Cada columna de la que el pipeline recupera una ausencia, con las que recupera.
+
+    Sale de los cuatro grupos de `pipeline.py` y no de una lista escrita aquí: las funciones de
+    `PRESENCIA_POR_COLUMNA` se ejecutan sobre un `_Lector`, que anota qué columnas leen.
+    """
+    fuentes: dict[str, set[str]] = {}
+    for recuperada, fuente in {
+        **pipeline.PRESENCIA_POR_BANDERA,
+        **pipeline.PRESENCIA_CASI_EXACTA,
+    }.items():
+        fuentes.setdefault(fuente, set()).add(recuperada)
+    for recuperada, condicion in pipeline.PRESENCIA_POR_COLUMNA.items():
+        lector = _Lector()
+        condicion(lector)
+        for fuente in lector:
+            fuentes.setdefault(fuente, set()).add(recuperada)
+    fuentes.setdefault(pipeline.BANDERA_BLOQUE, set()).update(pipeline.PRESENCIA_POR_BLOQUE)
+    return fuentes
+
+
+def _descartes_brutos() -> dict[str, str]:
+    """Lo que sale por una decisión ya congelada, antes de mirar las protegidas: los `descartar`
+    provisionales de receta que llegan a la matriz, los `descartar` y `degradada` del 5.6 que son
+    columna y lo que pierde su par en el 5.7. Cada columna con su motivo, o sus motivos."""
+    declaradas = set(pipeline.columnas_declaradas())
+    motivos: dict[str, list[str]] = {}
+    for tabla in AUXILIARES:
+        for f in cargar_receta(tabla)["features"]:
+            # BB_STATUS_WORST sale dos veces en su receta, una por población
+            texto = f"receta de {tabla}: {f['estado']}"
+            if f["decision"] == "descartar" and f["nombre"] in declaradas:
+                if texto not in motivos.setdefault(f["nombre"], []):
+                    motivos[f["nombre"]].append(texto)
+    for columna, d in DECISIONES_IV.items():
+        if d.decision in ("descartar", "degradada") and columna in declaradas:
+            motivos.setdefault(columna, []).append(f"{d.decision} en el 5.6 ({d.motivo})")
+    for (a, b), d in DECISIONES_REDUNDANCIA.items():
+        for columna in {a, b} - set(d.queda):
+            motivos.setdefault(columna, []).append(
+                f"redundante con {' y '.join(d.queda)} en el 5.7"
+            )
+    return {columna: "; ".join(textos) for columna, textos in motivos.items()}
+
+
+def descartes_fijos() -> dict[str, str]:
+    """Lo que el `SelectorIV` saca sin mirar el IV del fold, con su motivo: `_descartes_brutos()`
+    menos las protegidas. No se reajusta por fold, igual que los cortes `medido` del 5.1."""
+    protegidas = columnas_protegidas()
+    return {c: m for c, m in _descartes_brutos().items() if c not in protegidas}

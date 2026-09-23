@@ -400,6 +400,7 @@ RESIDUO_PRESENCIA_CASI_EXACTA: dict[str, int] = {
 # 48,17% en `TOTALAREA_MODE` a 69,80% en `COMMONAREA_AVG`). La alternativa, una bandera por
 # columna, son quince columnas más que el IV del bloque 5 tendría que juzgar.
 PRESENCIA_POR_BLOQUE: tuple[str, ...] = COLUMNAS_EDIFICIO
+BANDERA_BLOQUE = "HAS_BUILDING_INFO"
 
 # Las tres de application_train, aceptado por volumen: 232, 232 y 529 clientes, o sea el 0,09%,
 # el 0,09% y el 0,22% del entrenamiento. Las ocho de las auxiliares son `BUREAU_DAYS_CREDIT_

@@ -15,13 +15,16 @@ import pytest
 
 from src.features import selection as mod_selection
 from src.features.params import valor
-from src.features.pipeline import columnas_declaradas
+from src.features.pipeline import PRESENCIA_POR_COLUMNA, columnas_declaradas
 from src.features.selection import (
     DECISIONES_IV,
+    DECISIONES_REDUNDANCIA,
     PARES_DECLARADOS,
     TABLA_PRINCIPAL,
     DecisionIV,
     columnas_protegidas,
+    descartes_fijos,
+    fuentes_de_presencia,
     informe_redundancia,
     pares_redundantes,
     recomendar_codificacion,
@@ -257,12 +260,99 @@ def test_los_pares_declarados_van_en_orden_alfabetico_y_dentro_de_bureau():
         assert tabla_de(a) == tabla_de(b) == "bureau"
 
 
-def test_las_protegidas_incluyen_las_de_control_y_las_tres_de_presencia():
-    protegidas = columnas_protegidas()
-    assert {"HAS_BUREAU_HISTORY", "HAS_BUREAU_BALANCE", "HAS_PREV_APPLICATION"} <= protegidas
-    # las cuatro `control: true` de las recetas, leídas y no escritas a mano
-    assert {"PREV_HISTORIAL_RECORTADO", "PREV_DAYS_DECISION_MAX"} <= protegidas
-    assert len(protegidas) == 10
+# Las 20 protegidas del 5.8, escritas a mano para que el test no las derive por el mismo camino
+# que el código: las diez del 5.7 y las diez fuentes de presencia que se suman en el 5.8.
+PROTEGIDAS_5_8 = {
+    # control: true de las recetas
+    "HAS_BUREAU_HISTORY",
+    "HAS_PREV_APPLICATION",
+    "PREV_HISTORIAL_RECORTADO",
+    "PREV_DAYS_DECISION_MAX",
+    # las tres HAS_*, los dos documentos, las dos raras y el término de la interacción
+    "HAS_BUREAU_BALANCE",
+    "FLAG_DOCUMENT_3",
+    "FLAG_DOCUMENT_6",
+    "BUREAU_NEGATIVE_LIMIT_FLAG",
+    "PREV_REFUSED_LONG_TERM_FLAG",
+    "PREV_ACTIVIDAD_12M_COLA",
+    # fuentes de presencia
+    "FLAG_DAYS_EMPLOYED_ANOMALY",
+    "FLAG_EXT_SOURCE_1_NULL",
+    "FLAG_EXT_SOURCE_3_NULL",
+    "FLAG_OWN_CAR",
+    "HAS_SOCIAL_INFO",
+    "HAS_BUREAU_INFO",
+    "HAS_BUILDING_INFO",
+    "HAS_BUREAU_FINANCIAL_DETAIL",
+    "BB_MONTHS_REPORTED",
+    "BB_ANY_DPD_FLAG",
+}
+
+
+def test_las_protegidas_son_las_del_5_7_mas_las_fuentes_de_presencia():
+    assert columnas_protegidas() == PROTEGIDAS_5_8
+
+
+def test_las_funciones_de_presencia_leen_exactamente_estas_columnas():
+    """El `_Lector` anota lo que piden las funciones de `PRESENCIA_POR_COLUMNA`, sin copiarlo."""
+    lee = {
+        fuente
+        for fuente, recuperadas in fuentes_de_presencia().items()
+        if recuperadas & set(PRESENCIA_POR_COLUMNA)
+    }
+    assert lee == {"HAS_BUREAU_BALANCE", "BB_MONTHS_REPORTED", "BB_ANY_DPD_FLAG"}
+    assert fuentes_de_presencia()["BB_ANY_DPD_FLAG"] == {
+        "BB_MONTHS_SINCE_LAST_DPD",
+        "BB_MONTHS_SINCE_LAST_DPD_REL",
+    }
+
+
+def test_una_fuente_sin_nada_vivo_que_recuperar_no_se_protege(monkeypatch):
+    """`HAS_BUREAU_OVERDUE_HISTORY` solo recupera `BUREAU_MAX_OVERDUE_EVER`, que pierde su par en
+    el 5.7: sale. La otra dirección: si esa columna dejara de salir, la fuente se protegería."""
+    assert "HAS_BUREAU_OVERDUE_HISTORY" not in columnas_protegidas()
+    assert "HAS_BUREAU_OVERDUE_HISTORY" in descartes_fijos()
+
+    brutos = mod_selection._descartes_brutos()
+    del brutos["BUREAU_MAX_OVERDUE_EVER"]
+    monkeypatch.setattr(mod_selection, "_descartes_brutos", lambda: brutos)
+    assert "HAS_BUREAU_OVERDUE_HISTORY" in columnas_protegidas()
+
+
+def test_una_fuente_se_desprotege_si_todo_lo_que_recupera_sale(monkeypatch):
+    """Con `EXT_SOURCE_3` entre los descartes, su bandera deja de tener qué proteger."""
+    assert "FLAG_EXT_SOURCE_3_NULL" in columnas_protegidas()
+
+    brutos = {**mod_selection._descartes_brutos(), "EXT_SOURCE_3": "prueba"}
+    monkeypatch.setattr(mod_selection, "_descartes_brutos", lambda: brutos)
+    assert "FLAG_EXT_SOURCE_3_NULL" not in columnas_protegidas()
+
+
+def test_descartes_y_protegidas_no_se_cruzan_y_una_segunda_pasada_no_cambia_nada():
+    """La protección se calcula contra los descartes brutos; contra los ya filtrados sale igual,
+    así que no hace falta iterar hasta un punto fijo."""
+    descartes, protegidas = descartes_fijos(), columnas_protegidas()
+    assert not set(descartes) & protegidas
+    segunda = {
+        f for f, recuperadas in fuentes_de_presencia().items() if recuperadas - set(descartes)
+    }
+    assert segunda <= protegidas
+    assert {f for f in fuentes_de_presencia() if f in protegidas} == segunda
+
+
+def test_todo_descarte_fijo_es_una_columna_de_la_matriz_y_lleva_motivo():
+    declaradas = set(columnas_declaradas())
+    for columna, motivo in descartes_fijos().items():
+        assert columna in declaradas, columna
+        assert motivo.strip(), columna
+
+
+def test_los_dos_pares_reabiertos_del_5_7_quedan_con_las_dos():
+    for par in (
+        ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"),
+        ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"),
+    ):
+        assert DECISIONES_REDUNDANCIA[par].queda == par
 
 
 # --- informe_redundancia() del 5.7, el criterio con estratos cruzados ----------------------------

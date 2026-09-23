@@ -205,6 +205,21 @@ PARAMS: dict[str, Parametro] = {
         "estándar de credit scoring, no un corte estimado sobre este dataset",
         "glosario-tecnico, escala de IV",
     ),
+    # la banda del IV es informativa (5.8): no mueve el corte de `min_iv`, marca lo que queda cerca
+    # para que el registro de selección diga en cuántos folds se sostiene la decisión
+    "banda_revision_iv_suelo": Parametro(
+        0.015,
+        "dominio",
+        "suelo de la banda de revisión del IV: por debajo de min_iv y hasta aquí, la decisión se "
+        "mira por folds antes de darla por firme",
+        "auditoría del 5.4 y el 5.5, decidido con el usuario en el 5.8",
+    ),
+    "banda_revision_iv_techo": Parametro(
+        0.025,
+        "dominio",
+        "techo de la banda de revisión del IV, simétrico al suelo alrededor de min_iv",
+        "auditoría del 5.4 y el 5.5, decidido con el usuario en el 5.8",
+    ),
     "n_bins_max": Parametro(
         10,
         "dominio",
