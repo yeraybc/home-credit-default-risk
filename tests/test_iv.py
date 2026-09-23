@@ -699,6 +699,26 @@ def test_columnas_solapadas_ext3_incluye_r_alto_y_excluye_r_bajo():
     assert "BUREAU_LOAN_COUNT" not in r.index
 
 
+def test_columnas_solapadas_ext3_salta_una_categorica_sin_reventar():
+    """`BB_TRAJECTORY` es la única columna de la receta que no es numérica: el `continue` de
+    `columnas_solapadas_ext3()` tiene que saltarla sin romper, no colarla con un Pearson
+    calculado sobre sus códigos de categoría (que no significaría nada)."""
+    n = 500
+    rng = np.random.default_rng(4)
+    train = pd.DataFrame(
+        {
+            "HAS_BUREAU_HISTORY": np.zeros(n, dtype="int8"),
+            "HAS_BUREAU_BALANCE": np.ones(n, dtype="int8"),
+            "BB_TRAJECTORY": pd.Categorical(
+                rng.choice(["estable", "deterioro", "mejora"], size=n)
+            ),
+            "EXT_SOURCE_3": rng.normal(size=n),
+        }
+    )
+    r = columnas_solapadas_ext3(train)  # no revienta
+    assert "BB_TRAJECTORY" not in r.index
+
+
 def test_informe_incremental_ext3_mide_dentro_de_su_tabla_y_no_sobre_todo_train():
     """Una columna sin señal propia dentro de con historial (constante salvo ruido), pero cuya
     presencia (dentro/fuera de con historial) sí separa el TARGET: medida sin restringir a la

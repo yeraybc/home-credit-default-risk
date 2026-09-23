@@ -163,7 +163,12 @@ def lectura_solo_vivas(prev: pd.DataFrame) -> pd.Series:
     liquidadas. Llama a `limpiar_previous()`, así que es idempotente sobre un frame ya limpio y no
     depende de que quien la llame ya lo haya limpiado. No crea columna en la agregación, igual que
     `lecturas_relativas_previous()` del 4.10: solo informa.
+
+    Las dos fechas se pasan a `float` antes de limpiar, como en `agregar_previous()`:
+    `limpiar_previous()` no fija su tipo a propósito (sale en `float32` o `float64` según lleve
+    centinela el lote) y deja la frontera a quien agrega, que aquí es esta función.
     """
+    prev = prev.astype({"DAYS_LAST_DUE_1ST_VERSION": float, "DAYS_LAST_DUE": float})
     p = limpiar_previous(prev)
     previsto = p["DAYS_LAST_DUE_1ST_VERSION"]
     viva = previsto.where(previsto.gt(0) & p["DAYS_LAST_DUE"].isna())
