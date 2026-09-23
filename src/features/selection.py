@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.features import agg_bureau, agg_bureau_balance, agg_previous
-from src.features.iv import BANDERAS_RARAS
+from src.features.iv import BANDERAS_RARAS, calcular_iv, iv_condicionado
 from src.features.params import valor
 from src.features.recipes import cargar_receta
 
@@ -520,4 +520,77 @@ def pares_redundantes(train: pd.DataFrame, columnas: list[str] | None = None) ->
                     "declarado": declarado,
                 }
             )
+    return pd.DataFrame(filas).set_index(["a", "b"])
+
+
+def informe_redundancia(train: pd.DataFrame, pares: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Resuelve cada par de `pares_redundantes()` con estratos cruzados en las dos direcciones.
+
+    **Criterio, escrito antes de medir:** sobre la población donde las dos columnas tienen dato,
+    `inc_a` es el IV de `a` dentro de los tramos de `b` (`iv_condicionado()`) y `inc_b` al revés.
+    - Si una de las dos es protegida (`columnas_protegidas()`), se queda; la otra se queda también
+      si su incremental sobre la protegida llega a `min_iv`, y si no, sale.
+    - Si ninguna es protegida y las dos llegan a `min_iv`, las dos aportan señal propia y se quedan.
+    - Si llega solo una, esa es la que se queda.
+    - Si no llega ninguna, es la misma información contada dos veces: se queda la de más IV
+      marginal dentro de la población del par.
+
+    `queda` es la tupla de columnas del par que sobreviven, `iv_a` e `iv_b` el IV marginal de cada
+    una sobre esa misma población y `motivo` la frase que sostiene la decisión, con las cifras.
+    """
+    if pares is None:
+        pares = pares_redundantes(train)
+    protegidas = columnas_protegidas()
+    min_iv = valor("min_iv")
+    filas = []
+    for a, b in pares.index:
+        dentro = train[train[a].notna() & train[b].notna()]
+        y = dentro["TARGET"]
+        iv_a = calcular_iv(dentro[a], y)
+        iv_b = calcular_iv(dentro[b], y)
+        inc_a = iv_condicionado(dentro[a], dentro[b], y)
+        inc_b = iv_condicionado(dentro[b], dentro[a], y)
+        prot_a, prot_b = a in protegidas, b in protegidas
+
+        if prot_a and prot_b:
+            queda, motivo = (a, b), "las dos protegidas, ninguna sale por redundancia"
+        elif prot_a or prot_b:
+            protegida, otra = (a, b) if prot_a else (b, a)
+            inc_otra = inc_b if prot_a else inc_a
+            llega = "llega" if inc_otra >= min_iv else "no llega"
+            motivo = (
+                f"{protegida} protegida; {otra} {llega} a min_iv sobre ella "
+                f"(incremental {inc_otra:.4f})"
+            )
+            queda = (a, b) if inc_otra >= min_iv else (protegida,)
+        elif inc_a >= min_iv and inc_b >= min_iv:
+            queda = (a, b)
+            motivo = f"las dos llegan a min_iv la una sobre la otra ({inc_a:.4f} y {inc_b:.4f})"
+        elif inc_a >= min_iv:
+            queda = (a,)
+            motivo = f"{a} llega a min_iv sobre {b} (incremental {inc_a:.4f}); {b} no ({inc_b:.4f})"
+        elif inc_b >= min_iv:
+            queda = (b,)
+            motivo = f"{b} llega a min_iv sobre {a} (incremental {inc_b:.4f}); {a} no ({inc_a:.4f})"
+        else:
+            ganadora = a if iv_a >= iv_b else b
+            queda = (ganadora,)
+            motivo = (
+                f"ninguna aporta sobre la otra (incremental {inc_a:.4f} y {inc_b:.4f}); "
+                f"queda {ganadora} por mayor IV marginal ({iv_a:.4f} frente a {iv_b:.4f})"
+            )
+
+        filas.append(
+            {
+                "a": a,
+                "b": b,
+                "n": len(dentro),
+                "iv_a": iv_a,
+                "iv_b": iv_b,
+                "inc_a": inc_a,
+                "inc_b": inc_b,
+                "queda": queda,
+                "motivo": motivo,
+            }
+        )
     return pd.DataFrame(filas).set_index(["a", "b"])

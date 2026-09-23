@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.features import selection as mod_selection
+from src.features.params import valor
 from src.features.pipeline import columnas_declaradas
 from src.features.selection import (
     DECISIONES_IV,
@@ -20,6 +22,7 @@ from src.features.selection import (
     TABLA_PRINCIPAL,
     DecisionIV,
     columnas_protegidas,
+    informe_redundancia,
     pares_redundantes,
     recomendar_codificacion,
     tabla_de,
@@ -260,3 +263,162 @@ def test_las_protegidas_incluyen_las_de_control_y_las_tres_de_presencia():
     # las cuatro `control: true` de las recetas, leídas y no escritas a mano
     assert {"PREV_HISTORIAL_RECORTADO", "PREV_DAYS_DECISION_MAX"} <= protegidas
     assert len(protegidas) == 10
+
+
+# --- informe_redundancia() del 5.7, el criterio con estratos cruzados ----------------------------
+
+
+def _pares_de(a, b):
+    """Un índice de un solo par, con el formato que espera `informe_redundancia()`."""
+    return pd.DataFrame(index=pd.MultiIndex.from_tuples([(a, b)], names=["a", "b"]))
+
+
+def test_senal_propia_en_las_dos_se_quedan_las_dos():
+    """Dos continuas correlacionadas (0,55) que mueven el TARGET cada una con su propio peso: la
+    correlación entre ellas no basta para que una explique a la otra. Con NaN cruzados, como pasa
+    de verdad entre tablas (sin historial de una auxiliar), para probar también el filtro de
+    población de `informe_redundancia`."""
+    rng = np.random.default_rng(3)
+    n = 60_000
+    x = rng.normal(size=n)
+    z = 0.55 * x + np.sqrt(1 - 0.55**2) * rng.normal(size=n)
+    p = 1 / (1 + np.exp(-(-2.6 + 0.65 * x + 0.65 * z)))
+    y = (rng.random(n) < p).astype(int)
+    train = pd.DataFrame({"a": x, "b": z, "TARGET": y})
+    # una de cada cinco filas pierde una de las dos, como el cliente sin historial de una tabla
+    sin_a = rng.random(n) < 0.1
+    sin_b = rng.random(n) < 0.1
+    train.loc[sin_a, "a"] = np.nan
+    train.loc[sin_b, "b"] = np.nan
+
+    inf = informe_redundancia(train, _pares_de("a", "b")).loc[("a", "b")]
+
+    assert inf["n"] == int((train["a"].notna() & train["b"].notna()).sum())
+    assert inf["inc_a"] > valor("min_iv")
+    assert inf["inc_b"] > valor("min_iv")
+    assert inf["queda"] == ("a", "b")
+
+
+def test_copia_exacta_se_queda_solo_una():
+    """`b` es literalmente `a`: el caso real de `BUREAU_COUNT_COLA` y `BB_MANY_CREDITS_FLAG`, que
+    dan el mismo IV exacto porque son la misma partición con otro nombre."""
+    rng = np.random.default_rng(5)
+    n = 40_000
+    a = rng.normal(size=n)
+    p = 1 / (1 + np.exp(-(-2.5 + a)))
+    y = (rng.random(n) < p).astype(int)
+    train = pd.DataFrame({"a": a, "b": a.copy(), "TARGET": y})
+
+    inf = informe_redundancia(train, _pares_de("a", "b")).loc[("a", "b")]
+
+    assert inf["iv_a"] == pytest.approx(inf["iv_b"])
+    assert inf["inc_a"] < valor("min_iv")
+    assert inf["inc_b"] < valor("min_iv")
+    assert len(inf["queda"]) == 1
+
+
+def _informe_con_ivs_forzados(monkeypatch, a, b, ivs, incs):
+    """Sustituye `calcular_iv` e `iv_condicionado` por valores fijados por nombre de columna, para
+    probar solo la lógica de decisión y no la aritmética del IV, que ya prueba `test_iv.py`."""
+    monkeypatch.setattr(mod_selection, "calcular_iv", lambda serie, y, alfa=None: ivs[serie.name])
+    monkeypatch.setattr(
+        mod_selection,
+        "iv_condicionado",
+        lambda serie, estrato, y, alfa=None: incs[(serie.name, estrato.name)],
+    )
+    train = pd.DataFrame({a: [0, 1] * 10, b: [1, 0] * 10, "TARGET": [0, 1] * 10})
+    return informe_redundancia(train, _pares_de(a, b)).loc[(a, b)]
+
+
+def test_protegida_se_queda_siempre_y_la_otra_solo_si_llega(monkeypatch):
+    """`HAS_BUREAU_HISTORY` es real y protegida por su `control: true` en la receta de bureau;
+    `X_CUALQUIERA` no lo es. Dos casos con el mismo par y solo el incremental de la no protegida
+    cambiado, para que la diferencia la decida ese número y no otra cosa."""
+    assert "HAS_BUREAU_HISTORY" in columnas_protegidas()
+    assert "X_CUALQUIERA" not in columnas_protegidas()
+
+    llega = _informe_con_ivs_forzados(
+        monkeypatch,
+        "X_CUALQUIERA",
+        "HAS_BUREAU_HISTORY",
+        ivs={"X_CUALQUIERA": 0.05, "HAS_BUREAU_HISTORY": 0.10},
+        incs={
+            ("X_CUALQUIERA", "HAS_BUREAU_HISTORY"): 0.03,
+            ("HAS_BUREAU_HISTORY", "X_CUALQUIERA"): 0.01,
+        },
+    )
+    assert llega["queda"] == ("X_CUALQUIERA", "HAS_BUREAU_HISTORY")
+
+    no_llega = _informe_con_ivs_forzados(
+        monkeypatch,
+        "X_CUALQUIERA",
+        "HAS_BUREAU_HISTORY",
+        ivs={"X_CUALQUIERA": 0.05, "HAS_BUREAU_HISTORY": 0.10},
+        incs={
+            ("X_CUALQUIERA", "HAS_BUREAU_HISTORY"): 0.005,
+            ("HAS_BUREAU_HISTORY", "X_CUALQUIERA"): 0.01,
+        },
+    )
+    assert no_llega["queda"] == ("HAS_BUREAU_HISTORY",)
+
+
+def test_ninguna_llega_queda_la_de_mas_iv(monkeypatch):
+    """Ninguna de las dos aporta sobre la otra: sale la de mayor IV marginal, sin importar cuál
+    de las dos entra primero al par. Las dos direcciones, para que un `ganadora = a` fijo no pase
+    el test: aquí gana la que se pasa primero y también la que se pasa segunda."""
+    gana_la_primera = _informe_con_ivs_forzados(
+        monkeypatch,
+        "z_segunda",
+        "a_primera",
+        ivs={"z_segunda": 0.09, "a_primera": 0.04},
+        incs={("z_segunda", "a_primera"): 0.01, ("a_primera", "z_segunda"): 0.008},
+    )
+    assert gana_la_primera["queda"] == ("z_segunda",)
+
+    gana_la_segunda = _informe_con_ivs_forzados(
+        monkeypatch,
+        "z_segunda",
+        "a_primera",
+        ivs={"z_segunda": 0.04, "a_primera": 0.09},
+        incs={("z_segunda", "a_primera"): 0.01, ("a_primera", "z_segunda"): 0.008},
+    )
+    assert gana_la_segunda["queda"] == ("a_primera",)
+
+
+def test_solo_una_llega_sin_proteger_queda_solo_esa(monkeypatch):
+    """Ninguna de las dos es protegida: la rama del medio, distinta de la de arriba, donde solo
+    una aporta y la otra sale aunque su IV marginal sea más alto."""
+    gana_a = _informe_con_ivs_forzados(
+        monkeypatch,
+        "m",
+        "n",
+        ivs={"m": 0.03, "n": 0.20},
+        incs={("m", "n"): 0.05, ("n", "m"): 0.01},
+    )
+    assert gana_a["queda"] == ("m",)
+
+    gana_b = _informe_con_ivs_forzados(
+        monkeypatch,
+        "m",
+        "n",
+        ivs={"m": 0.20, "n": 0.03},
+        incs={("m", "n"): 0.01, ("n", "m"): 0.05},
+    )
+    assert gana_b["queda"] == ("n",)
+
+
+def test_las_dos_protegidas_se_quedan_las_dos(monkeypatch):
+    """`HAS_BUREAU_HISTORY` y `HAS_PREV_APPLICATION` son las dos protegidas: no hay incremental
+    que las saque, así que ni se calcula qué decide (los mocks revientan si algo las consulta)."""
+    assert {"HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION"} <= columnas_protegidas()
+    inf = _informe_con_ivs_forzados(
+        monkeypatch,
+        "HAS_BUREAU_HISTORY",
+        "HAS_PREV_APPLICATION",
+        ivs={"HAS_BUREAU_HISTORY": 0.01, "HAS_PREV_APPLICATION": 0.01},
+        incs={
+            ("HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION"): 0.0,
+            ("HAS_PREV_APPLICATION", "HAS_BUREAU_HISTORY"): 0.0,
+        },
+    )
+    assert inf["queda"] == ("HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION")
