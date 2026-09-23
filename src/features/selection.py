@@ -8,6 +8,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.utils.validation import check_is_fitted
 
 from src.features import agg_bureau, agg_bureau_balance, agg_previous, pipeline
 from src.features.iv import BANDERAS_RARAS, CANDIDATAS_IV, calcular_iv, iv_condicionado
@@ -832,3 +836,115 @@ def descartes_fijos() -> dict[str, str]:
     menos las protegidas. No se reajusta por fold, igual que los cortes `medido` del 5.1."""
     protegidas = columnas_protegidas()
     return {c: m for c, m in _descartes_brutos().items() if c not in protegidas}
+
+
+# --- la banda de revisión y el registro del 5.8 --------------------------------------------------
+
+# tres semillas de cinco folds sobre la parte de entrenamiento de cada uno: el mismo protocolo de
+# 15 folds que ya midió la estabilidad del tramo y la cola de bureau en el 2.3, sin una constante
+# compartida porque esas medidas nunca quedaron escritas en código, solo en el docstring de sus
+# cortes. Se fija aquí para no repetir el barrido con semillas distintas cada vez que se llame.
+SEMILLAS_ESTABILIDAD: tuple[int, ...] = (0, 1, 2)
+N_FOLDS_ESTABILIDAD = 5
+
+
+def estabilidad_banda(
+    matriz: pd.DataFrame, objetivo: pd.Series, selector: SelectorIV
+) -> dict[str, int]:
+    """En cuántos de los 15 folds cada candidata dentro de la banda de revisión llega a `min_iv`.
+
+    Informativo, como pide el 5.8: no mueve `quedan_` de `selector`, que sigue cortando en
+    `min_iv` sin mirar la banda. Reajusta el propio `SelectorIV` con `clone()` en cada fold, así
+    que la lectura es exactamente la que usaría producción y no una reimplementación aparte del
+    IV. `matriz` y `objetivo` son la matriz y el TARGET con los que se ajustó `selector` (o un
+    subconjunto de train, si se llama desde el CV de la Fase 4).
+    """
+    check_is_fitted(selector)
+    suelo = valor("banda_revision_iv_suelo")
+    techo = valor("banda_revision_iv_techo")
+    en_banda = [origen for origen, iv in selector.iv_.items() if suelo <= iv < techo]
+    if not en_banda:
+        return {}
+
+    aciertos = dict.fromkeys(en_banda, 0)
+    min_iv = valor("min_iv")
+    for semilla in SEMILLAS_ESTABILIDAD:
+        kfold = StratifiedKFold(n_splits=N_FOLDS_ESTABILIDAD, shuffle=True, random_state=semilla)
+        for indice_train, _ in kfold.split(matriz, objetivo):
+            fold = clone(selector).fit(matriz.iloc[indice_train], objetivo.iloc[indice_train])
+            for origen in en_banda:
+                if fold.iv_[origen] >= min_iv:
+                    aciertos[origen] += 1
+    return aciertos
+
+
+def seleccion_final(
+    pipeline_ajustado: Pipeline, estabilidad: dict[str, int] | None = None
+) -> pd.DataFrame:
+    """El registro de selección del 5.8: una fila por cada una de las 180 columnas de capa 1
+    (`pipeline.columnas_declaradas()`), con su tabla, la decisión de su receta si la tiene, el
+    IV que midió el `SelectorIV` ya ajustado de `pipeline_ajustado`, si cae en la banda de
+    revisión (con sus folds si se pasa `estabilidad`, de `estabilidad_banda()`), el par de
+    redundancia del 5.7 si le toca alguno, y si queda con el motivo final.
+
+    No recalcula nada: lee `selector.iv_`/`motivos_` y los registros ya congelados
+    (`descartes_fijos()`, `columnas_protegidas()`, las recetas, `DECISIONES_REDUNDANCIA`).
+
+    El parámetro se llama `pipeline_ajustado` y no `pipeline`, que era lo natural: este módulo
+    importa `pipeline.py` como paquete, y una variable local con ese nombre lo tapaba dentro de
+    la función.
+    """
+    selector = pipeline_ajustado.named_steps["seleccion"]
+    check_is_fitted(selector)
+    nombres = _nombres_por_tabla()
+    protegidas = columnas_protegidas()
+    descartes = descartes_fijos()
+    estabilidad = estabilidad or {}
+    suelo = valor("banda_revision_iv_suelo")
+    techo = valor("banda_revision_iv_techo")
+    min_iv = valor("min_iv")
+
+    receta_de = {
+        f["nombre"]: (f["decision"], f["firmeza"])
+        for tabla in AUXILIARES
+        for f in cargar_receta(tabla)["features"]
+    }
+    pares_de: dict[str, list[str]] = {}
+    for (a, b), decision in DECISIONES_REDUNDANCIA.items():
+        for columna in (a, b):
+            pares_de.setdefault(columna, []).append(f"{a}/{b} ({decision.motivo})")
+
+    filas = []
+    for nombre in pipeline.columnas_declaradas():
+        iv = selector.iv_.get(nombre)
+        en_banda = iv is not None and suelo <= iv < techo
+        decision_receta, firmeza = receta_de.get(nombre, (None, None))
+
+        if nombre in descartes:
+            queda, motivo = False, descartes[nombre]
+        elif nombre in protegidas:
+            queda, motivo = True, "protegida, no pasa por el umbral de IV"
+        elif iv is not None:
+            queda = iv >= min_iv
+            motivo = f"IV {iv:.4f} {'llega' if queda else 'no llega'} a min_iv ({min_iv:.4f})"
+            if en_banda:
+                folds = estabilidad.get(nombre)
+                motivo += f"; en banda, {folds} de 15 folds" if folds is not None else "; en banda"
+        else:
+            queda, motivo = True, "sin decisión de IV, pasa intacta"
+
+        filas.append(
+            {
+                "feature": nombre,
+                "tabla": tabla_de(nombre, nombres),
+                "decision_receta": decision_receta,
+                "firmeza": firmeza,
+                "iv": iv,
+                "en_banda": en_banda,
+                "folds": estabilidad.get(nombre) if en_banda else None,
+                "redundancia": "; ".join(pares_de[nombre]) if nombre in pares_de else None,
+                "queda": queda,
+                "motivo": motivo,
+            }
+        )
+    return pd.DataFrame(filas).set_index("feature")

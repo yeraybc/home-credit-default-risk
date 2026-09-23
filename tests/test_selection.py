@@ -22,14 +22,18 @@ from src.features.selection import (
     PARES_DECLARADOS,
     TABLA_PRINCIPAL,
     DecisionIV,
+    DecisionRedundancia,
     columnas_protegidas,
     descartes_fijos,
+    estabilidad_banda,
     fuentes_de_presencia,
     informe_redundancia,
     pares_redundantes,
     recomendar_codificacion,
+    seleccion_final,
     tabla_de,
 )
+from src.features.transformers import SelectorIV
 
 # Las seis donde el pipeline hace otra cosa, con lo que la marca tiene que anunciar. La última no
 # es una entrada de `especificas` sino la rama por defecto del bloque de documento, y sirve
@@ -512,3 +516,221 @@ def test_las_dos_protegidas_se_quedan_las_dos(monkeypatch):
         },
     )
     assert inf["queda"] == ("HAS_BUREAU_HISTORY", "HAS_PREV_APPLICATION")
+
+
+# --- estabilidad_banda() y seleccion_final() del 5.8 ---------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def matriz_banda():
+    """Una candidata calibrada aparte para caer dentro de la banda de revisión, en torno a
+    `min_iv` (0,02): con este ruido y esta semilla sale en 0,0203. Es un valor de muestreo, no
+    una propiedad del código, así que se fija con un margen (`assert` de guardián) y no a ciegas.
+    `FUERTE` tiene una señal mucho más alta, deliberadamente fuera de la banda."""
+    rng = np.random.default_rng(21)
+    n = 50_000
+    en_banda = rng.normal(size=n)
+    p_banda = 1 / (1 + np.exp(-(-2.6 + 0.13 * en_banda)))
+    y_banda = pd.Series((rng.random(n) < p_banda).astype(int))
+    fuerte = rng.normal(size=n)
+    p_fuerte = 1 / (1 + np.exp(-(-2.6 + 0.6 * fuerte)))
+    y_fuerte = pd.Series((rng.random(n) < p_fuerte).astype(int))
+    return pd.DataFrame({"EN_BANDA": en_banda, "FUERTE": fuerte}), y_banda, y_fuerte
+
+
+def test_el_fixture_de_banda_cae_dentro_de_la_banda_de_revision(matriz_banda):
+    """Guardián: si el sintético se desplaza, los tests de abajo no distinguen nada."""
+    from src.features.iv import calcular_iv
+
+    X, y_banda, y_fuerte = matriz_banda
+    suelo, techo = valor("banda_revision_iv_suelo"), valor("banda_revision_iv_techo")
+    assert suelo <= calcular_iv(X["EN_BANDA"], y_banda) < techo
+    assert calcular_iv(X["FUERTE"], y_fuerte) >= techo
+
+
+def test_estabilidad_banda_solo_cuenta_lo_que_cae_dentro_de_la_banda(matriz_banda):
+    X, y_banda, _ = matriz_banda
+    selector = SelectorIV(candidatas={"EN_BANDA": None, "FUERTE": None}).fit(X, y_banda)
+
+    aciertos = estabilidad_banda(X, y_banda, selector)
+
+    assert set(aciertos) == {"EN_BANDA"}, "FUERTE está fuera de la banda y no debe contarse"
+    assert 0 <= aciertos["EN_BANDA"] <= 15
+
+
+def test_estabilidad_banda_sin_nada_en_la_banda_da_vacio(matriz_banda):
+    """La otra dirección: con las dos candidatas lejos de la banda, no hay nada que contar."""
+    X, _, y_fuerte = matriz_banda
+    selector = SelectorIV(candidatas={"FUERTE": None}).fit(X, y_fuerte)
+
+    assert estabilidad_banda(X, y_fuerte, selector) == {}
+
+
+def test_estabilidad_banda_no_muta_el_selector_original(matriz_banda):
+    X, y_banda, _ = matriz_banda
+    selector = SelectorIV(candidatas={"EN_BANDA": None, "FUERTE": None}).fit(X, y_banda)
+    iv_antes, quedan_antes = dict(selector.iv_), selector.quedan_
+
+    estabilidad_banda(X, y_banda, selector)
+
+    assert selector.iv_ == iv_antes
+    assert selector.quedan_ == quedan_antes
+
+
+# --- seleccion_final(), con las cuatro dependencias aisladas por monkeypatch --------------------
+
+
+class _SelectorFalso:
+    """Basta con `iv_`: `seleccion_final()` no le pide nada más a `named_steps['seleccion']`."""
+
+    def __init__(self, iv):
+        self.iv_ = iv
+
+
+def _pipeline_falso(iv):
+    return type("_PipelineFalso", (), {"named_steps": {"seleccion": _SelectorFalso(iv)}})()
+
+
+@pytest.fixture
+def registro_aislado(monkeypatch):
+    """Las seis columnas del contrato de capa 1 y las cuatro dependencias de `seleccion_final()`
+    aisladas por monkeypatch: nada de lo que aquí se comprueba depende de la configuración real
+    de producción, que ya prueban sus propios tests."""
+    columnas = (
+        "A_DESCARTE",
+        "B_PROTEGIDA",
+        "C_CANDIDATA_LLEGA",
+        "D_CANDIDATA_NO_LLEGA",
+        "E_SIN_DECISION",
+        "F_EN_BANDA",
+    )
+    monkeypatch.setattr(mod_selection.pipeline, "columnas_declaradas", lambda: columnas)
+    monkeypatch.setattr(
+        mod_selection, "descartes_fijos", lambda: {"A_DESCARTE": "motivo del descarte"}
+    )
+    monkeypatch.setattr(mod_selection, "columnas_protegidas", lambda: frozenset({"B_PROTEGIDA"}))
+    monkeypatch.setattr(
+        mod_selection, "_nombres_por_tabla", lambda: {"bureau": {"C_CANDIDATA_LLEGA"}}
+    )
+    monkeypatch.setattr(
+        mod_selection,
+        "DECISIONES_REDUNDANCIA",
+        {
+            ("C_CANDIDATA_LLEGA", "Z"): DecisionRedundancia(
+                ("C_CANDIDATA_LLEGA",), "motivo redundancia"
+            )
+        },
+    )
+    monkeypatch.setattr(mod_selection, "check_is_fitted", lambda _: None)
+    min_iv = valor("min_iv")
+    iv = {
+        "B_PROTEGIDA": 0.0,
+        "C_CANDIDATA_LLEGA": min_iv + 0.05,
+        "D_CANDIDATA_NO_LLEGA": min_iv - 0.01,
+        "F_EN_BANDA": (valor("banda_revision_iv_suelo") + valor("banda_revision_iv_techo")) / 2,
+    }
+    return columnas, seleccion_final(_pipeline_falso(iv))
+
+
+def test_una_fila_por_columna_declarada(registro_aislado):
+    columnas, reg = registro_aislado
+    assert set(reg.index) == set(columnas)
+    assert len(reg) == len(columnas)
+
+
+def test_un_descarte_sale_con_su_motivo_sin_mirar_el_iv(registro_aislado):
+    _, reg = registro_aislado
+    fila = reg.loc["A_DESCARTE"]
+    assert not fila["queda"]
+    assert fila["motivo"] == "motivo del descarte"
+
+
+def test_una_protegida_se_queda_aunque_su_iv_sea_cero(registro_aislado):
+    _, reg = registro_aislado
+    fila = reg.loc["B_PROTEGIDA"]
+    assert fila["queda"]
+    assert "protegida" in fila["motivo"]
+
+
+def test_una_candidata_que_llega_se_queda_y_la_que_no_llega_sale(registro_aislado):
+    _, reg = registro_aislado
+    assert reg.loc["C_CANDIDATA_LLEGA", "queda"]
+    assert not reg.loc["D_CANDIDATA_NO_LLEGA", "queda"]
+
+
+def test_una_columna_sin_decision_se_queda_con_su_motivo_propio(registro_aislado):
+    """Ni descarte, ni protegida, ni candidata: pasa intacta, como haría el `SelectorIV`."""
+    _, reg = registro_aislado
+    fila = reg.loc["E_SIN_DECISION"]
+    assert fila["queda"]
+    assert pd.isna(fila["iv"]), "pandas convierte el None de un dict.get() en NaN al montar la fila"
+    assert "sin decisión" in fila["motivo"]
+
+
+def test_la_banda_se_marca_sin_estabilidad_pasada(registro_aislado):
+    _, reg = registro_aislado
+    fila = reg.loc["F_EN_BANDA"]
+    assert fila["en_banda"]
+    assert fila["folds"] is None
+    assert "en banda" in fila["motivo"]
+    # las que no caen en la banda no la marcan
+    assert not reg.loc["C_CANDIDATA_LLEGA", "en_banda"]
+
+
+def test_la_banda_lleva_los_folds_cuando_se_pasa_estabilidad(monkeypatch):
+    columnas = ("F_EN_BANDA",)
+    monkeypatch.setattr(mod_selection.pipeline, "columnas_declaradas", lambda: columnas)
+    monkeypatch.setattr(mod_selection, "descartes_fijos", lambda: {})
+    monkeypatch.setattr(mod_selection, "columnas_protegidas", lambda: frozenset())
+    monkeypatch.setattr(mod_selection, "_nombres_por_tabla", lambda: {})
+    monkeypatch.setattr(mod_selection, "DECISIONES_REDUNDANCIA", {})
+    monkeypatch.setattr(mod_selection, "check_is_fitted", lambda _: None)
+    iv = {"F_EN_BANDA": (valor("banda_revision_iv_suelo") + valor("banda_revision_iv_techo")) / 2}
+
+    reg = seleccion_final(_pipeline_falso(iv), estabilidad={"F_EN_BANDA": 9})
+
+    assert reg.loc["F_EN_BANDA", "folds"] == 9
+    assert "9 de 15" in reg.loc["F_EN_BANDA", "motivo"]
+
+
+def test_la_redundancia_aparece_solo_en_las_columnas_de_algun_par(registro_aislado):
+    _, reg = registro_aislado
+    assert reg.loc["C_CANDIDATA_LLEGA", "redundancia"] is not None
+    assert reg.loc["D_CANDIDATA_NO_LLEGA", "redundancia"] is None
+
+
+# --- configurar_selector(), la configuración de producción del SelectorIV (5.8) ------------------
+
+
+def test_configurar_selector_no_declara_nada_fuera_del_contrato_de_capa_1():
+    """Todo origen (candidata, descarte o protegida) es una de las 180 columnas declaradas, y no
+    un nombre suelto que el `SelectorIV` resolvería por casualidad como grupo OHE."""
+    selector = mod_selection.configurar_selector()
+    declaradas = set(columnas_declaradas())
+    todos = set(selector.candidatas) | set(selector.descartes) | set(selector.protegidas)
+    assert todos <= declaradas
+
+
+def test_configurar_selector_descartes_y_protegidas_no_se_cruzan():
+    selector = mod_selection.configurar_selector()
+    assert not (set(selector.descartes) & set(selector.protegidas))
+
+
+def test_configurar_selector_las_degradadas_de_receta_son_candidatas_con_presencia():
+    selector = mod_selection.configurar_selector()
+    for nombre in mod_selection.DEGRADADAS_DE_RECETA:
+        assert nombre in selector.candidatas, nombre
+        assert selector.candidatas[nombre] is not None, nombre
+
+
+def test_configurar_selector_no_repite_building_info_count_como_candidata():
+    """El descarte del 5.6 sale de las candidatas: `BUILDING_INFO_COUNT` no se juzga dos veces."""
+    selector = mod_selection.configurar_selector()
+    assert "BUILDING_INFO_COUNT" not in selector.candidatas
+    assert "BUILDING_INFO_COUNT" in selector.descartes
+
+
+def test_presencia_de_tabla_son_las_tres_has_de_pipeline_aux():
+    from src.features.pipeline import PRESENCIA_AUX
+
+    assert set(mod_selection.PRESENCIA_DE_TABLA.values()) == set(PRESENCIA_AUX)

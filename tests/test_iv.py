@@ -11,6 +11,7 @@ from src.features.build_features import (
     NOMBRE_FICHERO_CORTES,
     cargar_cortes,
     ensamblar_auxiliares,
+    matriz_de_features,
     preparar_application,
 )
 from src.features.cleaning import COLUMNAS_PROVISIONALES
@@ -33,16 +34,21 @@ from src.features.iv import (
     tripartita_mora,
 )
 from src.features.params import PARAMS, valor
-from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
+from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas, construir_pipeline
 from src.features.recipes import cargar_receta
 from src.features.selection import (
     DECISIONES_REDUNDANCIA,
+    PRESENCIA_DE_TABLA,
+    columnas_protegidas,
+    estabilidad_banda,
     informe_redundancia,
     pares_redundantes,
     recomendar_codificacion,
+    seleccion_final,
     tabla_de,
 )
 from src.features.split import NOMBRE_FICHERO, cargar_split, solo_train
+from src.features.transformers import _resolver_origen
 
 
 def _repetir(tramos_y_recuentos):
@@ -833,3 +839,193 @@ def test_la_redundancia_entre_tablas_reproduce_la_puerta_del_5_7(train_ensamblad
 
         assert _incremental(codigo_a, codigo_b) == pytest.approx(fila["inc_a"], abs=5e-4), (a, b)
         assert _incremental(codigo_b, codigo_a) == pytest.approx(fila["inc_b"], abs=5e-4), (a, b)
+
+
+
+# --- 5.8, SelectorIV y el registro de selección --------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def pipeline_ajustado(train_ensamblado):
+    """El `Pipeline` de las capas 2 ajustado una sola vez sobre `train_ensamblado`, reutilizado
+    por toda la puerta del 5.8. `train_ensamblado` trae la columna `split` (la deja el `merge`
+    de su propio fixture) y el contrato de columnas no la admite, así que se quita antes.
+
+    Devuelve `(pipeline, matriz, X_post)`. `X_post` es el frame que ve el `SelectorIV` al
+    ajustarse (después de `varianza`, antes de `seleccion`), y no las columnas crudas de
+    `train_ensamblado`: alguna candidata tiene NaN residual dentro de su población
+    (`BUREAU_DAYS_CREDIT_ENDDATE_MAX`, con 10.664 casos, `IMPUTACION_SIN_RASTRO`) que la mediana
+    ya no deja como tramo propio, así que su IV crudo y su IV transformado no coinciden.
+
+    No se pide con `sin_dato_real_ensamblado`: como fixture no se salta sola, lo que salta la
+    prueba es el `skipif` de cada test que la usa, antes de que esta se llegue a construir.
+    """
+    import warnings
+
+    X = matriz_de_features(train_ensamblado.drop(columns="split"))
+    y = train_ensamblado["TARGET"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline = construir_pipeline()
+        matriz = pipeline.fit_transform(X, y)
+        X_post = pipeline[:-1].transform(X)
+    return pipeline, matriz, X_post
+
+
+# El `iv_` de las 35 candidatas (31 de `CANDIDATAS_IV` menos las 7 que ya salían por descarte
+# fijo, más las 4 `DEGRADADAS_DE_RECETA`) y si llegan a `min_iv`, sobre los 245.993 de train.
+# `BUILDING_INFO_COUNT` no está: `CANDIDATAS_IV` trae 38 y `descartes_fijos()` se lleva 7, no
+# solo ella (el plan citaba 41 = 38 - 1 + 4, y la cifra medida es 35 = 38 - 7 + 4).
+PUERTA_5_8 = {
+    "BB_DPD_MONTHS_COUNT": (0.025284, True),
+    "BB_MONTHS_REPORTED": (0.007113, False),
+    "BB_MONTHS_TOTAL": (0.041321, True),
+    "BB_TRAJECTORY": (0.040437, True),
+    "BUREAU_COUNT_COLA": (0.001901, False),
+    "BUREAU_CREDIT_TYPE_NUNIQUE": (0.000165, False),
+    "BUREAU_DAYS_CREDIT_ENDDATE_MAX": (0.029254, True),
+    "BUREAU_HAS_CURRENT_OVERDUE": (0.011545, False),
+    "BUREAU_HAS_FOREIGN_CURRENCY": (0.000237, False),
+    "BUREAU_LOAN_COUNT": (0.003848, False),
+    "BUREAU_NEGATIVE_LIMIT_FLAG": (0.002379, False),
+    "DEF_60_CNT_SOCIAL_CIRCLE": (0.000000, False),
+    "EMERGENCYSTATE_MODE": (0.023591, True),
+    "FLAG_CONT_MOBILE": (0.000010, False),
+    "FLAG_EMAIL": (0.000038, False),
+    "FLAG_PHONE": (0.007834, False),
+    "FLAG_WORK_PHONE": (0.010547, False),
+    "FONDKAPREMONT_MODE": (0.011541, False),
+    "HAS_BEEN_PROLONGED": (0.000995, False),
+    "HAS_BUREAU_BALANCE": (0.001750, False),
+    "HAS_BUREAU_FINANCIAL_DETAIL": (0.000539, False),
+    "HOUSETYPE_MODE": (0.021523, True),
+    "LIVE_CITY_NOT_WORK_CITY": (0.013765, False),
+    "LIVE_REGION_NOT_WORK_REGION": (0.000196, False),
+    "NAME_HOUSING_TYPE": (0.015508, False),
+    "PREV_APPLICATION_COUNT": (0.006471, False),
+    "PREV_COUNT_12M": (0.015333, False),
+    "PREV_DAYS_DECISION_MAX": (0.009840, False),
+    "PREV_EARLY_HOUR_RATIO": (0.014642, False),
+    "PREV_REFUSED_COUNT": (0.046251, True),
+    "PREV_REFUSED_LONG_TERM_FLAG": (0.000460, False),
+    "PREV_RELACION_CORTA_ACTIVA": (0.018472, False),
+    "REG_REGION_NOT_LIVE_REGION": (0.000327, False),
+    "REG_REGION_NOT_WORK_REGION": (0.000786, False),
+    "WALLSMATERIAL_MODE": (0.026845, True),
+}
+
+COLUMNAS_MATRIZ_FINAL = 164
+
+# los 10 orígenes que caen en la banda de revisión (0,015 a 0,025) y en cuántos de los 15 folds
+# (tres semillas de cinco, deterministas) llega cada uno a min_iv. No son solo candidatas: cuatro
+# son descartes fijos y protegidas, y la banda los mira igual porque no distingue motivo
+PUERTA_5_8_BANDA = {
+    "BUILDING_INFO_COUNT": 14,
+    "BUREAU_ACTIVE_CARD_COUNT": 2,
+    "BUREAU_CLOSED_COUNT": 15,
+    "EMERGENCYSTATE_MODE": 15,
+    "HAS_BUILDING_INFO": 15,
+    "HOUSETYPE_MODE": 15,
+    "NAME_HOUSING_TYPE": 0,
+    "PREV_COUNT_12M": 0,
+    "PREV_HISTORIAL_RECORTADO": 15,
+    "PREV_RELACION_CORTA_ACTIVA": 0,
+}
+
+
+def _presencia_de(nombre):
+    """La misma regla que `configurar_selector()`: la de `CANDIDATAS_IV` si la declara, si no la
+    de su tabla (las cuatro `DEGRADADAS_DE_RECETA`)."""
+    if nombre in CANDIDATAS_IV:
+        return CANDIDATAS_IV[nombre].presencia
+    return PRESENCIA_DE_TABLA[tabla_de(nombre)]
+
+
+@sin_dato_real_ensamblado
+def test_el_selectoriv_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensamblado):
+    """Las 35 candidatas, recomputadas por un camino independiente
+    (`_tramo_codigo`/`_iv_de_codigos`, más `pd.factorize` para los grupos que deja el
+    `OneHotEncoder`) sobre `X_post`, la matriz que de verdad ve el `SelectorIV` al ajustarse.
+    `selector.columnas_` da qué físicos resuelve cada origen, que es estructural y no numérico:
+    la aritmética del IV la hace este test aparte, sin pasar por `SelectorIV._serie_iv()`.
+
+    **Con presencia, el filtro va antes del tramo y no después.** `SelectorIV.fit()` llama
+    `calcular_iv(serie[dentro], objetivo[dentro])`, así que los cuantiles de `tramos()` salen de
+    la población filtrada. Tramear la columna entera y filtrar el código después usa cuantiles de
+    la población completa, que arrastra la mediana constante de quien no tiene la tabla (0 en
+    `BB_DPD_MONTHS_COUNT`, con solo 73.767 de 245.993 dentro): eso desplaza los cortes y da un IV
+    distinto, medido en 0,0234 frente a los 0,0253 de `SelectorIV`. Filtrando antes coinciden.
+
+    Cada lectura se contrasta además contra el `iv_` que de verdad calculó el `SelectorIV` ya
+    ajustado, no solo contra la constante congelada: lo que se prueba es que el código hace lo
+    que dice, no solo que la cifra de la puerta no se ha movido.
+    """
+    _, _, X_post = pipeline_ajustado
+    selector = pipeline_ajustado[0].named_steps["seleccion"]
+    y = train_ensamblado["TARGET"].to_numpy()
+    alfa, n_bins_max = valor("suavizado_woe"), valor("n_bins_max")
+
+    for nombre, (esperado_iv, esperado_llega) in PUERTA_5_8.items():
+        columnas = selector.columnas_[nombre]
+        columna_sola = len(columnas) == 1 and nombre != "BB_TRAJECTORY"
+        columna = (
+            X_post[columnas[0]]
+            if columna_sola
+            else X_post[list(columnas)].astype(str).agg("|".join, axis=1)
+        )
+        presencia = _presencia_de(nombre)
+        if presencia is not None:
+            dentro = (X_post[presencia] == 1).to_numpy()
+            columna, y_leida = columna[dentro], y[dentro]
+        else:
+            y_leida = y
+        codigo = _tramo_codigo(columna, n_bins_max) if columna_sola else pd.factorize(columna)[0]
+        lectura, _ = _iv_de_codigos(codigo, y_leida, alfa)
+        assert lectura == pytest.approx(esperado_iv, abs=5e-4), nombre
+        assert bool(lectura >= valor("min_iv")) == esperado_llega, nombre
+        assert selector.iv_[nombre] == pytest.approx(esperado_iv, abs=5e-4), nombre
+
+
+@sin_dato_real_ensamblado
+def test_la_matriz_final_del_5_8_tiene_164_columnas(pipeline_ajustado, train_ensamblado):
+    _, matriz, _ = pipeline_ajustado
+    assert matriz.shape[1] == COLUMNAS_MATRIZ_FINAL
+    assert len(matriz) == len(train_ensamblado)
+
+
+@sin_dato_real_ensamblado
+def test_el_registro_de_seleccion_reproduce_exactamente_la_matriz_final(pipeline_ajustado):
+    """La puerta del 5.8: cada columna de la matriz final tiene su fila con `queda` a cierto, y
+    ninguna fila con `queda` a falso deja una columna en la matriz. Los grupos del OHE se
+    resuelven por origen con `_resolver_origen()` contra la matriz final, y no con una lista de
+    columnas escrita a mano: `selector.columnas_` no sirve aquí porque solo conoce las 79
+    candidatas, descartes y protegidas que declaró, y dos tercios de las 180 no tienen decisión
+    de IV y pasan intactas sin que el `SelectorIV` las haya mirado nunca."""
+    pipeline, matriz, _ = pipeline_ajustado
+    registro = seleccion_final(pipeline)
+
+    assert len(registro) == len(columnas_declaradas())
+    assert not registro["motivo"].isna().any()
+    assert not (registro["motivo"].str.strip() == "").any()
+
+    columnas_que_quedan = set()
+    for origen in registro[registro["queda"]].index:
+        resuelto = _resolver_origen(origen, matriz.columns)
+        assert resuelto is not None, f"{origen} queda pero no resuelve en la matriz final"
+        columnas_que_quedan.update(resuelto)
+    assert columnas_que_quedan == set(matriz.columns)
+
+    protegidas = columnas_protegidas()
+    assert registro.loc[registro.index.isin(protegidas), "queda"].all()
+
+
+@sin_dato_real_ensamblado
+def test_estabilidad_banda_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensamblado):
+    """Los 10 orígenes en banda y sus folds, deterministas por las tres semillas fijas."""
+    pipeline, _, X_post = pipeline_ajustado
+    selector = pipeline.named_steps["seleccion"]
+    y = train_ensamblado["TARGET"]
+
+    aciertos = estabilidad_banda(X_post, y, selector)
+
+    assert aciertos == PUERTA_5_8_BANDA
