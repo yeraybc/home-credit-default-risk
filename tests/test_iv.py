@@ -32,7 +32,7 @@ from src.features.iv import (
     tramos,
     tripartita_mora,
 )
-from src.features.params import valor
+from src.features.params import PARAMS, valor
 from src.features.pipeline import PRESENCIA_AUX, columnas_declaradas
 from src.features.recipes import cargar_receta
 from src.features.selection import recomendar_codificacion
@@ -483,7 +483,16 @@ def train_ensamblado():
     Se ensambla una sola vez por módulo: `ensamblar_auxiliares()` sobre las tres auxiliares y
     `cargar_cortes()` con los ocho del 5.1 son el gasto caro del test, y ninguna de las decisiones
     del 5.6 cambia el frame de entrada.
+
+    **Restaura `PARAMS` en su propio teardown, no solo el de `conftest.py`.** `restaurar_params()`
+    es de función y pytest monta los fixtures de módulo antes que los de función, así que su
+    snapshot ya ve los ocho cortes fijados por `cargar_cortes()` de aquí y no los deshace: el
+    fijado se queda puesto para el resto de la sesión, y con `test_iv.py` corriendo antes
+    (alfabéticamente va primero), `test_params.py` hereda `bureau_count_cola` y los demás ya
+    fijados. Verificado con un módulo mínimo que reproduce el fallo y se cura con este
+    snapshot/restore local.
     """
+    snapshot = dict(PARAMS)
     split = cargar_split()
     base = preparar_application()
     bureau = load_table("bureau", reduce_memory=False)
@@ -494,7 +503,9 @@ def train_ensamblado():
     matriz = matriz.merge(split[["SK_ID_CURR", "split"]], on="SK_ID_CURR", how="left")
     train = solo_train(matriz, split)
     assert len(train) == 245_993
-    return train
+    yield train
+    PARAMS.clear()
+    PARAMS.update(snapshot)
 
 
 @sin_dato_real_ensamblado
