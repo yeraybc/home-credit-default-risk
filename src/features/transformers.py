@@ -21,6 +21,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
+from src.features.iv import NULO, _clave, tabla_woe
 from src.features.params import fijar_operativo, parametro, valor
 
 # Qué columna lleva qué corte del registro. Declarado y no derivado del frame que llegue, por lo
@@ -55,11 +56,6 @@ RATIOS_POSTERIORES: dict[str, tuple[str, str]] = {
     "CHILDREN_TO_FAM_RATIO": ("CNT_CHILDREN", "CNT_FAM_MEMBERS"),
 }
 
-
-# El nulo es un nivel más para agrupar y para el WoE, así que necesita una clave con la que
-# contarlo y agruparlo. Va como cadena y no como `object()` porque tiene que sobrevivir a un
-# `value_counts` y a un `groupby`, y se comprueba al ajustar que ninguna categoría real la use.
-NULO = "__NULO__"
 
 # El registro de una celda movida. Va declarado porque el frame se arma por trozos y uno vacío
 # tiene que traer las mismas columnas que uno lleno, o el informe cambia de forma según el dato.
@@ -104,13 +100,6 @@ def _exigir_ajustadas(X: pd.DataFrame, columnas: Iterable[str]) -> None:
             f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
             "Saltárselas daría una matriz distinta de la del entrenamiento"
         )
-
-
-def _clave(serie: pd.Series) -> pd.Series:
-    """La columna con el nulo convertido en un nivel contable."""
-    if (serie == NULO).any():
-        raise ValueError(f"{serie.name} trae una categoría literal {NULO!r}, que es la del nulo")
-    return serie.astype(object).where(serie.notna(), NULO)
 
 
 def _nombre(categoria: object) -> object:
@@ -366,44 +355,14 @@ class WoEEncoder(BaseEstimator, TransformerMixin):
                 "WoEEncoder es capa 2b y necesita el TARGET: sin él no hay malos ni buenos que "
                 "contar y no hay peso de la evidencia que calcular"
             )
-        alfa = valor("suavizado_woe")
         objetivo = pd.Series(np.asarray(y), index=X.index)
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         self.tablas_ = {
-            columna: self._tabla(_clave(X[columna]), objetivo, alfa)
+            columna: tabla_woe(_clave(X[columna]), objetivo)["woe"]
             for columna in X.select_dtypes(include=["object", "category"]).columns
         }
         return self
-
-    @staticmethod
-    def _tabla(clave: pd.Series, objetivo: pd.Series, alfa: float) -> pd.Series:
-        """El WoE de cada nivel, con `alfa` observaciones de prior repartidas por la tasa global.
-
-        **El reparto no es a partes iguales y esa es la pieza que importa.** Sumar la misma
-        constante a los dos recuentos arrima cada nivel a un prior implícito de 50/50, que no
-        tiene nada que ver con una cartera del 8% de default: al nivel que ya está por encima de
-        la media lo empuja más arriba todavía. Medido sobre train en `Industry: type 8`, que con
-        n = 17 es el más pequeño de los 58: sin suavizar vale +0,8920 y sumarle `alfa` a cada uno
-        de los dos recuentos lo lleva a +2,0415, o sea que el suavizado lo alejaba de cero justo
-        donde menos evidencia propia hay. Repartiendo el prior según la tasa global sale +0,4840:
-        un nivel sin evidencia propia converge al comportamiento medio, que es WoE cero, venga de
-        la dirección que venga.
-
-        Los denominadores son los totales pelados y no llevan el prior sumado. Con el reparto a
-        partes iguales sí hacía falta corregirlos, porque el prior infla las dos partes en
-        proporciones distintas (0,0584 frente a 0,0051 sobre train). Repartido por la tasa
-        global los dos factores de inflado valen lo mismo, `alfa` por niveles entre el total, y
-        se cancelan dentro del `log`: comprobado sobre train, la diferencia entre corregir y no
-        corregir es de 2,8e-16. Escribirlo sería una línea que no cambia ningún resultado.
-        """
-        malos = objetivo.groupby(clave, observed=True).sum()
-        buenos = objetivo.groupby(clave, observed=True).count() - malos
-        prior_malos = alfa * malos.sum() / (malos.sum() + buenos.sum())
-        prior_buenos = alfa - prior_malos
-        parte_malos = (malos + prior_malos) / malos.sum()
-        parte_buenos = (buenos + prior_buenos) / buenos.sum()
-        return np.log(parte_malos / parte_buenos)
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Aplica las tablas ajustadas. Estricto donde el `fit` es permisivo.

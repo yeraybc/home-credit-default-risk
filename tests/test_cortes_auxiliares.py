@@ -239,7 +239,7 @@ def test_el_refijado_conjunto_reproduce_la_puerta_del_5_1():
     from src.features.params import operativos_pendientes
 
     medido_pendiente = [k for k, v in operativos_pendientes().items() if v.procedencia == "medido"]
-    assert medido_pendiente == ["umbral_continuas_rb"]
+    assert medido_pendiente == []
 
 
 @sin_dato_real

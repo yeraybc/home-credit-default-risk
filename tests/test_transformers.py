@@ -16,19 +16,18 @@ from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
+from src.features.iv import NULO, _clave, tabla_woe
 from src.features.params import valor
 from src.features.transformers import (
     COLUMNAS_DETALLE,
     CORTES_WINSOR,
     FACTOR_POR_COLUMNA,
-    NULO,
     RATIOS_POSTERIORES,
     RESIDUAL,
     AgrupadorDeRaras,
     RatiosPosteriores,
     Winsorizador,
     WoEEncoder,
-    _clave,
     informe_agrupamiento,
     informe_winsorizacion,
     informe_woe,
@@ -903,7 +902,7 @@ def test_el_nivel_pequeno_por_encima_de_la_media_tambien_se_acerca_a_cero():
     """
     X = pd.DataFrame({"org": ["arriba"] * 17 + ["abajo"] * 39 + ["masa"] * 3_000})
     y = pd.Series([1] * 3 + [0] * 14 + [1] * 1 + [0] * 38 + [1] * 240 + [0] * 2_760)
-    crudo = WoEEncoder._tabla(_clave(X["org"]), y, 0.0)
+    crudo = tabla_woe(_clave(X["org"]), y, 0.0)["woe"]
     suave = WoEEncoder().fit(X, y).tablas_["org"]
 
     assert crudo["arriba"] > 0, "el fixture perdió el nivel pequeño de riesgo alto"

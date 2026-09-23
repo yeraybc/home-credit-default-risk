@@ -94,13 +94,25 @@ PARAMS: dict[str, Parametro] = {
         "delta mínimo en puntos porcentuales para que una bandera sea relevante",
         "metodologia-estadistica 8.4",
     ),
+    # Declarado en el 5.4 con los r_rb de train ya vistos: el 2.3, el 3.10 y el 4.11 los remidieron,
+    # y la propuesta del 5.4 midió las 40 continuas de las tres recetas sobre los 245.993 de train.
+    # El 0,02 cae en su hueco, entre 0,0121 y 0,0216, y deja cuatro debajo (BB_STATUS_WORST,
+    # BB_N_CREDITS_WBAL, BUREAU_LOAN_COUNT y BUREAU_CREDIT_TYPE_NUNIQUE). No descarta por sí solo:
+    # es la lectura que va al lado del IV.
     "umbral_continuas_rb": Parametro(
-        None,
-        "medido",
+        0.02,
+        "dominio",
         "equivalente de los 2pp para continuas, en rank-biserial; el EDA nunca lo declaró y "
         "la barra efectiva se movía por tabla (0,0119 iba a IV en bureau y 0,0058 se "
         "descartaba en bureau_balance)",
         "auditoría transversal, pendiente 4",
+    ),
+    "alfa_familia": Parametro(
+        0.05,
+        "dominio",
+        "error de tipo I de cada familia de contrastes, que Bonferroni reparte entre los "
+        "contrastes emitidos con alfa_bonferroni()",
+        "metodologia-estadistica 8.1 y auditoría transversal, pendiente 3",
     ),
     "n_min_categoria": Parametro(
         100,
@@ -671,6 +683,16 @@ def fijar_operativo(
             "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
         )
     PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
+
+
+def alfa_bonferroni(n_contrastes: int) -> float:
+    """El alfa corregido de una familia, que son los contrastes emitidos en una medición.
+
+    No las features ni las columnas: una columna cruzada contra varios estratos emite varios.
+    """
+    if n_contrastes < 1:
+        raise ValueError(f"una familia sin contrastes no tiene alfa: {n_contrastes}")
+    return float(valor("alfa_familia")) / n_contrastes
 
 
 def por_procedencia(procedencia: str) -> dict[str, Parametro]:
