@@ -1,7 +1,7 @@
 """El `Pipeline` de las capas 2 montado, con su `ColumnTransformer` dentro.
 
 Convierte 180 columnas heterogéneas en una matriz numérica con nombres. El `ColumnTransformer`
-entrega 218, y desde el 5.8 el `SelectorIV` del final las deja en 164, sacando lo que no aporta
+entrega 218, y desde el 5.8 el `SelectorIV` del final las deja en 163, sacando lo que no aporta
 capacidad predictiva propia o ya estaba descartado por el 5.6 o el 5.7. Se ajusta **solo sobre el
 80% de entrenamiento**: dos de sus pasos estiman parámetros sobre covariables y tres los estiman
 con el TARGET, el `SelectorIV` entre ellos desde el 5.8.

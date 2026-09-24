@@ -477,9 +477,10 @@ COLUMNAS_DEL_COLUMNTRANSFORMER = 180
 # informe_buckets() lee output_indices_ del propio ColumnTransformer y no ve lo que pasa detrás
 COLUMNAS_QUE_EMITE_EL_COLUMNTRANSFORMER = 218
 # la matriz que de verdad entrega ajustar_pipeline(), con el SelectorIV del 5.8 al final:
-# descarta lo del 5.6 y el 5.7 que llega a la matriz (24 columnas) y las candidatas cuyo IV no
-# llega a min_iv, medido sobre los 245.993 de train (PUERTA_5_8 en test_iv.py)
-COLUMNAS_DE_LA_MATRIZ_FINAL = 164
+# descarta lo que las recetas y el 5.6 ya sacan (18 columnas), los perdedores del 5.7 cuya
+# ganadora se queda y las candidatas cuyo IV no llega a min_iv, medido sobre los 245.993 de train
+# (PUERTA_5_8 en test_iv.py). Era 164 hasta que el término de la interacción dejó de protegerse
+COLUMNAS_DE_LA_MATRIZ_FINAL = 163
 COLUMNAS_DE_OHE = 52
 BUCKETS = {"num": 93, "ohe": 14, "ord": 1, "woe": 1, "tgt": 1, "bin": 39, "cero": 30, "tray": 1}
 
@@ -527,7 +528,7 @@ def test_el_ohe_expande_sus_14_columnas_en_52(base_ensamblada):
 
 
 @sin_csv
-def test_el_selector_iv_deja_la_matriz_en_164(base_ensamblada):
+def test_el_selector_iv_deja_la_matriz_en_163(base_ensamblada):
     """La puerta del 5.8: lo que de verdad sale de `ajustar_pipeline()`, después del
     `SelectorIV`. `PUERTA_5_8` en `tests/test_iv.py` fija el IV de cada candidata que sostiene
     este número."""

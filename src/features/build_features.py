@@ -991,13 +991,13 @@ ANCLAJES: tuple[tuple[str, str, float | None, float, str], ...] = (
     ("previous_application", "rechazo por scoring externo", 6_788, 6_787, ""),
     ("ensamblado", "columnas de capa 1", None, 180, ""),
     ("ensamblado", "columnas tras el ColumnTransformer", None, 218, ""),
-    ("ensamblado", "columnas finales", None, 164, ""),
+    ("ensamblado", "columnas finales", None, 163, ""),
     (
         "ensamblado",
         "candidatas que llegan a min_iv",
         None,
         9,
-        "de 40; BUREAU_CLOSED_COUNT llega y sale por su par del 5.7",
+        "de 41; BUREAU_CLOSED_COUNT llega y sale por su par del 5.7",
     ),
     ("ensamblado", "orígenes en la banda de revisión", None, 10, ""),
 )

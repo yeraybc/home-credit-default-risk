@@ -897,11 +897,11 @@ def pipeline_ajustado(train_ensamblado):
     return pipeline, matriz, X_post
 
 
-# El `iv_` de las 40 candidatas y si llegan a `min_iv`, sobre los 245.993 de train: 38 de
-# `CANDIDATAS_IV` menos las 5 que salen por descarte fijo, más las 4 `DEGRADADAS_DE_RECETA` y los
-# 3 perdedores del 5.7 que no estaban en `CANDIDATAS_IV`. Eran 35 hasta la auditoría del bloque 5,
-# con los cinco perdedores fuera de forma fija aunque su ganadora no quedara (el plan citaba 41 =
-# 38 - 1 + 4 antes de medir).
+# El `iv_` de las 41 candidatas y si llegan a `min_iv`, sobre los 245.993 de train: 38 de
+# `CANDIDATAS_IV` menos las 5 que salen por descarte fijo, más las 4 `DEGRADADAS_DE_RECETA`, el
+# término de la interacción y los 3 perdedores del 5.7 que no estaban en `CANDIDATAS_IV`. Eran 35
+# hasta la auditoría del bloque 5, con los cinco perdedores fuera de forma fija aunque su ganadora
+# no quedara y el término protegido (el plan citaba 41 = 38 - 1 + 4 antes de medir).
 PUERTA_5_8 = {
     "BB_DPD_MONTHS_COUNT": (0.025284, True),
     "BB_MONTHS_REPORTED": (0.007113, False),
@@ -945,9 +945,11 @@ PUERTA_5_8 = {
     "BUREAU_MAX_OVERDUE_EVER": (0.018347, False),
     "BUREAU_ANNUITY_ACTIVE_RATIO": (0.009054, False),
     "BUREAU_CREDITS_WITH_ANNUITY_COUNT": (0.006709, False),
+    # el término de PREV_RELACION_CORTA_ACTIVA, que deja de estar protegido
+    "PREV_ACTIVIDAD_12M_COLA": (0.011525, False),
 }
 
-COLUMNAS_MATRIZ_FINAL = 164
+COLUMNAS_MATRIZ_FINAL = 163
 
 # los 10 orígenes que caen en la banda de revisión (0,015 a 0,025) y en cuántos de los 15 folds
 # (tres semillas de cinco, deterministas) llega cada uno a min_iv. No son solo candidatas: cinco
@@ -977,7 +979,7 @@ def _presencia_de(nombre):
 
 @sin_dato_real_ensamblado
 def test_el_selectoriv_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensamblado):
-    """Las 40 candidatas, recomputadas por un camino independiente
+    """Las 41 candidatas, recomputadas por un camino independiente
     (`_tramo_codigo`/`_iv_de_codigos`, más `pd.factorize` para los grupos que deja el
     `OneHotEncoder`) sobre `X_post`, la matriz que de verdad ve el `SelectorIV` al ajustarse.
     `selector.columnas_` da qué físicos resuelve cada origen, que es estructural y no numérico:
@@ -1023,7 +1025,7 @@ def test_el_selectoriv_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensa
 
 
 @sin_dato_real_ensamblado
-def test_la_matriz_final_del_5_8_tiene_164_columnas(pipeline_ajustado, train_ensamblado):
+def test_la_matriz_final_del_5_8_tiene_163_columnas(pipeline_ajustado, train_ensamblado):
     _, matriz, _ = pipeline_ajustado
     assert matriz.shape[1] == COLUMNAS_MATRIZ_FINAL
     assert len(matriz) == len(train_ensamblado)

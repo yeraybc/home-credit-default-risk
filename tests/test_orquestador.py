@@ -171,8 +171,8 @@ def test_las_matrices_salen_con_las_cifras_de_la_puerta(artefactos_reales):
     y_train = pd.read_parquet(rutas["y_train"])
     y_valid = pd.read_parquet(rutas["y_valid"])
 
-    assert X_train.shape == (245_993, 164)
-    assert X_valid.shape == (61_499, 164)
+    assert X_train.shape == (245_993, 163)
+    assert X_valid.shape == (61_499, 163)
     assert X_train.isna().sum().sum() == 0
     assert X_valid.isna().sum().sum() == 0
     assert list(X_train.columns) == list(X_valid.columns)

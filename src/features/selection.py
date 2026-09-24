@@ -414,8 +414,10 @@ def tabla_de(columna: str, nombres: dict[str, set[str]] | None = None) -> str:
 def columnas_protegidas() -> frozenset[str]:
     """Las que no pasan por el umbral del 5.8, adelantadas aquí porque el empate del 5.7 las mira:
     las `control: true` de las recetas, las tres `HAS_*` (`pipeline.PRESENCIA_AUX`), los dos
-    documentos protegidos del filtro de varianza (`pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`),
-    las banderas raras y `PREV_ACTIVIDAD_12M_COLA` como término de `PREV_RELACION_CORTA_ACTIVA`.
+    documentos protegidos del filtro de varianza (`pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`) y
+    las banderas raras. `PREV_ACTIVIDAD_12M_COLA` también lo estuvo, como término de
+    `PREV_RELACION_CORTA_ACTIVA` (4.7), hasta que el propio `SelectorIV` sacó esa interacción por
+    IV: desde la auditoría del bloque 5 es candidata (`TERMINO_SIN_INTERACCION`).
 
     Las dos listas de `pipeline.py` se importan y no se copian, que copiarlas es la misma trampa
     de las dos fuentes de verdad que ya ha mordido tres veces en este proyecto: un tercer
@@ -439,7 +441,6 @@ def _protegidas_fijas() -> set[str]:
         controles
         | set(pipeline.PRESENCIA_AUX)
         | set(pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA)
-        | {"PREV_ACTIVIDAD_12M_COLA"}
         | set(BANDERAS_RARAS)
     )
 
@@ -767,6 +768,11 @@ DEGRADADAS_DE_RECETA: tuple[str, ...] = (
     "PREV_REFUSED_COUNT",
 )
 
+# el término de `PREV_RELACION_CORTA_ACTIVA`, que el 4.7 y el 4.11 conservaban solo para
+# acompañar a la interacción y no por efecto propio. El `SelectorIV` saca la interacción por IV,
+# así que la protección se quedaba sin motivo: se juzga por su IV, dentro de quien tiene previas
+TERMINO_SIN_INTERACCION = "PREV_ACTIVIDAD_12M_COLA"
+
 
 def configurar_selector() -> SelectorIV:
     """El `SelectorIV` que `construir_pipeline()` monta al final, con sus listas de origen
@@ -774,10 +780,11 @@ def configurar_selector() -> SelectorIV:
 
     Las candidatas son `CANDIDATAS_IV` menos las 5 que `descartes_fijos()` ya saca sin mirar el
     IV (`BUILDING_INFO_COUNT` y `BB_CREDITS_WITH_DPD_COUNT` del 5.6 y los tres efectos nulos del
-    3.10), más las cuatro `DEGRADADAS_DE_RECETA` con la presencia de su tabla y los tres
-    perdedores del 5.7 que no estaban en `CANDIDATAS_IV` (los otros dos, `BB_MANY_CREDITS_FLAG` y
-    `BUREAU_ANNUITY_ACTIVE_RATIO`, ya lo estaban): 38 - 5 + 4 + 3 = 40. Hasta la auditoría del
-    bloque 5 eran 35, con los perdedores fuera de forma fija. La presencia de
+    3.10), más las cuatro `DEGRADADAS_DE_RECETA` y `TERMINO_SIN_INTERACCION` con la presencia de
+    su tabla, y los tres perdedores del 5.7 que no estaban en `CANDIDATAS_IV` (los otros dos,
+    `BB_MANY_CREDITS_FLAG` y `BUREAU_ANNUITY_ACTIVE_RATIO`, ya lo estaban): 38 - 5 + 5 + 3 = 41.
+    Hasta la auditoría del bloque 5 eran 35, con los perdedores fuera de forma fija y el término
+    protegido. La presencia de
     `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
     mide dentro de quien tiene la tabla (`X[presencia] == 1`) y no pondera por cobertura, que es
     el cambio de criterio decidido en el 5.8 (antes lo hacía `iv_condicionado()`, y en
@@ -790,7 +797,7 @@ def configurar_selector() -> SelectorIV:
         if nombre not in descartes
     }
     nombres = _nombres_por_tabla()
-    for nombre in DEGRADADAS_DE_RECETA:
+    for nombre in (*DEGRADADAS_DE_RECETA, TERMINO_SIN_INTERACCION):
         candidatas[nombre] = PRESENCIA_DE_TABLA[tabla_de(nombre, nombres)]
     # los perdedores del 5.7 se miden como candidatas, con la presencia de `CANDIDATAS_IV` si la
     # declaran y si no la de su tabla, por si su ganadora no queda

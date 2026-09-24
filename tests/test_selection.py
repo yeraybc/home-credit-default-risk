@@ -267,22 +267,22 @@ def test_los_pares_declarados_van_en_orden_alfabetico_y_dentro_de_bureau():
         assert tabla_de(a) == tabla_de(b) == "bureau"
 
 
-# Las 21 protegidas del 5.8, escritas a mano para que el test no las derive por el mismo camino
-# que el código: las diez del 5.7 y las once fuentes de presencia, que desde la auditoría del
-# bloque 5 van condicionadas a que algo de lo que recuperan siga en la matriz del fold.
+# Las 20 protegidas del 5.8, escritas a mano para que el test no las derive por el mismo camino
+# que el código: las nueve del 5.7 que siguen (el término de la interacción dejó de estarlo en la
+# auditoría del bloque 5) y las once fuentes de presencia, condicionadas desde entonces a que algo
+# de lo que recuperan siga en la matriz del fold.
 PROTEGIDAS_5_8 = {
     # control: true de las recetas
     "HAS_BUREAU_HISTORY",
     "HAS_PREV_APPLICATION",
     "PREV_HISTORIAL_RECORTADO",
     "PREV_DAYS_DECISION_MAX",
-    # las tres HAS_*, los dos documentos, las dos raras y el término de la interacción
+    # las tres HAS_*, los dos documentos y las dos raras
     "HAS_BUREAU_BALANCE",
     "FLAG_DOCUMENT_3",
     "FLAG_DOCUMENT_6",
     "BUREAU_NEGATIVE_LIMIT_FLAG",
     "PREV_REFUSED_LONG_TERM_FLAG",
-    "PREV_ACTIVIDAD_12M_COLA",
     # fuentes de presencia
     "FLAG_DAYS_EMPLOYED_ANOMALY",
     "FLAG_EXT_SOURCE_1_NULL",
@@ -388,6 +388,15 @@ def test_ningun_perdedor_del_5_7_sale_fijo_solo_por_su_par():
     for perdedor in ("BUREAU_HAS_ANY_OVERDUE", "BUREAU_OVERDUE_UNION"):
         assert "degradada en el 5.6" in descartes[perdedor], perdedor
         assert "redundante con" in descartes[perdedor], perdedor
+
+
+def test_el_termino_de_la_interaccion_es_candidata_y_no_protegida():
+    """`PREV_ACTIVIDAD_12M_COLA` solo se protegía para acompañar a `PREV_RELACION_CORTA_ACTIVA`, y
+    el `SelectorIV` saca esa interacción por IV: se juzga por el suyo, dentro de quien tiene
+    previas."""
+    selector = mod_selection.configurar_selector()
+    assert "PREV_ACTIVIDAD_12M_COLA" not in columnas_protegidas()
+    assert selector.candidatas["PREV_ACTIVIDAD_12M_COLA"] == "HAS_PREV_APPLICATION"
 
 
 def test_configurar_selector_juzga_a_los_perdedores_como_candidatas_con_presencia():
