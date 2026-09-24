@@ -1,5 +1,7 @@
 """Tests de iv.py: el binning, la tabla de WoE, el IV y el IV condicionado."""
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -711,6 +713,28 @@ def test_columnas_solapadas_ext3_incluye_r_alto_y_excluye_r_bajo():
     assert "BUREAU_DEBT_CREDIT_RATIO" in r.index
     assert abs(r["BUREAU_DEBT_CREDIT_RATIO"]) >= 0.20
     assert "BUREAU_LOAN_COUNT" not in r.index
+
+
+def test_columnas_solapadas_ext3_salta_la_constante_sin_avisar():
+    """`HAS_BUREAU_HISTORY` es columna viva de `bureau` y vale 1 en toda su población: su Pearson
+    no existe, y sin el salto previo numpy avisaba con un `RuntimeWarning` antes de dar el NaN.
+    La que no es constante sigue entrando."""
+    rng = np.random.default_rng(21)
+    n = 5_000
+    ext3 = rng.normal(size=n)
+    train = pd.DataFrame(
+        {
+            "HAS_BUREAU_HISTORY": np.ones(n, dtype="int8"),
+            "HAS_BUREAU_BALANCE": np.zeros(n, dtype="int8"),
+            "BUREAU_DEBT_CREDIT_RATIO": 0.5 * ext3 + rng.normal(size=n),
+            "EXT_SOURCE_3": ext3,
+        }
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        r = columnas_solapadas_ext3(train)
+    assert "HAS_BUREAU_HISTORY" not in r.index
+    assert "BUREAU_DEBT_CREDIT_RATIO" in r.index
 
 
 def test_columnas_solapadas_ext3_salta_una_categorica_sin_reventar():

@@ -453,6 +453,10 @@ def _pearson_ext3(train: pd.DataFrame, poblaciones: dict) -> dict[str, float]:
         for c in columnas:
             if c not in dentro.columns or not pd.api.types.is_numeric_dtype(dentro[c]):
                 continue
+            # constante dentro de su población (su propia HAS_*): el pearson no existe y numpy
+            # avisa antes de devolver el NaN que igual se descartaría
+            if dentro[c].nunique() < 2:
+                continue
             valor_r = dentro[c].astype(float).corr(dentro["EXT_SOURCE_3"])
             if pd.notna(valor_r):
                 r[c] = valor_r
