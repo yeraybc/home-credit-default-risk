@@ -464,6 +464,13 @@ def _resolver_origen(origen: str, columnas: Iterable[str]) -> tuple[str, ...] | 
     return grupo or None
 
 
+def _coma(valor: float, decimales: int = 4) -> str:
+    """Un número con coma decimal, para los motivos que `SelectorIV` y `seleccion_final()`
+    escriben en `seleccion.csv`: prosa en español, con la misma convención que
+    `DECISIONES_REDUNDANCIA` y `DECISIONES_IV`, escritas a mano."""
+    return f"{valor:.{decimales}f}".replace(".", ",")
+
+
 class SelectorIV(BaseEstimator, TransformerMixin):
     """Saca del frame lo que no aporta capacidad predictiva propia, capa 2b: el TARGET entra al
     cálculo del IV, así que se ajusta solo sobre el 80% de entrenamiento.
@@ -619,7 +626,7 @@ class SelectorIV(BaseEstimator, TransformerMixin):
                 self.motivos_[origen] = descartes[origen]
                 salen.append(origen)
             elif origen not in protegidas and origen in candidatas and iv < min_iv:
-                self.motivos_[origen] = f"IV {iv:.4f} por debajo de min_iv ({min_iv:.4f})"
+                self.motivos_[origen] = f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)})"
                 salen.append(origen)
 
         # los perdedores al final, cuando ya se sabe qué ganadoras siguen en la matriz
@@ -630,7 +637,7 @@ class SelectorIV(BaseEstimator, TransformerMixin):
                 self.motivos_[perdedor] = f"redundante con {' y '.join(siguen)} en el 5.7"
             elif iv < min_iv:
                 self.motivos_[perdedor] = (
-                    f"IV {iv:.4f} por debajo de min_iv ({min_iv:.4f}); su ganadora del 5.7 "
+                    f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)}); su ganadora del 5.7 "
                     f"({' y '.join(ganadoras_del_par)}) tampoco queda"
                 )
             else:
@@ -645,7 +652,7 @@ class SelectorIV(BaseEstimator, TransformerMixin):
             if fuente in descartes:
                 motivo = descartes[fuente]
             elif fuente in candidatas and iv < min_iv:
-                motivo = f"IV {iv:.4f} por debajo de min_iv ({min_iv:.4f})"
+                motivo = f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)})"
             else:
                 continue
             self.motivos_[fuente] = f"{motivo}; fuente de presencia sin nada que recuperar"

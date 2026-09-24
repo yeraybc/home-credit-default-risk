@@ -17,7 +17,7 @@ from src.features import agg_bureau, agg_bureau_balance, agg_previous, pipeline
 from src.features.iv import BANDERAS_RARAS, CANDIDATAS_IV, calcular_iv, iv_condicionado
 from src.features.params import valor
 from src.features.recipes import cargar_receta
-from src.features.transformers import SelectorIV
+from src.features.transformers import SelectorIV, _coma
 
 
 def obtener_categorias(df: pd.DataFrame) -> dict[str, list]:
@@ -662,8 +662,8 @@ DECISIONES_REDUNDANCIA: dict[tuple[str, str], DecisionRedundancia] = {
     ("BB_MANY_CREDITS_FLAG", "BUREAU_COUNT_COLA"): DecisionRedundancia(
         ("BUREAU_COUNT_COLA",),
         "r=0,9981, la misma cola del conteo refijada en 18 por las dos tablas (2.3 y 3.9); "
-        "incremental 0,0000 en las dos direcciones, empatan en IV (0,0022) y queda "
-        "BUREAU_COUNT_COLA, de la tabla que hizo el refijado original",
+        "incremental 0,0000 en las dos direcciones, queda BUREAU_COUNT_COLA por un IV apenas "
+        "mayor (0,00222 frente a 0,00217 de BB_MANY_CREDITS_FLAG)",
     ),
     ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"): DecisionRedundancia(
         ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"),
@@ -1013,12 +1013,12 @@ def seleccion_final(
             queda = nombre not in selector.motivos_
             motivo = selector.motivos_.get(
                 nombre,
-                f"IV {iv:.4f} llega a min_iv ({min_iv:.4f}); su ganadora del 5.7 "
+                f"IV {_coma(iv)} llega a min_iv ({_coma(min_iv)}); su ganadora del 5.7 "
                 f"({' y '.join(redundantes[nombre])}) no queda",
             )
         elif iv is not None:
             queda = iv >= min_iv
-            motivo = f"IV {iv:.4f} {'llega' if queda else 'no llega'} a min_iv ({min_iv:.4f})"
+            motivo = f"IV {_coma(iv)} {'llega' if queda else 'no llega'} a min_iv ({_coma(min_iv)})"
             if en_banda:
                 folds = estabilidad.get(nombre)
                 motivo += f"; en banda, {folds} de 15 folds" if folds is not None else "; en banda"
