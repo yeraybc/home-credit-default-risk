@@ -966,6 +966,13 @@ NOMBRE_FICHERO_PIPELINE = "pipeline_features.joblib"
 # son cifras medidas contra el TARGET (`test_ninguna_cifra_medida_contra_el_target_vive_en_src`
 # las tiene en su lista cerrada) y esa puerta ya está cubierta con datos reales en
 # `test_build_features.py` y `test_split.py`, así que no hace falta duplicarla aquí.
+#
+# Las 20 filas están transcritas a mano de los `PUERTA`/`PUERTA_CLIENTE` de
+# `test_agg_bureau.py`, `test_agg_bureau_balance.py`, `test_agg_previous.py` y
+# `test_ensamblado.py`, y de `PUERTA_5_8`/`PUERTA_5_8_BANDA` de `test_iv.py`. Es la misma cifra en
+# dos sitios a propósito, porque un anclaje que se derivara de esos mismos ficheros dejaría de ser
+# una referencia independiente; pero si una auditoría futura corrige uno de esos `PUERTA`, esta
+# tabla no se entera sola y hay que tocarla también.
 ANCLAJES: tuple[tuple[str, str, float | None, float, str], ...] = (
     ("application_train", "filas", 307_511, 307_492, ""),
     ("application_train", "columnas de la tabla principal", 122, 101, "31 fuera y 10 nuevas"),
@@ -1076,6 +1083,13 @@ def construir_artefactos(
 
     Como `construir_split()`, no pisa nada sin `sobrescribir=True`, y lo comprueba antes de leer
     ningún CSV.
+
+    `sobrescribir` cubre dos guardas de intención distinta bajo el mismo nombre: aquí decide si se
+    pisan los ficheros ya persistidos, y al refijar viaja además a `guardar_cortes()` y
+    `cargar_cortes()`, donde decide si `fijar_operativo()` puede reescribir un corte que ya está
+    fijado en `PARAMS` en memoria. Las dos veces significa "sí, quiero repetir esto", así que
+    reenviarlo es correcto; lo que hay que saber es que llamar dos veces en el mismo proceso con
+    `sobrescribir=True` también libera el refijado de `PARAMS`, no solo los ficheros.
     """
     dir_datos = destino_datos or ruta("processed_data")
     dir_modelos = destino_modelos or ruta("models")

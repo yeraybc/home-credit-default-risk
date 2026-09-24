@@ -154,6 +154,9 @@ def artefactos_reales(tmp_path_factory):
 @sin_dato_real
 def test_la_reconciliacion_cuadra_entera(artefactos_reales):
     _, reconciliacion = artefactos_reales
+    # antes del .all(), que sobre una tabla vacia seria vacuamente cierto si ANCLAJES se quedara
+    # sin filas por accidente
+    assert len(reconciliacion) == len(ANCLAJES)
     assert reconciliacion["cuadra"].all(), reconciliacion.loc[~reconciliacion["cuadra"]].to_string()
 
 
