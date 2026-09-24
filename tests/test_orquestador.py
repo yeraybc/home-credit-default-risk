@@ -90,6 +90,47 @@ def test_sin_nada_persistido_tambien_deja_pasar(tmp_path, sin_carga_de_datos):
         construir_artefactos(destino_datos=tmp_path / "datos", destino_modelos=tmp_path / "modelos")
 
 
+# --- construir_artefactos() llama a _exigir_train(), sintético y sin CSV -------------------------
+
+
+def test_construir_artefactos_revienta_si_un_cliente_de_valid_se_cuela_en_train(
+    tmp_path, monkeypatch
+):
+    """Sustituye `ajustar_pipeline()` por uno que devuelve un `matriz_train` con un cliente de
+    valid dentro: si la llamada a `_exigir_train()` desapareciera de `construir_artefactos()`,
+    este test seguiría en verde porque nada más comprueba que `train` sea de verdad train."""
+    split = pd.DataFrame(
+        {"SK_ID_CURR": [1, 2, 3, 4], "split": ["train", "train", "valid", "valid"]}
+    )
+    ensamblada = pd.DataFrame(
+        {"SK_ID_CURR": [1, 2, 3, 4], "TARGET": [0, 1, 0, 1], "F": [0.1, 0.2, 0.3, 0.4]}
+    )
+
+    class _PipelineFalso:
+        def transform(self, matriz):
+            return pd.DataFrame(index=matriz.index)
+
+    # SK_ID_CURR 1 (train, correcto) y 3 (valid, colado): falta el 2 de train y sobra el 3
+    matriz_train_colada = pd.DataFrame(index=[0, 2])
+
+    monkeypatch.setattr(build_features, "preparar_application", lambda: ensamblada)
+    monkeypatch.setattr(build_features, "cargar_split", lambda: split)
+    monkeypatch.setattr(build_features, "load_table", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(
+        build_features, "refijar_cortes_auxiliares", lambda *a, **k: None
+    )
+    monkeypatch.setattr(build_features, "guardar_cortes", lambda *a, **k: None)
+    monkeypatch.setattr(build_features, "ensamblar_auxiliares", lambda *a, **k: ensamblada)
+    monkeypatch.setattr(
+        build_features, "ajustar_pipeline", lambda *a, **k: (_PipelineFalso(), matriz_train_colada)
+    )
+
+    with pytest.raises(ValueError, match="no es el de train"):
+        construir_artefactos(
+            destino_datos=tmp_path / "datos", destino_modelos=tmp_path / "modelos"
+        )
+
+
 # --- informe_reconciliacion ensambla ANCLAJES contra lo medido, sin construir un Pipeline ------
 
 
@@ -205,6 +246,21 @@ def test_el_registro_de_seleccion_reproduce_exactamente_la_matriz_final(artefact
         assert resuelto is not None, f"{origen} queda pero no resuelve en la matriz final"
         columnas_que_quedan.update(resuelto)
     assert columnas_que_quedan == set(X_train.columns)
+
+
+@sin_dato_real
+def test_el_registro_persistido_lleva_los_folds_de_la_banda(artefactos_reales):
+    """Sin este assert, `construir_artefactos()` podía persistir `seleccion.csv` sin pasarle la
+    estabilidad de `estabilidad_banda()` (mutación B2 de la auditoría del bloque 5) y ningún test
+    lo habría visto: el registro seguía teniendo 180 filas y reproduciendo la matriz igual."""
+    rutas, _ = artefactos_reales
+    registro = pd.read_csv(rutas["seleccion"], index_col=0)
+
+    en_banda = registro[registro["en_banda"]]
+    assert len(en_banda) > 0, "ninguna fila cayó en la banda: el guardián no puede comprobar nada"
+    assert en_banda["folds"].notna().all()
+    assert en_banda["folds"].between(0, 15).all()
+    assert registro.loc[~registro["en_banda"], "folds"].isna().all()
 
 
 # El script que un proceso nuevo correría para servir a un cliente: nada de lo que ya está en

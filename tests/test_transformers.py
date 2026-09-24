@@ -993,6 +993,14 @@ def matriz_seleccion():
     y_ohe = pd.Series((rng.random(n) < np.vectorize(tasa.get)(niveles)).astype(int))
     dummies = pd.get_dummies(pd.Series(niveles), prefix="ORIGEN").astype(int)
 
+    # una candidata con señal débil, entre min_iv / 2 y min_iv: ninguna otra del fixture cae ahí,
+    # y sin ella un umbral cortado a la mitad (min_iv / 2) sobrevive a la suite entera. Con su
+    # propio generador, para no depender de en qué punto de la secuencia de `rng` se inserte
+    rng_debil = np.random.default_rng(6)
+    x_debil = rng_debil.normal(size=n)
+    p_debil = 1 / (1 + np.exp(-(-2.6 + 0.12 * x_debil)))
+    y_debil = pd.Series((rng_debil.random(n) < p_debil).astype(int))
+
     # la presencia de una tabla, más riesgosa que tenerla (como bureau en el proyecto), y una
     # columna imputada a 0 para quien no la tiene: su marginal separa por la presencia y no por
     # su propio valor, que dentro de quien sí tiene tabla es puro ruido
@@ -1010,12 +1018,44 @@ def matriz_seleccion():
             **dummies,
             "HAS_TABLA": presencia,
             "CON_PRESENCIA": con_presencia,
+            "DEBIL": x_debil,
         }
-    ), y, y_ohe, y_presencia
+    ), y, y_ohe, y_presencia, y_debil
+
+
+def test_el_fixture_tiene_debil_dentro_de_la_banda(matriz_seleccion):
+    """Guardián: si el sintético se desplaza, `test_una_candidata_en_banda_llega_y_con_el_umbral...`
+    no distingue nada."""
+    X, _, _, _, y_debil = matriz_seleccion
+    minv = valor("min_iv")
+    assert minv / 2 <= calcular_iv(X["DEBIL"], y_debil) < minv
+
+
+def test_con_presencia_el_iv_del_selector_es_exactamente_el_de_dentro(matriz_seleccion):
+    """La máscara invertida (`== 0`) daba también un IV bajo, porque `CON_PRESENCIA` sale
+    constante fuera de la tabla: sin este assert, la mutación sobrevivía. Aquí se compara el `iv_`
+    del selector contra `calcular_iv()` medido a mano sobre la máscara correcta, así que invertirla
+    deja de coincidir (0,0071 dentro frente a 0,0 exacto fuera, medido)."""
+    X, _, _, y_presencia, _ = matriz_seleccion
+    dentro = (X["HAS_TABLA"] == 1).to_numpy()
+    esperado = calcular_iv(X.loc[dentro, "CON_PRESENCIA"], y_presencia[dentro])
+
+    s = SelectorIV(candidatas={"CON_PRESENCIA": "HAS_TABLA"}).fit(X, y_presencia)
+
+    assert s.iv_["CON_PRESENCIA"] == pytest.approx(esperado)
+
+
+def test_una_candidata_entre_min_iv_medios_y_min_iv_sale(matriz_seleccion):
+    """`DEBIL` cae entre `min_iv / 2` y `min_iv` (guardián arriba): con el umbral correcto sale
+    de la matriz. Un umbral cortado a la mitad la dejaría dentro sin que ningún otro test del
+    fixture lo notara, porque ninguna otra candidata cae en esa banda."""
+    X, _, _, _, y_debil = matriz_seleccion
+    s = SelectorIV(candidatas={"DEBIL": None}).fit(X, y_debil)
+    assert "DEBIL" not in s.quedan_
 
 
 def test_una_candidata_con_senal_se_queda_y_sin_ella_sale(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"SENAL": None, "RUIDO": None}).fit(X, y)
 
     assert s.iv_["SENAL"] >= valor("min_iv")
@@ -1026,7 +1066,7 @@ def test_una_candidata_con_senal_se_queda_y_sin_ella_sale(matriz_seleccion):
 
 
 def test_una_protegida_con_iv_bajo_se_queda_igual(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"PROTEGIDA": None}, protegidas=("PROTEGIDA",)).fit(X, y)
 
     assert s.iv_["PROTEGIDA"] < valor("min_iv"), "el fixture perdió la protegida sin señal"
@@ -1037,7 +1077,7 @@ def test_una_protegida_con_iv_bajo_se_queda_igual(matriz_seleccion):
 def test_una_columna_sin_decision_pasa_intacta(matriz_seleccion):
     """El filtro es por exclusión: lo no declarado en ninguna de las tres listas no desaparece,
     aunque no esté nombrado por ningún lado."""
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"RUIDO": None}).fit(X, y)
 
     assert "SIN_DECISION" not in s.iv_
@@ -1046,7 +1086,7 @@ def test_una_columna_sin_decision_pasa_intacta(matriz_seleccion):
 
 
 def test_el_grupo_ohe_se_lee_reconstruido_y_coincide_con_la_categorica_original(matriz_seleccion):
-    X, _, y_ohe, _ = matriz_seleccion
+    X, _, y_ohe, _, _ = matriz_seleccion
     niveles = X[["ORIGEN_a", "ORIGEN_b", "ORIGEN_c"]].idxmax(axis=1).str.replace("ORIGEN_", "")
     referencia = calcular_iv(niveles, y_ohe)
 
@@ -1060,7 +1100,7 @@ def test_con_presencia_el_iv_es_el_de_dentro_de_la_poblacion_y_no_el_marginal(ma
     """La lectura decidida en el 5.8: dentro de quien tiene la tabla, y no ponderada. El fixture
     da una columna sin señal propia una vez dentro, pero cuyo marginal está inflado por la
     diferencia de tasa entre quien tiene la tabla y quien no."""
-    X, _, _, y_presencia = matriz_seleccion
+    X, _, _, y_presencia, _ = matriz_seleccion
     marginal = calcular_iv(X["CON_PRESENCIA"], y_presencia)
 
     s = SelectorIV(candidatas={"CON_PRESENCIA": "HAS_TABLA"}).fit(X, y_presencia)
@@ -1072,25 +1112,25 @@ def test_con_presencia_el_iv_es_el_de_dentro_de_la_poblacion_y_no_el_marginal(ma
 
 
 def test_selector_sin_target_revienta(matriz_seleccion):
-    X, _, _, _ = matriz_seleccion
+    X, _, _, _, _ = matriz_seleccion
     with pytest.raises(ValueError, match="TARGET"):
         SelectorIV(candidatas={"SENAL": None}).fit(X)
 
 
 def test_un_descarte_tambien_protegido_revienta(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     with pytest.raises(ValueError, match="descartado y protegido"):
         SelectorIV(descartes={"RUIDO": "motivo"}, protegidas=("RUIDO",)).fit(X, y)
 
 
 def test_descartes_y_protegidas_disjuntas_no_revienta(matriz_seleccion):
     """La otra dirección del test de arriba: sin solape, el fit no protesta."""
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     SelectorIV(descartes={"RUIDO": "motivo"}, protegidas=("PROTEGIDA",)).fit(X, y)
 
 
 def test_un_origen_que_no_resuelve_en_el_frame_revienta_nombrando_todos(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     with pytest.raises(KeyError, match="NO_EXISTE"):
         SelectorIV(candidatas={"NO_EXISTE": None, "OTRA_AUSENTE": None}).fit(X, y)
     with pytest.raises(KeyError, match="OTRA_AUSENTE"):
@@ -1098,12 +1138,12 @@ def test_un_origen_que_no_resuelve_en_el_frame_revienta_nombrando_todos(matriz_s
 
 
 def test_un_origen_que_si_resuelve_no_revienta(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     SelectorIV(candidatas={"SENAL": None}).fit(X, y)
 
 
 def test_descartes_salen_siempre_sin_mirar_el_iv(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"SENAL": None}, descartes={"SENAL": "motivo de prueba"}).fit(X, y)
 
     assert "SENAL" not in s.quedan_
@@ -1111,7 +1151,7 @@ def test_descartes_salen_siempre_sin_mirar_el_iv(matriz_seleccion):
 
 
 def test_transform_revienta_si_falta_una_columna_que_sobrevivio_al_fit(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"RUIDO": None}).fit(X, y)
     with pytest.raises(ValueError, match="columnas ajustadas"):
         s.transform(X.drop(columns=["SENAL"]))
@@ -1120,20 +1160,20 @@ def test_transform_revienta_si_falta_una_columna_que_sobrevivio_al_fit(matriz_se
 def test_selector_transform_sin_fit_revienta(matriz_seleccion):
     from sklearn.exceptions import NotFittedError
 
-    X, _, _, _ = matriz_seleccion
+    X, _, _, _, _ = matriz_seleccion
     with pytest.raises(NotFittedError):
         SelectorIV().transform(X)
 
 
 def test_selector_get_feature_names_out_casa_con_la_salida(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"SENAL": None, "RUIDO": None}).fit(X, y)
 
     assert list(s.get_feature_names_out()) == list(s.transform(X).columns)
 
 
 def test_selector_es_idempotente(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(candidatas={"SENAL": None, "RUIDO": None}).fit(X, y)
     una_vez = s.transform(X)
 
@@ -1143,7 +1183,7 @@ def test_selector_es_idempotente(matriz_seleccion):
 def test_clone_mas_fit_reproduce_las_mismas_columnas(matriz_seleccion):
     from sklearn.base import clone
 
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     original = SelectorIV(
         candidatas={"SENAL": None, "RUIDO": None}, protegidas=("PROTEGIDA",)
     ).fit(X, y)
@@ -1163,7 +1203,7 @@ def _con_copia(matriz):
 
 
 def test_un_perdedor_sale_por_redundante_si_su_ganadora_queda(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     X = _con_copia(X)
     s = SelectorIV(
         candidatas={"SENAL": None, "COPIA": None}, redundantes={"COPIA": ("SENAL",)}
@@ -1178,7 +1218,7 @@ def test_un_perdedor_sale_por_redundante_si_su_ganadora_queda(matriz_seleccion):
 def test_un_perdedor_se_juzga_por_su_iv_si_su_ganadora_sale(matriz_seleccion):
     """La otra dirección: con la ganadora fuera por IV, el perdedor con señal se queda y el que no
     la tiene sale por el umbral, diciendo que su ganadora tampoco queda."""
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     X = _con_copia(X)
     s = SelectorIV(
         candidatas={"RUIDO": None, "COPIA": None, "PROTEGIDA": None},
@@ -1193,7 +1233,7 @@ def test_un_perdedor_se_juzga_por_su_iv_si_su_ganadora_sale(matriz_seleccion):
 
 
 def test_una_ganadora_sin_decision_propia_siempre_se_queda(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     X = _con_copia(X)
     s = SelectorIV(candidatas={"COPIA": None}, redundantes={"COPIA": ("SIN_DECISION",)}).fit(X, y)
 
@@ -1202,7 +1242,7 @@ def test_una_ganadora_sin_decision_propia_siempre_se_queda(matriz_seleccion):
 
 
 def test_una_ganadora_que_no_resuelve_en_el_frame_revienta(matriz_seleccion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     with pytest.raises(KeyError, match="NO_EXISTE"):
         SelectorIV(candidatas={"RUIDO": None}, redundantes={"RUIDO": ("NO_EXISTE",)}).fit(X, y)
 
@@ -1231,14 +1271,14 @@ def test_una_ganadora_que_no_resuelve_en_el_frame_revienta(matriz_seleccion):
     ],
 )
 def test_un_perdedor_mal_declarado_revienta_antes_de_medir(matriz_seleccion, configuracion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     with pytest.raises(ValueError, match="perdedor de redundantes"):
         SelectorIV(**configuracion).fit(X, y)
 
 
 def test_una_fuente_se_queda_mientras_lo_que_recupera_sigue(matriz_seleccion):
     """Con su motivo fijo en `descartes`: la protección de fuente gana mientras `SENAL` siga."""
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     s = SelectorIV(
         candidatas={"SENAL": None},
         descartes={"HAS_TABLA": "motivo fijo"},
@@ -1253,7 +1293,7 @@ def test_una_fuente_se_queda_mientras_lo_que_recupera_sigue(matriz_seleccion):
 def test_una_fuente_sin_nada_que_recuperar_vuelve_a_su_motivo(matriz_seleccion):
     """La otra dirección: con `RUIDO` fuera por IV, la fuente sale por su motivo fijo; sin motivo
     fijo ni candidatura pasa intacta; y una recuperada que no está en el frame cuenta como fuera."""
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     con_motivo = SelectorIV(
         candidatas={"RUIDO": None},
         descartes={"HAS_TABLA": "motivo fijo"},
@@ -1283,6 +1323,6 @@ def test_una_fuente_sin_nada_que_recuperar_vuelve_a_su_motivo(matriz_seleccion):
     ],
 )
 def test_una_fuente_mal_declarada_revienta_antes_de_medir(matriz_seleccion, configuracion):
-    X, y, _, _ = matriz_seleccion
+    X, y, _, _, _ = matriz_seleccion
     with pytest.raises(ValueError, match="fuente de presencia"):
         SelectorIV(**configuracion).fit(X, y)
