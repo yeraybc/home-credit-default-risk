@@ -1,9 +1,10 @@
-"""Tests del orquestador del bloque 5 (punto 5.9): `construir_artefactos()` y sus guardas de
-sobrescribir y de "solo train".
+"""Tests del orquestador del bloque 5 (punto 5.9): `construir_artefactos()`, sus guardas de
+sobrescribir y de "solo train", y el ensamblado de la reconciliación contra el EDA.
 
-Las guardas corren en CI, sobre datos sintéticos y con `preparar_application` sustituido: no
-hace falta ningún CSV para comprobar que una guarda revienta antes de leerlos. El resto
-necesita las tres tablas, `application_train.csv` y el split, y se salta sin ellos.
+Las guardas y `informe_reconciliacion()` corren en CI, sobre datos sintéticos o con
+`preparar_application`/`_medir_reconciliacion` sustituidos: no hace falta ningún CSV para
+comprobar que una guarda revienta antes de leerlos. El resto necesita las tres tablas,
+`application_train.csv` y el split, y se salta sin ellos.
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ import pytest
 from src.config import ruta
 from src.data.loader import TABLE_FILES
 from src.features import build_features
-from src.features.build_features import _exigir_train, construir_artefactos
+from src.features.build_features import (
+    ANCLAJES,
+    _exigir_train,
+    construir_artefactos,
+    informe_reconciliacion,
+)
 from src.features.params import PARAMS
 from src.features.split import NOMBRE_FICHERO
 from src.features.transformers import _resolver_origen
@@ -81,6 +87,39 @@ def test_sin_nada_persistido_tambien_deja_pasar(tmp_path, monkeypatch):
         construir_artefactos(destino_datos=tmp_path / "datos", destino_modelos=tmp_path / "modelos")
 
 
+# --- informe_reconciliacion ensambla ANCLAJES contra lo medido, sin construir un Pipeline ------
+
+
+def test_informe_reconciliacion_marca_cuadra_falso_cuando_una_medida_no_coincide(monkeypatch):
+    referencia = {medida: esperada for _, medida, _, esperada, _ in ANCLAJES}
+    medida_rota = ANCLAJES[0][1]
+    falseado = {**referencia, medida_rota: -1}
+    monkeypatch.setattr(build_features, "_medir_reconciliacion", lambda *a, **k: falseado)
+
+    informe = informe_reconciliacion(None, None, None, None).set_index("medida")
+
+    assert not informe.loc[medida_rota, "cuadra"]
+    assert informe["cuadra"].drop(medida_rota).all()
+
+
+def test_informe_reconciliacion_reproduce_todas_las_esperadas_cuando_coinciden(monkeypatch):
+    referencia = {medida: esperada for _, medida, _, esperada, _ in ANCLAJES}
+    monkeypatch.setattr(build_features, "_medir_reconciliacion", lambda *a, **k: referencia)
+
+    informe = informe_reconciliacion(None, None, None, None)
+
+    assert informe["cuadra"].all()
+
+
+def test_informe_reconciliacion_revienta_si_falta_una_medida(monkeypatch):
+    incompleto = {medida: esperada for _, medida, _, esperada, _ in ANCLAJES}
+    del incompleto[ANCLAJES[0][1]]
+    monkeypatch.setattr(build_features, "_medir_reconciliacion", lambda *a, **k: incompleto)
+
+    with pytest.raises(KeyError):
+        informe_reconciliacion(None, None, None, None)
+
+
 # --- la puerta contra el dato real, el orquestador entero ---------------------------------------
 
 sin_dato_real = pytest.mark.skipif(
@@ -104,17 +143,23 @@ def artefactos_reales(tmp_path_factory):
     """
     snapshot = dict(PARAMS)
     destino = tmp_path_factory.mktemp("artefactos_5_9")
-    rutas = construir_artefactos(
+    rutas, reconciliacion = construir_artefactos(
         refijar=True, destino_datos=destino / "datos", destino_modelos=destino / "modelos"
     )
-    yield rutas
+    yield rutas, reconciliacion
     PARAMS.clear()
     PARAMS.update(snapshot)
 
 
 @sin_dato_real
+def test_la_reconciliacion_cuadra_entera(artefactos_reales):
+    _, reconciliacion = artefactos_reales
+    assert reconciliacion["cuadra"].all(), reconciliacion.loc[~reconciliacion["cuadra"]].to_string()
+
+
+@sin_dato_real
 def test_las_matrices_salen_con_las_cifras_de_la_puerta(artefactos_reales):
-    rutas = artefactos_reales
+    rutas, _ = artefactos_reales
     X_train = pd.read_parquet(rutas["X_train"])
     X_valid = pd.read_parquet(rutas["X_valid"])
     y_train = pd.read_parquet(rutas["y_train"])
@@ -135,7 +180,7 @@ def test_las_matrices_salen_con_las_cifras_de_la_puerta(artefactos_reales):
 
 @sin_dato_real
 def test_los_cortes_refijados_coinciden_con_los_ya_persistidos(artefactos_reales):
-    rutas = artefactos_reales
+    rutas, _ = artefactos_reales
     nuevo = json.loads(rutas["cortes"].read_text())
     viejo = json.loads((ruta("processed_data") / "cortes.json").read_text())
     assert nuevo == viejo
@@ -143,7 +188,7 @@ def test_los_cortes_refijados_coinciden_con_los_ya_persistidos(artefactos_reales
 
 @sin_dato_real
 def test_el_registro_de_seleccion_reproduce_exactamente_la_matriz_final(artefactos_reales):
-    rutas = artefactos_reales
+    rutas, _ = artefactos_reales
     registro = pd.read_csv(rutas["seleccion"], index_col=0)
     X_train = pd.read_parquet(rutas["X_train"])
 
@@ -198,7 +243,7 @@ def test_el_pipeline_serializado_transforma_valid_igual_en_un_proceso_nuevo(
     import subprocess
     import sys
 
-    rutas = artefactos_reales
+    rutas, _ = artefactos_reales
     guion = tmp_path / "transformar_valid.py"
     guion.write_text(_SCRIPT_PROCESO_NUEVO)
     salida = tmp_path / "x_valid_proceso_nuevo.parquet"

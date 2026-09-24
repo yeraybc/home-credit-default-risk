@@ -955,6 +955,96 @@ FICHEROS_DATOS = {
 }
 NOMBRE_FICHERO_PIPELINE = "pipeline_features.joblib"
 
+# Las cifras de anclaje de cada bloque, que solo se comparan y nunca se consumen: la del EDA, sobre
+# los 307.511 de la tabla cruda, y la que el pipeline tiene que dar sobre los 307.492 de la
+# población de modelado, ya fijada en la puerta de su bloque. Entre las dos solo median los 19 que
+# quita la limpieza, salvo donde la nota dice otra cosa. Sin cifra del EDA, la medida es del
+# pipeline. La cobertura completa y parcial de bureau_balance no está: necesita el puente, y su
+# puerta (el 3.5) ya la fija sobre las dos poblaciones. Los positivos y el % de default tampoco:
+# son cifras medidas contra el TARGET (`test_ninguna_cifra_medida_contra_el_target_vive_en_src`
+# las tiene en su lista cerrada) y esa puerta ya está cubierta con datos reales en
+# `test_build_features.py` y `test_split.py`, así que no hace falta duplicarla aquí.
+ANCLAJES: tuple[tuple[str, str, float | None, float, str], ...] = (
+    ("application_train", "filas", 307_511, 307_492, ""),
+    ("application_train", "columnas de la tabla principal", 122, 101, "31 fuera y 10 nuevas"),
+    ("application_train", "centinela de DAYS_EMPLOYED", 55_374, 55_374, ""),
+    ("bureau", "con historial de buró", 263_491, 263_475, ""),
+    ("bureau", "sin historial de buró", 44_020, 44_017, ""),
+    ("bureau", "ratio de deuda no nulo", 262_408, 255_094, "limpieza y min_count=1 (2.2)"),
+    ("bureau_balance", "con histórico mensual", 92_231, 92_220, ""),
+    ("bureau_balance", "suma de BB_MONTHS_TOTAL", 14_701_612, 14_700_583, ""),
+    ("bureau_balance", "con mora alguna vez", 31_052, 31_048, ""),
+    ("bureau_balance", "con denominador suficiente", 83_971, 83_960, ""),
+    ("previous_application", "con previas", 291_057, 291_041, ""),
+    ("previous_application", "sin previas", 16_454, 16_451, ""),
+    ("previous_application", "historial recortado", 53_934, 53_933, ""),
+    ("previous_application", "liquidación anticipada", 47_682, 47_681, ""),
+    ("previous_application", "rechazo por scoring externo", 6_788, 6_787, ""),
+    ("ensamblado", "columnas de capa 1", None, 180, ""),
+    ("ensamblado", "columnas tras el ColumnTransformer", None, 218, ""),
+    ("ensamblado", "columnas finales", None, 164, ""),
+    ("ensamblado", "candidatas que llegan a min_iv", None, 8, "de 35"),
+    ("ensamblado", "orígenes en la banda de revisión", None, 10, ""),
+)
+
+
+def _medir_reconciliacion(
+    base: pd.DataFrame, ensamblada: pd.DataFrame, pipeline: Pipeline, registro: pd.DataFrame
+) -> dict[str, float | int]:
+    """Lo que de verdad mide `informe_reconciliacion()`, aparte para poder fijar en test que
+    ensambla el informe sin tener que montar un `Pipeline` de verdad."""
+    selector = pipeline.named_steps["seleccion"]
+    min_iv = valor("min_iv")
+    con_bureau = ensamblada[ensamblada["HAS_BUREAU_HISTORY"].eq(1)]
+    con_bb = ensamblada[ensamblada["HAS_BUREAU_BALANCE"].eq(1)]
+    con_prev = ensamblada[ensamblada["HAS_PREV_APPLICATION"].eq(1)]
+    return {
+        "filas": len(base),
+        "columnas de la tabla principal": base.shape[1],
+        "centinela de DAYS_EMPLOYED": int(base["FLAG_DAYS_EMPLOYED_ANOMALY"].sum()),
+        "con historial de buró": len(con_bureau),
+        "sin historial de buró": len(ensamblada) - len(con_bureau),
+        "ratio de deuda no nulo": int(con_bureau["BUREAU_DEBT_CREDIT_RATIO"].notna().sum()),
+        "con histórico mensual": len(con_bb),
+        "suma de BB_MONTHS_TOTAL": int(con_bb["BB_MONTHS_TOTAL"].sum()),
+        "con mora alguna vez": int(con_bb["BB_ANY_DPD_FLAG"].sum()),
+        "con denominador suficiente": int(con_bb["BB_PCT_MONTHS_DPD"].notna().sum()),
+        "con previas": len(con_prev),
+        "sin previas": len(ensamblada) - len(con_prev),
+        "historial recortado": int(con_prev["PREV_HISTORIAL_RECORTADO"].sum()),
+        "liquidación anticipada": int(con_prev["PREV_EARLY_SETTLED_FLAG"].eq(1).sum()),
+        "rechazo por scoring externo": int(con_prev["PREV_REFUSED_SCOFR_FLAG"].sum()),
+        "columnas de capa 1": ensamblada.shape[1],
+        "columnas tras el ColumnTransformer": len(
+            pipeline.named_steps["columnas"].get_feature_names_out()
+        ),
+        "columnas finales": len(selector.quedan_),
+        "candidatas que llegan a min_iv": sum(
+            selector.iv_[o] >= min_iv for o in selector.candidatas
+        ),
+        "orígenes en la banda de revisión": int(registro["en_banda"].sum()),
+    }
+
+
+def informe_reconciliacion(
+    base: pd.DataFrame, ensamblada: pd.DataFrame, pipeline: Pipeline, registro: pd.DataFrame
+) -> pd.DataFrame:
+    """Tabla a tabla, la cifra de anclaje del EDA junto a la del pipeline y si cuadra con la
+    esperada sobre la población de modelado.
+
+    Mide sobre lo que `construir_artefactos()` ya tiene en memoria, sin volver a ensamblar. Una
+    medida de `ANCLAJES` sin su cálculo en `_medir_reconciliacion()` revienta con `KeyError` en
+    vez de salir en blanco.
+    """
+    medido = _medir_reconciliacion(base, ensamblada, pipeline, registro)
+    # object y no float: que cada cifra se imprima tal cual, sin notación científica
+    columnas = ["tabla", "medida", "eda", "esperada", "nota"]
+    informe = pd.DataFrame(ANCLAJES, columns=columnas, dtype=object)
+    informe["pipeline"] = pd.Series([medido[m] for m in informe["medida"]], dtype=object)
+    informe["cuadra"] = informe["pipeline"].eq(informe["esperada"])
+    return informe[["tabla", "medida", "eda", "esperada", "pipeline", "cuadra", "nota"]]
+
+
 def _exigir_train(ids: pd.Series, split: pd.DataFrame) -> None:
     """Los clientes de `ids` son exactamente los de train del split. Es la guarda de
     `estabilidad_banda()` y `seleccion_final()`, que miden IV y no pueden ver valid."""
@@ -972,9 +1062,10 @@ def construir_artefactos(
     destino_datos: Path | None = None,
     destino_modelos: Path | None = None,
     sobrescribir: bool = False,
-) -> dict[str, Path]:
+) -> tuple[dict[str, Path], pd.DataFrame]:
     """De los CSV a lo persistido en una pasada: las matrices de train y valid, el registro de
-    selección, los cortes y el pipeline ajustado.
+    selección, los cortes y el pipeline ajustado. Devuelve `(rutas, reconciliacion)`, con la
+    reconciliación de `informe_reconciliacion()`.
 
     El split no se rehace nunca, se lee. Los cortes se refijan sobre train si se pide `refijar` o
     si no hay `cortes.json` en `destino_datos`, y si no se cargan de ahí: refijar una vez y cargar
@@ -1036,7 +1127,7 @@ def construir_artefactos(
     registro.to_csv(rutas["seleccion"])
     joblib.dump(pipeline, rutas["pipeline"])
     logger.info("artefactos del 5.9 escritos en %s y %s", dir_datos, dir_modelos)
-    return rutas
+    return rutas, informe_reconciliacion(base, ensamblada, pipeline, registro)
 
 
 def informe_base(
@@ -1125,5 +1216,3 @@ def informe_provisionales_application(df: pd.DataFrame) -> pd.DataFrame:
     tabla["pearson_r"] = np.nan
     tabla.loc["FLAG_CONT_MOBILE", "pearson_r"] = df["FLAG_CONT_MOBILE"].corr(df["TARGET"])
     return tabla
-
-
