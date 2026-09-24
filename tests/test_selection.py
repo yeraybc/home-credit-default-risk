@@ -649,6 +649,20 @@ def test_estabilidad_banda_sin_nada_en_la_banda_da_vacio(matriz_banda):
     assert estabilidad_banda(X, y_fuerte, selector) == {}
 
 
+def test_estabilidad_banda_no_cuenta_lo_que_el_umbral_no_decide(matriz_banda):
+    """Con el IV dentro de la banda, un descarte y una candidata protegida no se cuentan: su IV no
+    decide nada. La otra dirección la da `test_estabilidad_banda_solo_cuenta_lo_que_cae_dentro...`,
+    con la misma columna como candidata."""
+    X, y_banda, _ = matriz_banda
+    descartada = SelectorIV(candidatas={"FUERTE": None}, descartes={"EN_BANDA": "m"})
+    descartada.fit(X, y_banda)
+    protegida = SelectorIV(candidatas={"EN_BANDA": None}, protegidas=("EN_BANDA",)).fit(X, y_banda)
+
+    assert valor("banda_revision_iv_suelo") <= descartada.iv_["EN_BANDA"]
+    assert estabilidad_banda(X, y_banda, descartada) == {}
+    assert estabilidad_banda(X, y_banda, protegida) == {}
+
+
 def test_estabilidad_banda_no_muta_el_selector_original(matriz_banda):
     X, y_banda, _ = matriz_banda
     selector = SelectorIV(candidatas={"EN_BANDA": None, "FUERTE": None}).fit(X, y_banda)
@@ -664,12 +678,17 @@ def test_estabilidad_banda_no_muta_el_selector_original(matriz_banda):
 
 
 class _SelectorFalso:
-    """Lo que `seleccion_final()` le pide a `named_steps['seleccion']`: `iv_`, y para los
-    perdedores del 5.7 y las fuentes de presencia, `redundantes`, `fuentes` y la decisión que dejó
-    en `motivos_`."""
+    """Lo que `seleccion_final()` le pide a `named_steps['seleccion']`: `iv_`, lo que el umbral
+    decide (`candidatas` y `protegidas`, por defecto todo lo que lleva IV y nada protegido), y para
+    los perdedores del 5.7 y las fuentes de presencia, `redundantes`, `fuentes` y la decisión que
+    dejó en `motivos_`."""
 
-    def __init__(self, iv, redundantes=None, fuentes=None, motivos=None):
+    def __init__(
+        self, iv, redundantes=None, fuentes=None, motivos=None, candidatas=None, protegidas=()
+    ):
         self.iv_ = iv
+        self.candidatas = dict.fromkeys(iv) if candidatas is None else candidatas
+        self.protegidas = protegidas
         self.redundantes = redundantes
         self.fuentes = fuentes
         self.motivos_ = motivos or {}
@@ -763,6 +782,37 @@ def test_la_banda_se_marca_sin_estabilidad_pasada(registro_aislado):
     assert "en banda" in fila["motivo"]
     # las que no caen en la banda no la marcan
     assert not reg.loc["C_CANDIDATA_LLEGA", "en_banda"]
+
+
+def test_la_banda_no_marca_lo_que_el_umbral_no_decide(monkeypatch):
+    """Descarte, protegida y candidata protegida con el mismo IV dentro de la banda: solo la
+    candidata libre la marca."""
+    columnas = ("DESCARTE", "PROTEGIDA", "CANDIDATA_PROTEGIDA", "CANDIDATA")
+    monkeypatch.setattr(mod_selection.pipeline, "columnas_declaradas", lambda: columnas)
+    monkeypatch.setattr(mod_selection, "descartes_fijos", lambda: {"DESCARTE": "motivo"})
+    monkeypatch.setattr(
+        mod_selection,
+        "columnas_protegidas",
+        lambda: frozenset({"PROTEGIDA", "CANDIDATA_PROTEGIDA"}),
+    )
+    monkeypatch.setattr(mod_selection, "_nombres_por_tabla", lambda: {})
+    monkeypatch.setattr(mod_selection, "DECISIONES_REDUNDANCIA", {})
+    monkeypatch.setattr(mod_selection, "check_is_fitted", lambda _: None)
+    en_banda = (valor("banda_revision_iv_suelo") + valor("banda_revision_iv_techo")) / 2
+    selector = _SelectorFalso(
+        dict.fromkeys(columnas, en_banda),
+        candidatas=dict.fromkeys(("CANDIDATA_PROTEGIDA", "CANDIDATA")),
+        protegidas=("PROTEGIDA", "CANDIDATA_PROTEGIDA"),
+    )
+
+    reg = seleccion_final(SimpleNamespace(named_steps={"seleccion": selector}))
+
+    assert reg["en_banda"].to_dict() == {
+        "DESCARTE": False,
+        "PROTEGIDA": False,
+        "CANDIDATA_PROTEGIDA": False,
+        "CANDIDATA": True,
+    }
 
 
 def test_la_banda_lleva_los_folds_cuando_se_pasa_estabilidad(monkeypatch):

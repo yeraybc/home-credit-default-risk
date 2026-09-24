@@ -999,7 +999,7 @@ ANCLAJES: tuple[tuple[str, str, float | None, float, str], ...] = (
         9,
         "de 41; BUREAU_CLOSED_COUNT llega y sale por su par del 5.7",
     ),
-    ("ensamblado", "orígenes en la banda de revisión", None, 10, ""),
+    ("ensamblado", "candidatas en la banda de revisión", None, 6, ""),
 )
 
 
@@ -1037,7 +1037,7 @@ def _medir_reconciliacion(
         "candidatas que llegan a min_iv": sum(
             selector.iv_[o] >= min_iv for o in selector.candidatas
         ),
-        "orígenes en la banda de revisión": int(registro["en_banda"].sum()),
+        "candidatas en la banda de revisión": int(registro["en_banda"].sum()),
     }
 
 

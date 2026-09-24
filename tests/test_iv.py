@@ -951,20 +951,16 @@ PUERTA_5_8 = {
 
 COLUMNAS_MATRIZ_FINAL = 163
 
-# los 10 orígenes que caen en la banda de revisión (0,015 a 0,025) y en cuántos de los 15 folds
-# (tres semillas de cinco, deterministas) llega cada uno a min_iv. No son solo candidatas: cinco
-# son descartes fijos y protegidas, medidos en marginal, y la banda los mira igual porque no
-# distingue motivo
+# las 6 candidatas que caen en la banda de revisión (0,015 a 0,025) y en cuántos de los 15 folds
+# (tres semillas de cinco, deterministas) llega cada una a min_iv. Hasta la auditoría del bloque 5
+# eran 10 orígenes: la banda miraba también descartes y protegidas, con un IV marginal que no
+# decide nada (BUREAU_ACTIVE_CARD_COUNT salía con 2 de 15 y dentro de bureau vale 0,0314)
 PUERTA_5_8_BANDA = {
-    "BUILDING_INFO_COUNT": 14,
-    "BUREAU_ACTIVE_CARD_COUNT": 2,
     "BUREAU_MAX_OVERDUE_EVER": 1,
     "EMERGENCYSTATE_MODE": 15,
-    "HAS_BUILDING_INFO": 15,
     "HOUSETYPE_MODE": 15,
     "NAME_HOUSING_TYPE": 0,
     "PREV_COUNT_12M": 0,
-    "PREV_HISTORIAL_RECORTADO": 15,
     "PREV_RELACION_CORTA_ACTIVA": 0,
 }
 
@@ -1066,7 +1062,7 @@ def test_el_registro_de_seleccion_reproduce_exactamente_la_matriz_final(pipeline
 
 @sin_dato_real_ensamblado
 def test_estabilidad_banda_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensamblado):
-    """Los 10 orígenes en banda y sus folds, deterministas por las tres semillas fijas."""
+    """Las 6 candidatas en banda y sus folds, deterministas por las tres semillas fijas."""
     pipeline, _, X_post = pipeline_ajustado
     selector = pipeline.named_steps["seleccion"]
     y = train_ensamblado["TARGET"]

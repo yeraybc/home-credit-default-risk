@@ -911,21 +911,32 @@ SEMILLAS_ESTABILIDAD: tuple[int, ...] = (0, 1, 2)
 N_FOLDS_ESTABILIDAD = 5
 
 
+def _decide_el_iv(selector: SelectorIV) -> set[str]:
+    """Los orígenes que el umbral de IV decide: las candidatas que no van protegidas. Un descarte
+    o una protegida también llevan `iv_`, pero marginal y sin decisión detrás, así que caer en la
+    banda no dice nada de ellos (`BUREAU_ACTIVE_CARD_COUNT` salía con 0,0183 y 2 de 15 folds, y
+    dentro de `bureau` vale 0,0314)."""
+    return set(selector.candidatas or {}) - set(selector.protegidas)
+
+
 def estabilidad_banda(
     matriz: pd.DataFrame, objetivo: pd.Series, selector: SelectorIV
 ) -> dict[str, int]:
     """En cuántos de los 15 folds cada candidata dentro de la banda de revisión llega a `min_iv`.
 
     Informativo, como pide el 5.8: no mueve `quedan_` de `selector`, que sigue cortando en
-    `min_iv` sin mirar la banda. Reajusta el propio `SelectorIV` con `clone()` en cada fold, así
-    que la lectura es exactamente la que usaría producción y no una reimplementación aparte del
-    IV. `matriz` y `objetivo` son la matriz y el TARGET con los que se ajustó `selector` (o un
-    subconjunto de train, si se llama desde el CV de la Fase 4).
+    `min_iv` sin mirar la banda. Solo mira lo que el umbral decide (`_decide_el_iv()`). Reajusta
+    el propio `SelectorIV` con `clone()` en cada fold, sin reimplementar el IV aparte. Lo que no
+    se reajusta es lo de delante: `matriz` sale del pipeline ajustado sobre todo train, así que
+    la imputación y la codificación son las de ese ajuste y no las de cada fold, que sí lo serán
+    en el CV de la Fase 4. `matriz` y `objetivo` son la matriz y el TARGET con los que se ajustó
+    `selector` (o un subconjunto de train).
     """
     check_is_fitted(selector)
     suelo = valor("banda_revision_iv_suelo")
     techo = valor("banda_revision_iv_techo")
-    en_banda = [origen for origen, iv in selector.iv_.items() if suelo <= iv < techo]
+    decide = _decide_el_iv(selector)
+    en_banda = [o for o, iv in selector.iv_.items() if o in decide and suelo <= iv < techo]
     if not en_banda:
         return {}
 
@@ -964,6 +975,7 @@ def seleccion_final(
     descartes = descartes_fijos()
     redundantes = selector.redundantes or {}
     fuentes = selector.fuentes or {}
+    decide = _decide_el_iv(selector)
     estabilidad = estabilidad or {}
     suelo = valor("banda_revision_iv_suelo")
     techo = valor("banda_revision_iv_techo")
@@ -982,7 +994,7 @@ def seleccion_final(
     filas = []
     for nombre in pipeline.columnas_declaradas():
         iv = selector.iv_.get(nombre)
-        en_banda = iv is not None and suelo <= iv < techo
+        en_banda = nombre in decide and suelo <= iv < techo
         decision_receta, firmeza = receta_de.get(nombre, (None, None))
 
         if nombre in descartes:
