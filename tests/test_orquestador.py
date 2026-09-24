@@ -60,29 +60,32 @@ def _preparar_application_centinela():
     raise _LlegoACargarDatosError("construir_artefactos() llegó a cargar datos")
 
 
-def test_sobrescribir_false_revienta_antes_de_cargar_nada(tmp_path, monkeypatch):
+@pytest.fixture
+def sin_carga_de_datos(monkeypatch):
+    """`preparar_application()` revienta si se llega a invocar: marca que la guarda de
+    sobrescribir dejó pasar a cargar datos, sin pagar el coste de cargarlos de verdad."""
+    monkeypatch.setattr(build_features, "preparar_application", _preparar_application_centinela)
+
+
+def test_sobrescribir_false_revienta_antes_de_cargar_nada(tmp_path, sin_carga_de_datos):
     datos, modelos = tmp_path / "datos", tmp_path / "modelos"
     datos.mkdir()
     (datos / "X_train.parquet").write_bytes(b"lo que sea, no se lee")
-    monkeypatch.setattr(build_features, "preparar_application", _preparar_application_centinela)
 
     with pytest.raises(FileExistsError, match="X_train"):
         construir_artefactos(destino_datos=datos, destino_modelos=modelos)
 
 
-def test_sobrescribir_true_deja_pasar_a_cargar_los_datos(tmp_path, monkeypatch):
+def test_sobrescribir_true_deja_pasar_a_cargar_los_datos(tmp_path, sin_carga_de_datos):
     datos, modelos = tmp_path / "datos", tmp_path / "modelos"
     datos.mkdir()
     (datos / "X_train.parquet").write_bytes(b"lo que sea, no se lee")
-    monkeypatch.setattr(build_features, "preparar_application", _preparar_application_centinela)
 
     with pytest.raises(_LlegoACargarDatosError):
         construir_artefactos(destino_datos=datos, destino_modelos=modelos, sobrescribir=True)
 
 
-def test_sin_nada_persistido_tambien_deja_pasar(tmp_path, monkeypatch):
-    monkeypatch.setattr(build_features, "preparar_application", _preparar_application_centinela)
-
+def test_sin_nada_persistido_tambien_deja_pasar(tmp_path, sin_carga_de_datos):
     with pytest.raises(_LlegoACargarDatosError):
         construir_artefactos(destino_datos=tmp_path / "datos", destino_modelos=tmp_path / "modelos")
 
