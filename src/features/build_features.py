@@ -27,6 +27,7 @@ import json
 import logging
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu
@@ -61,7 +62,8 @@ from src.features.cleaning import (
 from src.features.eval import EvaluadorSenal
 from src.features.params import fijar_operativo, parametro, valor
 from src.features.pipeline import construir_pipeline
-from src.features.split import cargar_split, construir_split, solo_train
+from src.features.selection import estabilidad_banda, seleccion_final
+from src.features.split import cargar_split, construir_split, mascara, solo_train, solo_valid
 from src.features.transformers import Winsorizador, registrar_limites
 
 logger = logging.getLogger(__name__)
@@ -942,6 +944,101 @@ def ajustar_pipeline(
     return pipeline, matriz
 
 
+# X e y por separado y con SK_ID_CURR de índice: así el TARGET no se puede colar como feature en la
+# Fase 4, y cada par se alinea por índice al cargarlo
+FICHEROS_DATOS = {
+    "X_train": "X_train.parquet",
+    "y_train": "y_train.parquet",
+    "X_valid": "X_valid.parquet",
+    "y_valid": "y_valid.parquet",
+    "seleccion": "seleccion.csv",
+}
+NOMBRE_FICHERO_PIPELINE = "pipeline_features.joblib"
+
+def _exigir_train(ids: pd.Series, split: pd.DataFrame) -> None:
+    """Los clientes de `ids` son exactamente los de train del split. Es la guarda de
+    `estabilidad_banda()` y `seleccion_final()`, que miden IV y no pueden ver valid."""
+    esperados = set(split.loc[mascara(split, "train"), "SK_ID_CURR"])
+    recibidos = set(ids)
+    if recibidos != esperados:
+        raise ValueError(
+            f"el frame no es el de train: {len(recibidos - esperados):,} clientes de fuera de "
+            f"train y {len(esperados - recibidos):,} de train ausentes"
+        )
+
+
+def construir_artefactos(
+    refijar: bool = False,
+    destino_datos: Path | None = None,
+    destino_modelos: Path | None = None,
+    sobrescribir: bool = False,
+) -> dict[str, Path]:
+    """De los CSV a lo persistido en una pasada: las matrices de train y valid, el registro de
+    selección, los cortes y el pipeline ajustado.
+
+    El split no se rehace nunca, se lee. Los cortes se refijan sobre train si se pide `refijar` o
+    si no hay `cortes.json` en `destino_datos`, y si no se cargan de ahí: refijar una vez y cargar
+    antes de cada ensamblado. La matriz de train sale de `fit_transform` (`ajustar_pipeline()`
+    explica por qué) y la de valid, de `transform`.
+
+    Como `construir_split()`, no pisa nada sin `sobrescribir=True`, y lo comprueba antes de leer
+    ningún CSV.
+    """
+    dir_datos = destino_datos or ruta("processed_data")
+    dir_modelos = destino_modelos or ruta("models")
+    rutas = {clave: dir_datos / nombre for clave, nombre in FICHEROS_DATOS.items()}
+    rutas["pipeline"] = dir_modelos / NOMBRE_FICHERO_PIPELINE
+    rutas["cortes"] = dir_datos / NOMBRE_FICHERO_CORTES
+    refijando = refijar or not rutas["cortes"].exists()
+    a_escribir = [r for clave, r in rutas.items() if clave != "cortes" or refijando]
+    existentes = [str(r) for r in a_escribir if r.exists()]
+    if existentes and not sobrescribir:
+        raise FileExistsError(
+            f"ya existen {existentes}. Pisarlos deja inválido en silencio lo que se haya "
+            "construido sobre ellos; pasa sobrescribir=True si de verdad quieres reemplazarlos."
+        )
+
+    cfg = cargar_config()["dataset"]
+    id_col, target_col = cfg["id_col"], cfg["target_col"]
+    base = preparar_application()
+    split = cargar_split()
+    if set(base[id_col]) != set(split[id_col]):
+        raise ValueError("el split no cubre exactamente la población de modelado de la base")
+    bureau = load_table("bureau", reduce_memory=False)
+    bb = load_table("bureau_balance")
+    prev = load_table("previous_application", reduce_memory=False)
+
+    if refijando:
+        refijar_cortes_auxiliares(bureau, bb, prev, base, split, sobrescribir)
+        guardar_cortes(split, rutas["cortes"], sobrescribir)
+    else:
+        cargar_cortes(split, rutas["cortes"], sobrescribir)
+    ensamblada = ensamblar_auxiliares(base, bureau, bb, prev)
+
+    pipeline, matriz_train = ajustar_pipeline(ensamblada, split)
+    train = ensamblada.loc[matriz_train.index]
+    valid = solo_valid(ensamblada, split)
+    matriz_valid = pipeline.transform(matriz_de_features(valid))
+
+    _exigir_train(train[id_col], split)
+    matriz_post = pipeline[:-1].transform(matriz_de_features(train))
+    selector = pipeline.named_steps["seleccion"]
+    registro = seleccion_final(
+        pipeline, estabilidad_banda(matriz_post, train[target_col], selector)
+    )
+
+    dir_datos.mkdir(parents=True, exist_ok=True)
+    dir_modelos.mkdir(parents=True, exist_ok=True)
+    for parte, frame, matriz in (("train", train, matriz_train), ("valid", valid, matriz_valid)):
+        indice = pd.Index(frame[id_col])
+        matriz.set_axis(indice).to_parquet(rutas[f"X_{parte}"])
+        frame[[target_col]].set_axis(indice).to_parquet(rutas[f"y_{parte}"])
+    registro.to_csv(rutas["seleccion"])
+    joblib.dump(pipeline, rutas["pipeline"])
+    logger.info("artefactos del 5.9 escritos en %s y %s", dir_datos, dir_modelos)
+    return rutas
+
+
 def informe_base(
     app_cruda: pd.DataFrame, limpio: pd.DataFrame, con_features: pd.DataFrame | None = None
 ) -> pd.DataFrame:
@@ -1028,3 +1125,5 @@ def informe_provisionales_application(df: pd.DataFrame) -> pd.DataFrame:
     tabla["pearson_r"] = np.nan
     tabla.loc["FLAG_CONT_MOBILE", "pearson_r"] = df["FLAG_CONT_MOBILE"].corr(df["TARGET"])
     return tabla
+
+
