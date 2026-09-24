@@ -45,6 +45,7 @@ from src.features.selection import (
     estabilidad_banda,
     informe_redundancia,
     pares_redundantes,
+    protecciones_de_presencia,
     recomendar_codificacion,
     seleccion_final,
     tabla_de,
@@ -896,10 +897,11 @@ def pipeline_ajustado(train_ensamblado):
     return pipeline, matriz, X_post
 
 
-# El `iv_` de las 35 candidatas (31 de `CANDIDATAS_IV` menos las 7 que ya salían por descarte
-# fijo, más las 4 `DEGRADADAS_DE_RECETA`) y si llegan a `min_iv`, sobre los 245.993 de train.
-# `BUILDING_INFO_COUNT` no está: `CANDIDATAS_IV` trae 38 y `descartes_fijos()` se lleva 7, no
-# solo ella (el plan citaba 41 = 38 - 1 + 4, y la cifra medida es 35 = 38 - 7 + 4).
+# El `iv_` de las 40 candidatas y si llegan a `min_iv`, sobre los 245.993 de train: 38 de
+# `CANDIDATAS_IV` menos las 5 que salen por descarte fijo, más las 4 `DEGRADADAS_DE_RECETA` y los
+# 3 perdedores del 5.7 que no estaban en `CANDIDATAS_IV`. Eran 35 hasta la auditoría del bloque 5,
+# con los cinco perdedores fuera de forma fija aunque su ganadora no quedara (el plan citaba 41 =
+# 38 - 1 + 4 antes de medir).
 PUERTA_5_8 = {
     "BB_DPD_MONTHS_COUNT": (0.025284, True),
     "BB_MONTHS_REPORTED": (0.007113, False),
@@ -936,17 +938,25 @@ PUERTA_5_8 = {
     "REG_REGION_NOT_LIVE_REGION": (0.000327, False),
     "REG_REGION_NOT_WORK_REGION": (0.000786, False),
     "WALLSMATERIAL_MODE": (0.026845, True),
+    # los cinco perdedores del 5.7, que se juzgan por IV solo si su ganadora sale.
+    # BUREAU_CLOSED_COUNT llega, pero sale por su par, porque BB_MONTHS_TOTAL se queda
+    "BB_MANY_CREDITS_FLAG": (0.002171, False),
+    "BUREAU_CLOSED_COUNT": (0.027589, True),
+    "BUREAU_MAX_OVERDUE_EVER": (0.018347, False),
+    "BUREAU_ANNUITY_ACTIVE_RATIO": (0.009054, False),
+    "BUREAU_CREDITS_WITH_ANNUITY_COUNT": (0.006709, False),
 }
 
 COLUMNAS_MATRIZ_FINAL = 164
 
 # los 10 orígenes que caen en la banda de revisión (0,015 a 0,025) y en cuántos de los 15 folds
-# (tres semillas de cinco, deterministas) llega cada uno a min_iv. No son solo candidatas: cuatro
-# son descartes fijos y protegidas, y la banda los mira igual porque no distingue motivo
+# (tres semillas de cinco, deterministas) llega cada uno a min_iv. No son solo candidatas: cinco
+# son descartes fijos y protegidas, medidos en marginal, y la banda los mira igual porque no
+# distingue motivo
 PUERTA_5_8_BANDA = {
     "BUILDING_INFO_COUNT": 14,
     "BUREAU_ACTIVE_CARD_COUNT": 2,
-    "BUREAU_CLOSED_COUNT": 15,
+    "BUREAU_MAX_OVERDUE_EVER": 1,
     "EMERGENCYSTATE_MODE": 15,
     "HAS_BUILDING_INFO": 15,
     "HOUSETYPE_MODE": 15,
@@ -967,7 +977,7 @@ def _presencia_de(nombre):
 
 @sin_dato_real_ensamblado
 def test_el_selectoriv_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensamblado):
-    """Las 35 candidatas, recomputadas por un camino independiente
+    """Las 40 candidatas, recomputadas por un camino independiente
     (`_tramo_codigo`/`_iv_de_codigos`, más `pd.factorize` para los grupos que deja el
     `OneHotEncoder`) sobre `X_post`, la matriz que de verdad ve el `SelectorIV` al ajustarse.
     `selector.columnas_` da qué físicos resuelve cada origen, que es estructural y no numérico:
@@ -988,6 +998,8 @@ def test_el_selectoriv_reproduce_la_puerta_del_5_8(pipeline_ajustado, train_ensa
     selector = pipeline_ajustado[0].named_steps["seleccion"]
     y = train_ensamblado["TARGET"].to_numpy()
     alfa, n_bins_max = valor("suavizado_woe"), valor("n_bins_max")
+    # la puerta cubre exactamente las candidatas: recorrer solo la constante no vería una nueva
+    assert set(selector.candidatas) == set(PUERTA_5_8)
 
     for nombre, (esperado_iv, esperado_llega) in PUERTA_5_8.items():
         columnas = selector.columnas_[nombre]
@@ -1039,8 +1051,15 @@ def test_el_registro_de_seleccion_reproduce_exactamente_la_matriz_final(pipeline
         columnas_que_quedan.update(resuelto)
     assert columnas_que_quedan == set(matriz.columns)
 
-    protegidas = columnas_protegidas()
-    assert registro.loc[registro.index.isin(protegidas), "queda"].all()
+    # las protegidas por su papel se quedan siempre; una fuente de presencia, mientras algo de lo
+    # que recupera siga, y HAS_BUREAU_OVERDUE_HISTORY caduca porque BUREAU_MAX_OVERDUE_EVER sale
+    fuentes = protecciones_de_presencia()
+    fijas = columnas_protegidas() - set(fuentes)
+    assert registro.loc[registro.index.isin(fijas), "queda"].all()
+    for fuente, recuperadas in fuentes.items():
+        if registro.loc[list(recuperadas), "queda"].any():
+            assert registro.loc[fuente, "queda"], fuente
+    assert not registro.loc["HAS_BUREAU_OVERDUE_HISTORY", "queda"]
 
 
 @sin_dato_real_ensamblado

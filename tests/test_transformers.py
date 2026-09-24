@@ -1150,3 +1150,139 @@ def test_clone_mas_fit_reproduce_las_mismas_columnas(matriz_seleccion):
     copia = clone(original).fit(X, y)
 
     assert copia.quedan_ == original.quedan_
+
+
+# --- perdedores del 5.7 y fuentes de presencia, condicionados dentro del fit ---------------------
+
+
+def _con_copia(matriz):
+    """`COPIA` repite la señal de `SENAL` con un poco de ruido: tiene IV propio de sobra, así que
+    si sale es por su par y no por el umbral."""
+    rng = np.random.default_rng(23)
+    return matriz.assign(COPIA=matriz["SENAL"] + 0.1 * rng.normal(size=len(matriz)))
+
+
+def test_un_perdedor_sale_por_redundante_si_su_ganadora_queda(matriz_seleccion):
+    X, y, _, _ = matriz_seleccion
+    X = _con_copia(X)
+    s = SelectorIV(
+        candidatas={"SENAL": None, "COPIA": None}, redundantes={"COPIA": ("SENAL",)}
+    ).fit(X, y)
+
+    assert s.iv_["COPIA"] >= valor("min_iv"), "el fixture perdió la señal propia del perdedor"
+    assert "SENAL" in s.quedan_
+    assert "COPIA" not in s.quedan_
+    assert s.motivos_["COPIA"] == "redundante con SENAL en el 5.7"
+
+
+def test_un_perdedor_se_juzga_por_su_iv_si_su_ganadora_sale(matriz_seleccion):
+    """La otra dirección: con la ganadora fuera por IV, el perdedor con señal se queda y el que no
+    la tiene sale por el umbral, diciendo que su ganadora tampoco queda."""
+    X, y, _, _ = matriz_seleccion
+    X = _con_copia(X)
+    s = SelectorIV(
+        candidatas={"RUIDO": None, "COPIA": None, "PROTEGIDA": None},
+        redundantes={"COPIA": ("RUIDO",), "PROTEGIDA": ("RUIDO",)},
+    ).fit(X, y)
+
+    assert "RUIDO" not in s.quedan_
+    assert "COPIA" in s.quedan_
+    assert "COPIA" not in s.motivos_
+    assert "PROTEGIDA" not in s.quedan_
+    assert "tampoco queda" in s.motivos_["PROTEGIDA"]
+
+
+def test_una_ganadora_sin_decision_propia_siempre_se_queda(matriz_seleccion):
+    X, y, _, _ = matriz_seleccion
+    X = _con_copia(X)
+    s = SelectorIV(candidatas={"COPIA": None}, redundantes={"COPIA": ("SIN_DECISION",)}).fit(X, y)
+
+    assert "SIN_DECISION" in s.quedan_
+    assert "COPIA" not in s.quedan_
+
+
+def test_una_ganadora_que_no_resuelve_en_el_frame_revienta(matriz_seleccion):
+    X, y, _, _ = matriz_seleccion
+    with pytest.raises(KeyError, match="NO_EXISTE"):
+        SelectorIV(candidatas={"RUIDO": None}, redundantes={"RUIDO": ("NO_EXISTE",)}).fit(X, y)
+
+
+@pytest.mark.parametrize(
+    "configuracion",
+    [
+        # el perdedor no es candidata: no habría presencia con la que medirlo
+        {"candidatas": {"SENAL": None}, "redundantes": {"RUIDO": ("SENAL",)}},
+        # el perdedor está protegido o descartado
+        {
+            "candidatas": {"RUIDO": None},
+            "protegidas": ("RUIDO",),
+            "redundantes": {"RUIDO": ("SENAL",)},
+        },
+        {
+            "candidatas": {"RUIDO": None},
+            "descartes": {"RUIDO": "motivo"},
+            "redundantes": {"RUIDO": ("SENAL",)},
+        },
+        # cadena: el perdedor gana otro par
+        {
+            "candidatas": {"RUIDO": None, "SENAL": None},
+            "redundantes": {"RUIDO": ("SENAL",), "SENAL": ("SIN_DECISION",)},
+        },
+    ],
+)
+def test_un_perdedor_mal_declarado_revienta_antes_de_medir(matriz_seleccion, configuracion):
+    X, y, _, _ = matriz_seleccion
+    with pytest.raises(ValueError, match="perdedor de redundantes"):
+        SelectorIV(**configuracion).fit(X, y)
+
+
+def test_una_fuente_se_queda_mientras_lo_que_recupera_sigue(matriz_seleccion):
+    """Con su motivo fijo en `descartes`: la protección de fuente gana mientras `SENAL` siga."""
+    X, y, _, _ = matriz_seleccion
+    s = SelectorIV(
+        candidatas={"SENAL": None},
+        descartes={"HAS_TABLA": "motivo fijo"},
+        fuentes={"HAS_TABLA": ("SENAL",)},
+    ).fit(X, y)
+
+    assert "SENAL" in s.quedan_
+    assert "HAS_TABLA" in s.quedan_
+    assert "HAS_TABLA" not in s.motivos_
+
+
+def test_una_fuente_sin_nada_que_recuperar_vuelve_a_su_motivo(matriz_seleccion):
+    """La otra dirección: con `RUIDO` fuera por IV, la fuente sale por su motivo fijo; sin motivo
+    fijo ni candidatura pasa intacta; y una recuperada que no está en el frame cuenta como fuera."""
+    X, y, _, _ = matriz_seleccion
+    con_motivo = SelectorIV(
+        candidatas={"RUIDO": None},
+        descartes={"HAS_TABLA": "motivo fijo"},
+        fuentes={"HAS_TABLA": ("RUIDO",)},
+    ).fit(X, y)
+    sin_motivo = SelectorIV(candidatas={"RUIDO": None}, fuentes={"HAS_TABLA": ("RUIDO",)}).fit(X, y)
+    ausente = SelectorIV(
+        descartes={"HAS_TABLA": "motivo fijo"}, fuentes={"HAS_TABLA": ("NO_EXISTE",)}
+    ).fit(X, y)
+
+    assert "HAS_TABLA" not in con_motivo.quedan_
+    assert con_motivo.motivos_["HAS_TABLA"].startswith("motivo fijo; fuente de presencia")
+    assert "HAS_TABLA" in sin_motivo.quedan_
+    assert "HAS_TABLA" not in ausente.quedan_
+
+
+@pytest.mark.parametrize(
+    "configuracion",
+    [
+        {"protegidas": ("HAS_TABLA",), "fuentes": {"HAS_TABLA": ("SENAL",)}},
+        {
+            "candidatas": {"HAS_TABLA": None},
+            "redundantes": {"HAS_TABLA": ("SENAL",)},
+            "fuentes": {"HAS_TABLA": ("SENAL",)},
+        },
+        {"fuentes": {"HAS_TABLA": ("SENAL",), "RUIDO": ("HAS_TABLA",)}},
+    ],
+)
+def test_una_fuente_mal_declarada_revienta_antes_de_medir(matriz_seleccion, configuracion):
+    X, y, _, _ = matriz_seleccion
+    with pytest.raises(ValueError, match="fuente de presencia"):
+        SelectorIV(**configuracion).fit(X, y)

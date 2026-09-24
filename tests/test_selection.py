@@ -31,6 +31,7 @@ from src.features.selection import (
     fuentes_de_presencia,
     informe_redundancia,
     pares_redundantes,
+    protecciones_de_presencia,
     recomendar_codificacion,
     seleccion_final,
     tabla_de,
@@ -266,8 +267,9 @@ def test_los_pares_declarados_van_en_orden_alfabetico_y_dentro_de_bureau():
         assert tabla_de(a) == tabla_de(b) == "bureau"
 
 
-# Las 20 protegidas del 5.8, escritas a mano para que el test no las derive por el mismo camino
-# que el código: las diez del 5.7 y las diez fuentes de presencia que se suman en el 5.8.
+# Las 21 protegidas del 5.8, escritas a mano para que el test no las derive por el mismo camino
+# que el código: las diez del 5.7 y las once fuentes de presencia, que desde la auditoría del
+# bloque 5 van condicionadas a que algo de lo que recuperan siga en la matriz del fold.
 PROTEGIDAS_5_8 = {
     # control: true de las recetas
     "HAS_BUREAU_HISTORY",
@@ -292,6 +294,7 @@ PROTEGIDAS_5_8 = {
     "HAS_BUREAU_FINANCIAL_DETAIL",
     "BB_MONTHS_REPORTED",
     "BB_ANY_DPD_FLAG",
+    "HAS_BUREAU_OVERDUE_HISTORY",
 }
 
 
@@ -314,15 +317,84 @@ def test_las_funciones_de_presencia_leen_exactamente_estas_columnas():
 
 
 def test_una_fuente_sin_nada_vivo_que_recuperar_no_se_protege(monkeypatch):
-    """`HAS_BUREAU_OVERDUE_HISTORY` solo recupera `BUREAU_MAX_OVERDUE_EVER`, que pierde su par en
-    el 5.7: sale. La otra dirección: si esa columna dejara de salir, la fuente se protegería."""
+    """`HAS_BUREAU_OVERDUE_HISTORY` solo recupera `BUREAU_MAX_OVERDUE_EVER`, que ya no sale fija:
+    es un perdedor del 5.7 cuya ganadora puede no quedarse. La fuente se protege, condicionada a
+    esa columna. La otra dirección: con la columna entre los descartes fijos, la fuente deja de
+    protegerse y sale por su receta."""
+    assert protecciones_de_presencia()["HAS_BUREAU_OVERDUE_HISTORY"] == ("BUREAU_MAX_OVERDUE_EVER",)
+    assert "HAS_BUREAU_OVERDUE_HISTORY" not in descartes_fijos()
+
+    brutos = {**mod_selection._descartes_brutos(), "BUREAU_MAX_OVERDUE_EVER": "prueba"}
+    monkeypatch.setattr(mod_selection, "_descartes_brutos", lambda: brutos)
     assert "HAS_BUREAU_OVERDUE_HISTORY" not in columnas_protegidas()
     assert "HAS_BUREAU_OVERDUE_HISTORY" in descartes_fijos()
 
+
+# Las once fuentes protegidas solo por serlo, a mano: el `SelectorIV` retira su protección en el
+# fold donde todo lo que recuperan sale. El resto de protegidas lo está por su papel, sin condición.
+FUENTES_CONDICIONADAS = {
+    "FLAG_DAYS_EMPLOYED_ANOMALY",
+    "FLAG_EXT_SOURCE_1_NULL",
+    "FLAG_EXT_SOURCE_3_NULL",
+    "FLAG_OWN_CAR",
+    "HAS_SOCIAL_INFO",
+    "HAS_BUREAU_INFO",
+    "HAS_BUILDING_INFO",
+    "HAS_BUREAU_FINANCIAL_DETAIL",
+    "HAS_BUREAU_OVERDUE_HISTORY",
+    "BB_MONTHS_REPORTED",
+    "BB_ANY_DPD_FLAG",
+}
+
+
+def test_las_fuentes_condicionadas_son_las_protegidas_solo_por_presencia():
+    assert set(protecciones_de_presencia()) == FUENTES_CONDICIONADAS
+    assert FUENTES_CONDICIONADAS <= columnas_protegidas()
+
+
+def test_configurar_selector_pasa_las_fuentes_condicionadas_fuera_de_las_protegidas():
+    """Una fuente condicionada no puede ir entre las protegidas del selector, o nunca caducaría. Si
+    tiene motivo fijo, lo lleva en `descartes` para cuando caduque."""
+    selector = mod_selection.configurar_selector()
+    assert selector.fuentes == protecciones_de_presencia()
+    assert not set(selector.fuentes) & set(selector.protegidas)
     brutos = mod_selection._descartes_brutos()
-    del brutos["BUREAU_MAX_OVERDUE_EVER"]
-    monkeypatch.setattr(mod_selection, "_descartes_brutos", lambda: brutos)
-    assert "HAS_BUREAU_OVERDUE_HISTORY" in columnas_protegidas()
+    assert selector.descartes["HAS_BUREAU_OVERDUE_HISTORY"] == brutos["HAS_BUREAU_OVERDUE_HISTORY"]
+    assert selector.descartes["BB_ANY_DPD_FLAG"] == brutos["BB_ANY_DPD_FLAG"]
+
+
+# Los cinco que pierden su par en el 5.7 sin otro motivo fijo de salida, con su ganadora, a mano.
+# `BUREAU_HAS_ANY_OVERDUE`, `BUREAU_OVERDUE_UNION` y `BUREAU_DAYS_CREDIT_UPDATE_FLAG` también
+# pierden su par, pero ya salen por su `degradada` del 5.6 y no esperan a la ganadora.
+PERDEDORES_5_7 = {
+    "BB_MANY_CREDITS_FLAG": ("BUREAU_COUNT_COLA",),
+    "BUREAU_CLOSED_COUNT": ("BB_MONTHS_TOTAL",),
+    "BUREAU_MAX_OVERDUE_EVER": ("BB_OVERDUE_UNION",),
+    "BUREAU_ANNUITY_ACTIVE_RATIO": ("HAS_BUREAU_BALANCE",),
+    "BUREAU_CREDITS_WITH_ANNUITY_COUNT": ("HAS_BUREAU_BALANCE",),
+}
+
+
+def test_los_perdedores_del_5_7_son_los_que_no_tienen_otro_motivo_fijo():
+    assert mod_selection.perdedores_de_redundancia() == PERDEDORES_5_7
+
+
+def test_ningun_perdedor_del_5_7_sale_fijo_solo_por_su_par():
+    """La regla del 5.7 supone que la ganadora se queda: un perdedor sin otro motivo no puede salir
+    fijo, porque el 5.6 o el IV pueden sacar también a la ganadora."""
+    descartes = descartes_fijos()
+    for perdedor in PERDEDORES_5_7:
+        assert perdedor not in descartes, perdedor
+    for perdedor in ("BUREAU_HAS_ANY_OVERDUE", "BUREAU_OVERDUE_UNION"):
+        assert "degradada en el 5.6" in descartes[perdedor], perdedor
+        assert "redundante con" in descartes[perdedor], perdedor
+
+
+def test_configurar_selector_juzga_a_los_perdedores_como_candidatas_con_presencia():
+    selector = mod_selection.configurar_selector()
+    assert selector.redundantes == PERDEDORES_5_7
+    for perdedor in PERDEDORES_5_7:
+        assert selector.candidatas[perdedor] is not None, perdedor
 
 
 def test_una_fuente_se_desprotege_si_todo_lo_que_recupera_sale(monkeypatch):
@@ -583,10 +655,15 @@ def test_estabilidad_banda_no_muta_el_selector_original(matriz_banda):
 
 
 class _SelectorFalso:
-    """Basta con `iv_`: `seleccion_final()` no le pide nada más a `named_steps['seleccion']`."""
+    """Lo que `seleccion_final()` le pide a `named_steps['seleccion']`: `iv_`, y para los
+    perdedores del 5.7 y las fuentes de presencia, `redundantes`, `fuentes` y la decisión que dejó
+    en `motivos_`."""
 
-    def __init__(self, iv):
+    def __init__(self, iv, redundantes=None, fuentes=None, motivos=None):
         self.iv_ = iv
+        self.redundantes = redundantes
+        self.fuentes = fuentes
+        self.motivos_ = motivos or {}
 
 
 def _pipeline_falso(iv):
@@ -695,6 +772,43 @@ def test_la_banda_lleva_los_folds_cuando_se_pasa_estabilidad(monkeypatch):
     assert "9 de 15" in reg.loc["F_EN_BANDA", "motivo"]
 
 
+def test_el_registro_lee_del_selector_la_decision_de_perdedores_y_fuentes(monkeypatch):
+    """Perdedores del 5.7 y fuentes condicionadas: su `queda` no sale del IV sino de lo que decidió
+    el selector en su `fit`. Las fuentes cuentan como protegidas en `columnas_protegidas()`, así que
+    la que caduca prueba además que su rama va antes que la de protegida."""
+    columnas = ("P_SALE", "P_QUEDA", "F_SALE", "F_QUEDA")
+    monkeypatch.setattr(mod_selection.pipeline, "columnas_declaradas", lambda: columnas)
+    monkeypatch.setattr(mod_selection, "descartes_fijos", lambda: {})
+    monkeypatch.setattr(
+        mod_selection, "columnas_protegidas", lambda: frozenset({"F_SALE", "F_QUEDA"})
+    )
+    monkeypatch.setattr(mod_selection, "_nombres_por_tabla", lambda: {})
+    monkeypatch.setattr(mod_selection, "DECISIONES_REDUNDANCIA", {})
+    monkeypatch.setattr(mod_selection, "check_is_fitted", lambda _: None)
+    iv = dict.fromkeys(columnas, 0.001)
+    iv["P_QUEDA"] = valor("min_iv") + 0.01
+    selector = _SelectorFalso(
+        iv,
+        redundantes={"P_SALE": ("G",), "P_QUEDA": ("G",)},
+        fuentes={"F_SALE": ("X",), "F_QUEDA": ("Y",)},
+        motivos={
+            "P_SALE": "redundante con G en el 5.7",
+            "F_SALE": "motivo fijo; fuente de presencia sin nada que recuperar",
+        },
+    )
+
+    reg = seleccion_final(SimpleNamespace(named_steps={"seleccion": selector}))
+
+    assert not reg.loc["P_SALE", "queda"]
+    assert reg.loc["P_SALE", "motivo"] == "redundante con G en el 5.7"
+    assert reg.loc["P_QUEDA", "queda"]
+    assert "no queda" in reg.loc["P_QUEDA", "motivo"]
+    assert not reg.loc["F_SALE", "queda"]
+    assert "sin nada que recuperar" in reg.loc["F_SALE", "motivo"]
+    assert reg.loc["F_QUEDA", "queda"]
+    assert "fuente de presencia de Y" in reg.loc["F_QUEDA", "motivo"]
+
+
 def test_la_redundancia_aparece_solo_en_las_columnas_de_algun_par(registro_aislado):
     _, reg = registro_aislado
     assert reg.loc["C_CANDIDATA_LLEGA", "redundancia"] is not None
@@ -709,7 +823,12 @@ def test_configurar_selector_no_declara_nada_fuera_del_contrato_de_capa_1():
     un nombre suelto que el `SelectorIV` resolvería por casualidad como grupo OHE."""
     selector = mod_selection.configurar_selector()
     declaradas = set(columnas_declaradas())
-    todos = set(selector.candidatas) | set(selector.descartes) | set(selector.protegidas)
+    todos = (
+        set(selector.candidatas)
+        | set(selector.descartes)
+        | set(selector.protegidas)
+        | set(selector.fuentes)
+    )
     assert todos <= declaradas
 
 

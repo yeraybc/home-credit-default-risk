@@ -423,20 +423,41 @@ def columnas_protegidas() -> frozenset[str]:
 
     Desde el 5.8, además, toda fuente de presencia (`fuentes_de_presencia()`) mientras le quede
     alguna columna recuperada fuera de los descartes: sin ella, la mediana deja de distinguir
-    "vale la mediana" de "no se sabe". Es lo que reabrió dos pares del 5.7.
+    "vale la mediana" de "no se sabe". Es lo que reabrió dos pares del 5.7. Esa protección es
+    condicional (`protecciones_de_presencia()`): aquí cuenta como protegida, que es lo que mira el
+    empate del 5.7, y el `SelectorIV` la retira en el fold donde todo lo que recupera sale.
     """
+    return frozenset(_protegidas_fijas() | set(protecciones_de_presencia()))
+
+
+def _protegidas_fijas() -> set[str]:
+    """Las protegidas por su papel, sin condición: todas las de `columnas_protegidas()` menos las
+    que solo lo son por ser fuente de presencia."""
     recetas = [cargar_receta(tabla)["features"] for tabla in AUXILIARES]
     controles = {f["nombre"] for receta in recetas for f in receta if f.get("control")}
-    brutos = set(_descartes_brutos())
-    de_presencia = {f for f, recuperadas in fuentes_de_presencia().items() if recuperadas - brutos}
-    return frozenset(
+    return (
         controles
         | set(pipeline.PRESENCIA_AUX)
         | set(pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA)
         | {"PREV_ACTIVIDAD_12M_COLA"}
         | set(BANDERAS_RARAS)
-        | de_presencia
     )
+
+
+def protecciones_de_presencia() -> dict[str, tuple[str, ...]]:
+    """Cada fuente de presencia protegida solo por serlo, con lo que recupera fuera de los
+    descartes fijos. Lo recuperado puede ser una candidata o un perdedor del 5.7, que salen o no
+    según el fold, así que la protección la resuelve el `SelectorIV` en su `fit`: la fuente se
+    queda mientras alguna de estas columnas siga en la matriz. `HAS_BUREAU_OVERDUE_HISTORY` solo
+    recupera `BUREAU_MAX_OVERDUE_EVER`, y protegerla sin condición la dejaba en la matriz sin nada
+    que recuperar en cuanto esa columna salía por IV."""
+    brutos = set(_descartes_brutos())
+    fijas = _protegidas_fijas()
+    return {
+        fuente: tuple(sorted(recuperadas - brutos))
+        for fuente, recuperadas in fuentes_de_presencia().items()
+        if recuperadas - brutos and fuente not in fijas
+    }
 
 
 def _descartadas() -> set[str]:
@@ -748,13 +769,15 @@ DEGRADADAS_DE_RECETA: tuple[str, ...] = (
 
 
 def configurar_selector() -> SelectorIV:
-    """El `SelectorIV` que `construir_pipeline()` monta al final, con las cuatro listas de origen
+    """El `SelectorIV` que `construir_pipeline()` monta al final, con sus listas de origen
     del 5.8.
 
-    Las candidatas son `CANDIDATAS_IV` menos las 7 que `descartes_fijos()` ya saca sin mirar el
-    IV (`BUILDING_INFO_COUNT` del 5.6, los tres efectos nulos del 3.10, dos degradadas del 5.6
-    que también eran candidatas de receta y `BUREAU_ANNUITY_ACTIVE_RATIO` del 5.7), más las
-    cuatro `DEGRADADAS_DE_RECETA` con la presencia de su tabla: 38 - 7 + 4 = 35. La presencia de
+    Las candidatas son `CANDIDATAS_IV` menos las 5 que `descartes_fijos()` ya saca sin mirar el
+    IV (`BUILDING_INFO_COUNT` y `BB_CREDITS_WITH_DPD_COUNT` del 5.6 y los tres efectos nulos del
+    3.10), más las cuatro `DEGRADADAS_DE_RECETA` con la presencia de su tabla y los tres
+    perdedores del 5.7 que no estaban en `CANDIDATAS_IV` (los otros dos, `BB_MANY_CREDITS_FLAG` y
+    `BUREAU_ANNUITY_ACTIVE_RATIO`, ya lo estaban): 38 - 5 + 4 + 3 = 40. Hasta la auditoría del
+    bloque 5 eran 35, con los perdedores fuera de forma fija. La presencia de
     `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
     mide dentro de quien tiene la tabla (`X[presencia] == 1`) y no pondera por cobertura, que es
     el cambio de criterio decidido en el 5.8 (antes lo hacía `iv_condicionado()`, y en
@@ -769,11 +792,22 @@ def configurar_selector() -> SelectorIV:
     nombres = _nombres_por_tabla()
     for nombre in DEGRADADAS_DE_RECETA:
         candidatas[nombre] = PRESENCIA_DE_TABLA[tabla_de(nombre, nombres)]
+    # los perdedores del 5.7 se miden como candidatas, con la presencia de `CANDIDATAS_IV` si la
+    # declaran y si no la de su tabla, por si su ganadora no queda
+    redundantes = perdedores_de_redundancia()
+    for nombre in redundantes:
+        candidatas.setdefault(nombre, PRESENCIA_DE_TABLA.get(tabla_de(nombre, nombres)))
+    # una fuente de presencia que caduca en el fold vuelve a su motivo fijo, si lo tiene
+    fuentes = protecciones_de_presencia()
+    brutos = _descartes_brutos()
+    descartes.update({f: brutos[f] for f in fuentes if f in brutos})
     return SelectorIV(
         candidatas=candidatas,
         descartes=descartes,
-        protegidas=columnas_protegidas(),
+        protegidas=columnas_protegidas() - set(fuentes),
         categoricas=(pipeline.COL_TRAYECTORIA,),
+        redundantes=redundantes,
+        fuentes=fuentes,
     )
 
 
@@ -811,8 +845,11 @@ def fuentes_de_presencia() -> dict[str, set[str]]:
 
 def _descartes_brutos() -> dict[str, str]:
     """Lo que sale por una decisión ya congelada, antes de mirar las protegidas: los `descartar`
-    provisionales de receta que llegan a la matriz, los `descartar` y `degradada` del 5.6 que son
-    columna y lo que pierde su par en el 5.7. Cada columna con su motivo, o sus motivos."""
+    provisionales de receta que llegan a la matriz y los `descartar` y `degradada` del 5.6 que son
+    columna. Cada columna con su motivo, o sus motivos.
+
+    Perder el par en el 5.7 solo se suma como motivo a quien ya sale por otro: sin ninguno, el
+    perdedor no sale fijo, porque su ganadora puede no quedarse (`perdedores_de_redundancia()`)."""
     declaradas = set(pipeline.columnas_declaradas())
     motivos: dict[str, list[str]] = {}
     for tabla in AUXILIARES:
@@ -826,11 +863,28 @@ def _descartes_brutos() -> dict[str, str]:
         if d.decision in ("descartar", "degradada") and columna in declaradas:
             motivos.setdefault(columna, []).append(f"{d.decision} en el 5.6 ({d.motivo})")
     for (a, b), d in DECISIONES_REDUNDANCIA.items():
-        for columna in {a, b} - set(d.queda):
-            motivos.setdefault(columna, []).append(
-                f"redundante con {' y '.join(d.queda)} en el 5.7"
-            )
+        for columna in ({a, b} - set(d.queda)) & set(motivos):
+            motivos[columna].append(f"redundante con {' y '.join(d.queda)} en el 5.7")
     return {columna: "; ".join(textos) for columna, textos in motivos.items()}
+
+
+def perdedores_de_redundancia() -> dict[str, tuple[str, ...]]:
+    """Lo que pierde su par en el 5.7 sin otro motivo fijo de salida, con las ganadoras de sus
+    pares. El `SelectorIV` lo saca solo si alguna ganadora sigue en la matriz del fold; si no queda
+    ninguna, lo juzga por su IV como una candidata más.
+
+    La regla del 5.7 ("queda la de más IV") supone que la ganadora se queda, y el 5.6 o el propio
+    IV pueden sacarla: `BUREAU_MAX_OVERDUE_EVER` salía por `BB_OVERDUE_UNION`, `degradada` en el
+    5.6, y la matriz se quedaba sin la mora histórica del buró para quien no tiene histórico
+    mensual. Las protegidas no entran, igual que en `descartes_fijos()`.
+    """
+    fijos = _descartes_brutos()
+    protegidas = columnas_protegidas()
+    perdedores: dict[str, tuple[str, ...]] = {}
+    for (a, b), d in DECISIONES_REDUNDANCIA.items():
+        for columna in {a, b} - set(d.queda) - set(fijos) - protegidas:
+            perdedores[columna] = perdedores.get(columna, ()) + d.queda
+    return perdedores
 
 
 def descartes_fijos() -> dict[str, str]:
@@ -901,6 +955,8 @@ def seleccion_final(
     nombres = _nombres_por_tabla()
     protegidas = columnas_protegidas()
     descartes = descartes_fijos()
+    redundantes = selector.redundantes or {}
+    fuentes = selector.fuentes or {}
     estabilidad = estabilidad or {}
     suelo = valor("banda_revision_iv_suelo")
     techo = valor("banda_revision_iv_techo")
@@ -924,8 +980,23 @@ def seleccion_final(
 
         if nombre in descartes:
             queda, motivo = False, descartes[nombre]
+        elif nombre in fuentes:
+            queda = nombre not in selector.motivos_
+            motivo = selector.motivos_.get(
+                nombre,
+                f"fuente de presencia de {' y '.join(fuentes[nombre])}, protegida mientras "
+                "alguna siga en la matriz",
+            )
         elif nombre in protegidas:
             queda, motivo = True, "protegida, no pasa por el umbral de IV"
+        elif nombre in redundantes:
+            # depende de si su ganadora siguió en la matriz: lo decidió el selector en su `fit`
+            queda = nombre not in selector.motivos_
+            motivo = selector.motivos_.get(
+                nombre,
+                f"IV {iv:.4f} llega a min_iv ({min_iv:.4f}); su ganadora del 5.7 "
+                f"({' y '.join(redundantes[nombre])}) no queda",
+            )
         elif iv is not None:
             queda = iv >= min_iv
             motivo = f"IV {iv:.4f} {'llega' if queda else 'no llega'} a min_iv ({min_iv:.4f})"
