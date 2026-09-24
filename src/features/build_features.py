@@ -22,9 +22,11 @@ mueven; lo que baja es el denominador, y la tasa pasa de 8,0729% a 8,0734%.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
+import sys
 from pathlib import Path
 
 import joblib
@@ -64,7 +66,7 @@ from src.features.params import fijar_operativo, parametro, valor
 from src.features.pipeline import construir_pipeline
 from src.features.selection import estabilidad_banda, seleccion_final
 from src.features.split import cargar_split, construir_split, mascara, solo_train, solo_valid
-from src.features.transformers import Winsorizador, registrar_limites
+from src.features.transformers import Winsorizador, informe_winsorizacion, registrar_limites
 
 logger = logging.getLogger(__name__)
 
@@ -1216,3 +1218,20 @@ def informe_provisionales_application(df: pd.DataFrame) -> pd.DataFrame:
     tabla["pearson_r"] = np.nan
     tabla.loc["FLAG_CONT_MOBILE", "pearson_r"] = df["FLAG_CONT_MOBILE"].corr(df["TARGET"])
     return tabla
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Construye las matrices, el registro de selección, los cortes y el pipeline."
+    )
+    parser.add_argument("--refijar", action="store_true", help="refija los cortes sobre train")
+    parser.add_argument("--sobrescribir", action="store_true", help="pisa lo ya persistido")
+    argumentos = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    rutas, reconciliacion = construir_artefactos(
+        argumentos.refijar, sobrescribir=argumentos.sobrescribir
+    )
+    print(reconciliacion.to_string(index=False))
+    winsor = joblib.load(rutas["pipeline"]).named_steps["winsor"]
+    print(informe_winsorizacion(winsor).to_string(index=False))
+    sys.exit(0 if reconciliacion["cuadra"].all() else 1)
