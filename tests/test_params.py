@@ -16,6 +16,7 @@ from src.features.params import (
     PROCEDENCIAS,
     REAJUSTABLES,
     Parametro,
+    alfa_bonferroni,
     con_contraste_pendiente,
     cortes_de,
     features_con_corte,
@@ -65,10 +66,7 @@ def test_usar_un_parametro_sin_fijar_falla_en_vez_de_devolver_none(nombre):
 
 def test_los_pendientes_sin_referencia_son_los_declarados():
     """Deuda declarada, no olvidos. Si aparece uno nuevo, que se note aquí."""
-    assert set(sin_fijar()) == {
-        "bureau_count_cola",
-        "umbral_continuas_rb",
-    }
+    assert set(sin_fijar()) == {"bureau_count_cola"}
 
 
 def test_un_parametro_fijado_devuelve_su_valor():
@@ -182,6 +180,12 @@ CIFRAS_MEDIDAS_CONTRA_EL_TARGET = {
     0.0227, 0.0569,                       # r_rb de los excluidos con 2: calle y sobreconcesion
     1.63, 3.67,                           # delta de la unica rechazada, en la cruda y en train
     0.065, 0.083,                         # p de los excluidos con 2 en el rechazo y la finalidad
+    # el hueco de umbral_continuas_rb que el 5.4 cita en params.py
+    0.0121, 0.0216,                       # los dos extremos de su hueco (nunique y ratio urgente)
+    # el comentario de COLUMNAS_PROVISIONALES en cleaning.py, que el 5.5 reproduce sobre la cruda
+    0.0004,                               # correlacion de FLAG_CONT_MOBILE con TARGET
+    0.94, 3.86, 1.76,                     # sus tres deltas: DEF_30==1, DEF_30>=3 y DEF_30|DEF_60==0
+    0.016, 0.13, 0.20, 4.4e-10,           # sus p: DEF_30==1, ==2, >=3 y DEF_30|DEF_60==0
 }  # fmt: skip
 # Los recorridos en puntos porcentuales de esos mismos agrupamientos (los 2,2 de NAME_TYPE_SUITE,
 # los 4,24 y 1,80 de NAME_FAMILY_STATUS, los 3,00 del hueco) se quedan fuera a propósito, y por
@@ -295,6 +299,18 @@ def test_los_umbrales_metodologicos_coinciden_con_las_recetas_del_eda():
     assert valor("umbral_flags_pp") == 2.0
 
 
+def test_los_pendientes_3_y_4_quedan_declarados_antes_de_medir_el_iv():
+    """El umbral de continuas es de dominio, y Bonferroni divide por contrastes emitidos."""
+    assert parametro("umbral_continuas_rb").procedencia == "dominio"
+    assert valor("umbral_continuas_rb") == 0.02
+    assert alfa_bonferroni(1) == 0.05
+    # el alfa que publicaron las recetas de bureau y previous_application, con 30 y 28 contrastes
+    assert alfa_bonferroni(30) == pytest.approx(1.667e-03, abs=1e-6)
+    assert alfa_bonferroni(28) == pytest.approx(1.786e-03, abs=1e-6)
+    with pytest.raises(ValueError, match="sin contrastes"):
+        alfa_bonferroni(0)
+
+
 # --- cruce entre las recetas del EDA y el registro de cortes --------------------------------
 
 TABLAS = ["bureau", "bureau_balance", "previous_application"]
@@ -368,10 +384,10 @@ def test_todo_corte_reajustable_lo_usa_alguna_feature_o_es_transversal():
     """Un corte reajustable que no usa nadie es un valor huérfano.
 
     Los transversales no aparecen en el mapa porque no pertenecen a una feature concreta:
-    son los percentiles de application_train y el pendiente de la capa 2b.
+    son los percentiles de application_train.
     """
     usados = set(features_con_corte())
-    transversales = {n for n in PARAMS if n.startswith("app_")} | {"umbral_continuas_rb"}
+    transversales = {n for n in PARAMS if n.startswith("app_")}
     huerfanos = set(reajustables()) - usados - transversales
     assert not huerfanos, f"cortes reajustables que no usa ninguna feature: {sorted(huerfanos)}"
 

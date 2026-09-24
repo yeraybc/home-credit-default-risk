@@ -21,6 +21,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
+from src.features.iv import NULO, _clave, calcular_iv, tabla_woe
 from src.features.params import fijar_operativo, parametro, valor
 
 # Qué columna lleva qué corte del registro. Declarado y no derivado del frame que llegue, por lo
@@ -55,11 +56,6 @@ RATIOS_POSTERIORES: dict[str, tuple[str, str]] = {
     "CHILDREN_TO_FAM_RATIO": ("CNT_CHILDREN", "CNT_FAM_MEMBERS"),
 }
 
-
-# El nulo es un nivel más para agrupar y para el WoE, así que necesita una clave con la que
-# contarlo y agruparlo. Va como cadena y no como `object()` porque tiene que sobrevivir a un
-# `value_counts` y a un `groupby`, y se comprueba al ajustar que ninguna categoría real la use.
-NULO = "__NULO__"
 
 # El registro de una celda movida. Va declarado porque el frame se arma por trozos y uno vacío
 # tiene que traer las mismas columnas que uno lleno, o el informe cambia de forma según el dato.
@@ -104,13 +100,6 @@ def _exigir_ajustadas(X: pd.DataFrame, columnas: Iterable[str]) -> None:
             f"columnas ajustadas que el frame no trae: {sorted(faltan)}. "
             "Saltárselas daría una matriz distinta de la del entrenamiento"
         )
-
-
-def _clave(serie: pd.Series) -> pd.Series:
-    """La columna con el nulo convertido en un nivel contable."""
-    if (serie == NULO).any():
-        raise ValueError(f"{serie.name} trae una categoría literal {NULO!r}, que es la del nulo")
-    return serie.astype(object).where(serie.notna(), NULO)
 
 
 def _nombre(categoria: object) -> object:
@@ -366,44 +355,14 @@ class WoEEncoder(BaseEstimator, TransformerMixin):
                 "WoEEncoder es capa 2b y necesita el TARGET: sin él no hay malos ni buenos que "
                 "contar y no hay peso de la evidencia que calcular"
             )
-        alfa = valor("suavizado_woe")
         objetivo = pd.Series(np.asarray(y), index=X.index)
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         self.tablas_ = {
-            columna: self._tabla(_clave(X[columna]), objetivo, alfa)
+            columna: tabla_woe(_clave(X[columna]), objetivo)["woe"]
             for columna in X.select_dtypes(include=["object", "category"]).columns
         }
         return self
-
-    @staticmethod
-    def _tabla(clave: pd.Series, objetivo: pd.Series, alfa: float) -> pd.Series:
-        """El WoE de cada nivel, con `alfa` observaciones de prior repartidas por la tasa global.
-
-        **El reparto no es a partes iguales y esa es la pieza que importa.** Sumar la misma
-        constante a los dos recuentos arrima cada nivel a un prior implícito de 50/50, que no
-        tiene nada que ver con una cartera del 8% de default: al nivel que ya está por encima de
-        la media lo empuja más arriba todavía. Medido sobre train en `Industry: type 8`, que con
-        n = 17 es el más pequeño de los 58: sin suavizar vale +0,8920 y sumarle `alfa` a cada uno
-        de los dos recuentos lo lleva a +2,0415, o sea que el suavizado lo alejaba de cero justo
-        donde menos evidencia propia hay. Repartiendo el prior según la tasa global sale +0,4840:
-        un nivel sin evidencia propia converge al comportamiento medio, que es WoE cero, venga de
-        la dirección que venga.
-
-        Los denominadores son los totales pelados y no llevan el prior sumado. Con el reparto a
-        partes iguales sí hacía falta corregirlos, porque el prior infla las dos partes en
-        proporciones distintas (0,0584 frente a 0,0051 sobre train). Repartido por la tasa
-        global los dos factores de inflado valen lo mismo, `alfa` por niveles entre el total, y
-        se cancelan dentro del `log`: comprobado sobre train, la diferencia entre corregir y no
-        corregir es de 2,8e-16. Escribirlo sería una línea que no cambia ningún resultado.
-        """
-        malos = objetivo.groupby(clave, observed=True).sum()
-        buenos = objetivo.groupby(clave, observed=True).count() - malos
-        prior_malos = alfa * malos.sum() / (malos.sum() + buenos.sum())
-        prior_buenos = alfa - prior_malos
-        parte_malos = (malos + prior_malos) / malos.sum()
-        parte_buenos = (buenos + prior_buenos) / buenos.sum()
-        return np.log(parte_malos / parte_buenos)
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Aplica las tablas ajustadas. Estricto donde el `fit` es permisivo.
@@ -490,3 +449,227 @@ def registrar_limites(winsorizador: Winsorizador, sobrescribir: bool = False) ->
             CORTES_WINSOR[columna], limite, winsorizador.n_ajuste_[columna], sobrescribir
         )
     return informe
+
+
+# --- SelectorIV, capa 2b, bloque 5 -----------------------------------------------------------
+
+
+def _resolver_origen(origen: str, columnas: Iterable[str]) -> tuple[str, ...] | None:
+    """Las columnas físicas de un origen: la columna tal cual, o su grupo `origen_nivel` del
+    `OneHotEncoder`. `None` si ninguna de las dos existe."""
+    columnas = list(columnas)
+    if origen in columnas:
+        return (origen,)
+    grupo = tuple(c for c in columnas if c.startswith(f"{origen}_"))
+    return grupo or None
+
+
+def _coma(valor: float, decimales: int = 4) -> str:
+    """Un número con coma decimal, para los motivos que `SelectorIV` y `seleccion_final()`
+    escriben en `seleccion.csv`: prosa en español, con la misma convención que
+    `DECISIONES_REDUNDANCIA` y `DECISIONES_IV`, escritas a mano."""
+    return f"{valor:.{decimales}f}".replace(".", ",")
+
+
+class SelectorIV(BaseEstimator, TransformerMixin):
+    """Saca del frame lo que no aporta capacidad predictiva propia, capa 2b: el TARGET entra al
+    cálculo del IV, así que se ajusta solo sobre el 80% de entrenamiento.
+
+    Va al final del `Pipeline` (`sklearn.md`), después del filtro de varianza, así que ve la
+    matriz ya con sus 218 columnas: lo que en el frame de capa 1 era una categórica llega aquí
+    expandida por el `OneHotEncoder`. Por eso este transformer no decide columna a columna sino
+    por **origen**: un origen es la columna tal cual (una continua, una bandera, o una categórica
+    ya reducida a un solo número como `BB_TRAJECTORY`, declarada en `categoricas`), o el grupo
+    `origen_nivel` que deja el `OneHotEncoder`, resuelto por el prefijo con `_resolver_origen()`.
+
+    Cinco listas de origen y no de columna física, todas en `__init__` para que `clone` y
+    joblib las lleven intactas:
+
+    - `candidatas`: origen -> columna de presencia de su tabla, o `None` si no la tiene. Sale si
+      su IV no llega a `min_iv` y no está protegido. Con presencia, el IV se mide **dentro de
+      quien tiene la tabla** (`X[presencia] == 1`) y no marginal, que es lo que corrige la señal
+      prestada de la bandera: una columna imputada a una constante para quien no tiene tabla
+      puede separar el TARGET sin decir nada de sí misma, solo por reproducir la partición de la
+      presencia.
+    - `descartes`: origen -> motivo. Sale siempre, sin mirar el IV: son decisiones ya congeladas
+      de las recetas y del 5.6 (`descartes_fijos()` en `selection.py`). La excepción es una
+      fuente de `fuentes`, que se queda mientras le quede algo que recuperar.
+    - `protegidas`: se quedan pase lo que pase. Se les mide el IV igual, para el registro, pero
+      no decide nada.
+    - `redundantes`: perdedor -> ganadoras de su par del 5.7. Cada perdedor es además candidata, y
+      se decide después de las otras tres listas: sale por redundante si alguna ganadora sigue en la
+      matriz, y si no queda ninguna se juzga por su IV como cualquier candidata. La ganadora
+      puede salir por el IV del propio fold, así que esto no se puede resolver antes del `fit`.
+    - `fuentes`: fuente de presencia -> columnas que recupera. La fuente se queda mientras alguna
+      de ellas siga en la matriz, y se decide la última, después de los perdedores. Cuando ya no
+      queda ninguna, vuelve a lo que diría el resto: sale si está en `descartes` o si es candidata
+      sin IV, y si no, pasa intacta. Una recuperada que no está en `X` cuenta como fuera.
+
+    Todo lo que no esté en ninguna de las listas **pasa intacto**: las listas solo cubren lo
+    que tiene una decisión de IV o de redundancia detrás, y son una fracción pequeña de las 218
+    columnas de la matriz. `transform` filtra por exclusión y no por una lista blanca, que es lo
+    que hace que una columna sin decisión propia no desaparezca por no estar declarada.
+
+    Reutiliza `calcular_iv()` y el binning de `tramos()` (vía `iv.py`); no hay aritmética de IV
+    nueva aquí.
+    """
+
+    def __init__(
+        self,
+        candidatas: dict[str, str | None] | None = None,
+        descartes: dict[str, str] | None = None,
+        protegidas: Iterable[str] = (),
+        categoricas: Iterable[str] = (),
+        redundantes: dict[str, tuple[str, ...]] | None = None,
+        fuentes: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
+        self.candidatas = candidatas
+        self.descartes = descartes
+        self.protegidas = protegidas
+        self.categoricas = categoricas
+        self.redundantes = redundantes
+        self.fuentes = fuentes
+
+    def _serie_iv(self, origen: str, X: pd.DataFrame, categoricas: set) -> pd.Series:
+        """La serie que mide `calcular_iv()`: la columna tal cual, o la categoría reconstruida a
+        partir de su grupo de dummies. Cada combinación de dummies es su propio nivel, y no hace
+        falta la clave del nulo de `iv.py`: la matriz que ve este paso ya no trae ningún NaN."""
+        columnas = self.columnas_[origen]
+        if len(columnas) == 1 and origen not in categoricas:
+            return X[columnas[0]]
+        bloque = X[list(columnas)].astype(str).agg("|".join, axis=1)
+        codigo, _ = pd.factorize(bloque)
+        return pd.Series(codigo, index=X.index).astype("category")
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> SelectorIV:
+        """Mide el IV de cada origen y decide quién sale. Se llama sobre `solo_train()`.
+
+        Revienta antes de medir nada, no a mitad: sin `y`, si algo está descartado y protegido a
+        la vez, si un perdedor de `redundantes` no es candidata, está descartado o protegido, o es
+        a su vez ganadora de otro par, si una fuente está protegida, es perdedor o ganadora, o la
+        recupera otra fuente, o si algún origen declarado no resuelve en `X` (nombrando todos los
+        que faltan, no solo el primero).
+        """
+        if y is None:
+            raise ValueError(
+                "SelectorIV es capa 2b y necesita el TARGET: sin él no hay IV que calcular"
+            )
+        candidatas = {} if self.candidatas is None else dict(self.candidatas)
+        descartes = {} if self.descartes is None else dict(self.descartes)
+        protegidas = set(self.protegidas)
+        categoricas = set(self.categoricas)
+        redundantes = {} if self.redundantes is None else dict(self.redundantes)
+        fuentes = {} if self.fuentes is None else dict(self.fuentes)
+
+        cruzados = set(descartes) & protegidas
+        if cruzados:
+            raise ValueError(f"descartado y protegido a la vez: {sorted(cruzados)}")
+        ganadoras = {g for gs in redundantes.values() for g in gs}
+        mal_declarados = (
+            (set(redundantes) - set(candidatas))
+            | (set(redundantes) & (set(descartes) | protegidas))
+            | (set(redundantes) & ganadoras)
+        )
+        if mal_declarados:
+            raise ValueError(
+                "un perdedor de redundantes va solo entre las candidatas y no gana otro par: "
+                f"{sorted(mal_declarados)}"
+            )
+        recuperadas_por_fuente = {r for rs in fuentes.values() for r in rs}
+        # sin cadenas: una fuente se decide después de los perdedores y antes que nada que dependa
+        # de ella, y ninguna otra fuente puede estar esperando a su decisión
+        fuentes_mal = set(fuentes) & (
+            protegidas | set(redundantes) | ganadoras | recuperadas_por_fuente
+        )
+        if fuentes_mal:
+            raise ValueError(
+                "una fuente de presencia no va protegida ni en un par del 5.7, y no la recupera "
+                f"otra fuente: {sorted(fuentes_mal)}"
+            )
+
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.n_features_in_ = X.shape[1]
+
+        origenes = sorted(set(candidatas) | set(descartes) | protegidas | set(fuentes))
+        columnas: dict[str, tuple[str, ...]] = {}
+        faltan = []
+        for origen in origenes:
+            resuelto = _resolver_origen(origen, X.columns)
+            if resuelto is None:
+                faltan.append(origen)
+            else:
+                columnas[origen] = resuelto
+        # una ganadora sin decisión propia no se mide, pero tiene que existir para poder quedarse
+        faltan += [g for g in ganadoras - set(origenes) if _resolver_origen(g, X.columns) is None]
+        if faltan:
+            raise KeyError(f"orígenes del SelectorIV ausentes del frame: {sorted(faltan)}")
+        self.columnas_ = columnas
+
+        objetivo = pd.Series(np.asarray(y), index=X.index)
+        min_iv = valor("min_iv")
+        self.iv_: dict[str, float] = {}
+        self.motivos_: dict[str, str] = {}
+        salen = []
+        for origen in origenes:
+            serie = self._serie_iv(origen, X, categoricas)
+            presencia = candidatas.get(origen)
+            if presencia is not None:
+                dentro = (X[presencia] == 1).to_numpy()
+                iv = calcular_iv(serie[dentro], objetivo[dentro])
+            else:
+                iv = calcular_iv(serie, objetivo)
+            self.iv_[origen] = iv
+
+            if origen in redundantes or origen in fuentes:
+                continue
+            if origen in descartes:
+                self.motivos_[origen] = descartes[origen]
+                salen.append(origen)
+            elif origen not in protegidas and origen in candidatas and iv < min_iv:
+                self.motivos_[origen] = f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)})"
+                salen.append(origen)
+
+        # los perdedores al final, cuando ya se sabe qué ganadoras siguen en la matriz
+        for perdedor, ganadoras_del_par in redundantes.items():
+            siguen = [g for g in ganadoras_del_par if g not in salen]
+            iv = self.iv_[perdedor]
+            if siguen:
+                self.motivos_[perdedor] = f"redundante con {' y '.join(siguen)} en el 5.7"
+            elif iv < min_iv:
+                self.motivos_[perdedor] = (
+                    f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)}); su ganadora del 5.7 "
+                    f"({' y '.join(ganadoras_del_par)}) tampoco queda"
+                )
+            else:
+                continue
+            salen.append(perdedor)
+
+        # las fuentes de presencia al final, cuando ya se sabe qué recuperadas siguen
+        for fuente, recuperadas in fuentes.items():
+            if any(r not in salen and _resolver_origen(r, X.columns) for r in recuperadas):
+                continue
+            iv = self.iv_[fuente]
+            if fuente in descartes:
+                motivo = descartes[fuente]
+            elif fuente in candidatas and iv < min_iv:
+                motivo = f"IV {_coma(iv)} por debajo de min_iv ({_coma(min_iv)})"
+            else:
+                continue
+            self.motivos_[fuente] = f"{motivo}; fuente de presencia sin nada que recuperar"
+            salen.append(fuente)
+
+        columnas_que_salen = {c for origen in salen for c in columnas[origen]}
+        self.quedan_ = tuple(c for c in X.columns if c not in columnas_que_salen)
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Devuelve `X` sin las columnas de lo que salió. Estricto donde el `fit` es permisivo:
+        si algo que sobrevivió al ajuste falta aquí, revienta en vez de servir una matriz
+        distinta de la que vio el modelo."""
+        check_is_fitted(self)
+        _exigir_ajustadas(X, self.quedan_)
+        return X[list(self.quedan_)]
+
+    def get_feature_names_out(self, input_features: list[str] | None = None) -> np.ndarray:
+        check_is_fitted(self)
+        return np.asarray(self.quedan_, dtype=object)

@@ -17,9 +17,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.features.agg_bureau_balance import TRAYECTORIAS
 from src.features.build_features import ajustar_capa2a, ajustar_pipeline, matriz_de_features
 from src.features.params import PARAMS, parametro, reajustables, valor
 from src.features.pipeline import (
+    BANDERAS_AUX,
     BINARIAS,
     CATEGORICAS_OHE,
     COL_DIA,
@@ -28,8 +30,11 @@ from src.features.pipeline import (
     COL_HORA,
     COL_OCUPACION,
     COL_ORGANIZACION,
+    COL_TRAYECTORIA,
     JERARQUIA_EDUCACION,
     NUMERICAS,
+    NUMERICAS_AUX,
+    PRESENCIA_AUX,
     construir_pipeline,
 )
 from src.features.split import solo_train, solo_valid
@@ -48,20 +53,30 @@ ESTADO_AJUSTADO = {
     "woe": "tablas_",
     "tgt": "encodings_",
     "varianza": "variances_",
+    "seleccion": "iv_",
 }
 
 
 def _bloque(n, semilla, *, ingreso, hora, dia, organizacion, ocupacion, rara):
     """Un trozo de tabla con los valores que separan a las dos particiones."""
     rng = np.random.default_rng(semilla)
-    frame = pd.DataFrame({c: rng.uniform(1.0, 10.0, n) for c in NUMERICAS})
+    frame = pd.DataFrame({c: rng.uniform(1.0, 10.0, n) for c in NUMERICAS + NUMERICAS_AUX})
     frame["AMT_INCOME_TOTAL"] = ingreso
     frame[COL_HORA] = hora
-    for c in BINARIAS:
+    for c in BINARIAS + PRESENCIA_AUX + BANDERAS_AUX:
         frame[c] = rng.integers(0, 2, n)
+    niveles = list(TRAYECTORIAS.categories)
+    frame[COL_TRAYECTORIA] = pd.Series(
+        [niveles[i % len(niveles)] for i in range(n)], dtype=TRAYECTORIAS
+    )
+    # el nivel minoritario tiene que quedarse por debajo de n_min_categoria y el mayoritario por
+    # encima: con las dos mitades iguales, AgrupadorDeRaras las funde a las dos en el mismo
+    # residual (ninguna llega al mínimo) y la columna sale constante, que `varianza` se lleva
+    # antes de que el `seleccion` del 5.8 pueda mirar el origen que declara
+    minoria = min(n // 4, max(1, n - valor("n_min_categoria")))
     for c in CATEGORICAS_OHE:
         if c not in (COL_FRANJA, COL_DIA):
-            frame[c] = "comun"
+            frame[c] = (["comun"] * (n - minoria)) + (["otro"] * minoria)
     frame[COL_DIA] = dia
     frame.loc[frame.index[:2], "NAME_INCOME_TYPE"] = rara
     frame[COL_EDUCACION] = [JERARQUIA_EDUCACION[i % 5] for i in range(n)]
@@ -169,7 +184,14 @@ def test_todos_los_pasos_que_ajustan_dan_algo_distinto_dentro_y_fuera_del_split(
 
 
 def test_el_fixture_cubre_todos_los_pasos_que_guardan_estado(base_y_split):
-    """Guardián: un paso que ajuste algo y no esté en la tabla se colaría sin comparar nada."""
+    """Guardián: un paso que ajuste algo y no esté en la tabla se colaría sin comparar nada.
+
+    `cero` y `tray` (desde el 5.3) van en la misma excepción que `ord`: los tres tienen un
+    atributo con `_` (`statistics_`, `categories_`), pero ninguno lo estima de los datos.
+    `ord` y `tray` reciben sus niveles fijos por parámetro (`categories=[...]`) y `cero` siempre
+    imputa la misma constante, así que su `fit` no puede filtrar nada del split y compararlos no
+    prueba ninguna fuga; es justo lo que exige el test de arriba.
+    """
     base, split = base_y_split
     pipeline = _fit(base, split, solo_train)
     pasos = _pasos(pipeline)
@@ -178,7 +200,18 @@ def test_el_fixture_cubre_todos_los_pasos_que_guardan_estado(base_y_split):
         for nombre, paso in pasos.items()
         if any(a.endswith("_") and not a.startswith("_") for a in vars(paso))
         and nombre
-        not in ("columnas", "ohe", "derivadas", "dominio", "contrato", "ord", "bin", "remainder")
+        not in (
+            "columnas",
+            "ohe",
+            "derivadas",
+            "dominio",
+            "contrato",
+            "ord",
+            "bin",
+            "cero",
+            "tray",
+            "remainder",
+        )
     }
 
     sin_comparar = con_estado - set(ESTADO_AJUSTADO)

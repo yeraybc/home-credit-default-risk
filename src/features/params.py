@@ -94,13 +94,26 @@ PARAMS: dict[str, Parametro] = {
         "delta mínimo en puntos porcentuales para que una bandera sea relevante",
         "metodologia-estadistica 8.4",
     ),
+    # Declarado en el 5.4 con los r_rb de train ya vistos: el 2.3, el 3.10 y el 4.11 los remidieron,
+    # y la propuesta del 5.4 midió las 39 continuas provisionales de las tres recetas sobre los
+    # 245.993 de train.
+    # El 0,02 cae en su hueco, entre 0,0121 y 0,0216, y deja cuatro debajo (BB_STATUS_WORST,
+    # BB_N_CREDITS_WBAL, BUREAU_LOAN_COUNT y BUREAU_CREDIT_TYPE_NUNIQUE). No descarta por sí solo:
+    # es la lectura que va al lado del IV.
     "umbral_continuas_rb": Parametro(
-        None,
-        "medido",
+        0.02,
+        "dominio",
         "equivalente de los 2pp para continuas, en rank-biserial; el EDA nunca lo declaró y "
         "la barra efectiva se movía por tabla (0,0119 iba a IV en bureau y 0,0058 se "
         "descartaba en bureau_balance)",
         "auditoría transversal, pendiente 4",
+    ),
+    "alfa_familia": Parametro(
+        0.05,
+        "dominio",
+        "error de tipo I de cada familia de contrastes, que Bonferroni reparte entre los "
+        "contrastes emitidos con alfa_bonferroni()",
+        "metodologia-estadistica 8.1 y auditoría transversal, pendiente 3",
     ),
     "n_min_categoria": Parametro(
         100,
@@ -192,11 +205,35 @@ PARAMS: dict[str, Parametro] = {
         "estándar de credit scoring, no un corte estimado sobre este dataset",
         "glosario-tecnico, escala de IV",
     ),
+    # la banda del IV es informativa (5.8): no mueve el corte de `min_iv`, marca lo que queda cerca
+    # para que el registro de selección diga en cuántos folds se sostiene la decisión
+    "banda_revision_iv_suelo": Parametro(
+        0.015,
+        "dominio",
+        "suelo de la banda de revisión del IV: por debajo de min_iv y hasta aquí, la decisión se "
+        "mira por folds antes de darla por firme",
+        "auditoría del 5.4 y el 5.5, decidido con el usuario en el 5.8",
+    ),
+    "banda_revision_iv_techo": Parametro(
+        0.025,
+        "dominio",
+        "techo de la banda de revisión del IV, simétrico al suelo alrededor de min_iv",
+        "auditoría del 5.4 y el 5.5, decidido con el usuario en el 5.8",
+    ),
     "n_bins_max": Parametro(
         10,
         "dominio",
         "tramos máximos del binning con el que se calculan IV y WoE",
         "convención de binning del proyecto",
+    ),
+    "solape_ext3_min": Parametro(
+        0.20,
+        "dominio",
+        "Pearson mínimo contra EXT_SOURCE_3 para que una columna de bureau o bureau_balance "
+        "tenga que demostrar IV incremental antes de conservarse (5.6). El EDA llamó solape a "
+        "partir de 0,212 (BUREAU_DEBT_CREDIT_RATIO) y la mora quedó en 0,025 o menos: 0,20 "
+        "separa las dos familias sin cortar ninguna a la mitad",
+        "eda-bureau, historial-auditorias; eda-bureau-balance 5B.5",
     ),
     # Las tres fronteras de la franja horaria de la solicitud. Son de dominio y no se reestiman:
     # salen de dónde empieza y acaba una jornada laboral, no de mirar la tasa de default. El EDA
@@ -653,9 +690,10 @@ def fijar_operativo(
     Sin ella, escribir dos veces se resuelve por upsert y gana la última, que es el mecanismo
     del orden del registro de `patrones-de-fallo`: dos ajustes sobre poblaciones distintas
     dejan la segunda cifra con el n de la segunda y nadie se entera. La guarda vale para todo el
-    que refija, que hoy son `ajustar_capa2a()` y los refijados de bureau y bureau_balance en
-    `build_features.py`, cada uno con su test de que refijar otra vez la exige (el de la capa 2a,
-    sobre `registrar_limites()`).
+    que refija, que hoy son `ajustar_capa2a()`, los siete refijados de bureau, bureau_balance y
+    previous_application en `build_features.py`, y `cargar_cortes()`, que la hereda al llamar a
+    esta misma función por cada corte que lee de `cortes.json`. Cada uno con su test de que
+    refijar otra vez la exige (el de la capa 2a, sobre `registrar_limites()`).
     """
     p = parametro(nombre)
     if p.procedencia not in REAJUSTABLES:
@@ -670,6 +708,16 @@ def fijar_operativo(
             "lo ajustado con el valor anterior, así que hay que pedir sobrescribir=True"
         )
     PARAMS[nombre] = replace(p, valor_operativo=valor_nuevo, n_train_operativo=n_train)
+
+
+def alfa_bonferroni(n_contrastes: int) -> float:
+    """El alfa corregido de una familia, que son los contrastes emitidos en una medición.
+
+    No las features ni las columnas: una columna cruzada contra varios estratos emite varios.
+    """
+    if n_contrastes < 1:
+        raise ValueError(f"una familia sin contrastes no tiene alfa: {n_contrastes}")
+    return float(valor("alfa_familia")) / n_contrastes
 
 
 def por_procedencia(procedencia: str) -> dict[str, Parametro]:

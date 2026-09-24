@@ -26,6 +26,7 @@ from src.features.agg_previous import (
     combinacion_definida,
     fin_de_ventana,
     finalidad_declarada,
+    lectura_solo_vivas,
     solicitudes_recientes,
     unir_previous,
 )
@@ -628,6 +629,27 @@ def test_lo_por_vencer_es_el_maximo_del_fin_previsto_aunque_la_operacion_este_ce
     solo_vivas = prev.assign(DAYS_LAST_DUE_1ST_VERSION=prev.DAYS_LAST_DUE_1ST_VERSION.where(
         prev.DAYS_LAST_DUE.isna()))
     assert agregar(solo_vivas).loc[12, "PREV_FUTURE_DUE_MAX"] == 50
+
+
+def test_lectura_solo_vivas_sale_en_float64_venga_el_lote_en_el_tipo_que_venga(prev):
+    """`limpiar_previous()` deja a propósito sin fijar el tipo de las dos fechas (sale en
+    `float32` o `float64` según lleve centinela el lote); la frontera la fija esta función, no
+    la limpieza. Sin el `astype` de la frontera, un lote en `float32` (como el que da
+    `load_table(reduce_memory=True)`) dejaría la salida en `float32`."""
+    estrecho = prev.astype(
+        {"DAYS_LAST_DUE_1ST_VERSION": "float32", "DAYS_LAST_DUE": "float32"}
+    )
+    assert lectura_solo_vivas(estrecho).dtype == lectura_solo_vivas(prev).dtype == "float64"
+
+
+def test_lectura_solo_vivas_del_5_6_da_50_y_no_100_en_el_mismo_cliente(prev):
+    """`lectura_solo_vivas()` no crea columna en la agregación: es la comparación del 5.6 contra
+    `PREV_FUTURE_DUE_MAX`, que el cliente 12 deja en 100. Idempotente sobre su propia salida,
+    como `limpiar_previous()`, de la que depende."""
+    vivas = lectura_solo_vivas(prev)
+    assert vivas.loc[12] == 50
+    assert vivas.loc[12] != agregar(prev).loc[12, "PREV_FUTURE_DUE_MAX"]
+    pd.testing.assert_series_equal(vivas, lectura_solo_vivas(limpiar_previous(prev)))
 
 
 def test_el_centinela_de_las_fechas_de_fin_no_cuenta_ni_como_terminada_ni_como_por_vencer(prev):

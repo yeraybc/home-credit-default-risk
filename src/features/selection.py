@@ -4,7 +4,20 @@ src.features.selection: Métodos de selección de variables y cálculo de métri
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np
 import pandas as pd
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.utils.validation import check_is_fitted
+
+from src.features import agg_bureau, agg_bureau_balance, agg_previous, pipeline
+from src.features.iv import BANDERAS_RARAS, CANDIDATAS_IV, calcular_iv, iv_condicionado
+from src.features.params import valor
+from src.features.recipes import cargar_receta
+from src.features.transformers import SelectorIV, _coma
 
 
 def obtener_categorias(df: pd.DataFrame) -> dict[str, list]:
@@ -266,3 +279,764 @@ def recomendar_codificacion(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(recoms)
+
+
+# --- el registro de selección del 5.6, que el 5.8 consume ---------------------------------------
+
+
+@dataclass(frozen=True)
+class DecisionIV:
+    """Una de las cinco decisiones del 5.6, con su criterio y su motivo.
+
+    `decision` es del vocabulario cerrado de las recetas (conservar | iv | degradada | descartar |
+    control | referencia). La cifra que sostiene la decisión va en `motivo`, nunca consumida.
+    """
+
+    decision: str
+    criterio: str
+    motivo: str
+
+    def __post_init__(self) -> None:
+        if not self.decision.strip() or not self.criterio.strip() or not self.motivo.strip():
+            raise ValueError("una decisión del 5.6 declara decision, criterio y motivo")
+
+
+# Las cinco decisiones que el EDA dejó pendientes de IV, cerradas en el 5.6 sobre los 245.993
+# clientes de train. `BUREAU_HAS_CURRENT_OVERDUE` es la única que ya estaba en CANDIDATAS_IV;
+# las otras cuatro no compiten contra min_iv, así que no van ahí.
+DECISIONES_IV: dict[str, DecisionIV] = {
+    "BUREAU_HAS_CURRENT_OVERDUE": DecisionIV(
+        "conservar",
+        "mayor IV sin presencia; empate en la cuarta cifra decae a la construcción",
+        "empata con BUREAU_CURRENT_OVERDUE_SUM > 0 en 0,0099 (2.688 vs 2.687 marcados); gana la "
+        "foto porque no pierde al cliente cuya única mora activa está en otra moneda",
+    ),
+    "tripartita_mora": DecisionIV(
+        "descartar",
+        "IV incremental sobre BUREAU_OVERDUE_UNION >= min_iv (0,02), dentro de con historial",
+        "el incremental es 0,0014, muy por debajo de 0,02: separar reportada a cero (6,79%, "
+        "n=90.085) de sin reportar (7,38%, n=62.863) no añade nada sobre la unión (9,55% vs "
+        "7,03%); no se construye columna y sigue BUREAU_OVERDUE_UNION",
+    ),
+    "BUILDING_INFO_COUNT": DecisionIV(
+        "descartar",
+        "IV incremental sobre HAS_BUILDING_INFO >= min_iv (0,02), dentro de quien tiene dato",
+        "el incremental es 0,00015, muy por debajo de 0,02, aunque el marginal (0,0212) llega: "
+        "cuántos campos del edificio tiene un cliente no separa más que tener alguno o no; sale "
+        "y se queda HAS_BUILDING_INFO",
+    ),
+    "PREV_FUTURE_DUE_VIVAS": DecisionIV(
+        "descartar",
+        "IV incremental sobre PREV_FUTURE_DUE_MAX >= min_iv (0,02), dentro de con previas",
+        "el incremental es 0,0067; sobre train la actual tiene más IV sin presencia (0,0116 "
+        "frente a 0,0082 de solo vivas), al revés de lo medido sobre la tabla cruda sin split "
+        "(0,0842 frente a 0,0856); no se construye columna y sigue PREV_FUTURE_DUE_MAX",
+    ),
+    # el incremental sobre EXT_SOURCE_3 (pendiente del 4.10 y del 2.3 cerrado en el 2.3): 13
+    # columnas de bureau y bureau_balance con |Pearson| >= solape_ext3_min (0,20) sobre train,
+    # cinco pasan min_iv (0,02) dentro de con historial y ocho no; degradada y no descartar,
+    # porque el 5.8 da el corte final con la redundancia y la banda de revisión delante
+    "BUREAU_CREDITS_PER_YEAR": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,4214, incremental 0,0240"
+    ),
+    "BUREAU_DAYS_CREDIT_MAX": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3896, incremental 0,0311"
+    ),
+    "BUREAU_ACTIVE_COUNT": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3888, incremental 0,0075"
+    ),
+    "BUREAU_DAYS_CREDIT_UPDATE_FLAG": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3481, incremental 0,0136"
+    ),
+    "BB_MONTHS_SINCE_LAST_DPD_REL": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,3149, incremental 0,0300"
+    ),
+    "BB_RECENT_DPD_FLAG_REL": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2992, incremental 0,0084"
+    ),
+    "BB_OVERDUE_UNION": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2681, incremental 0,0118"
+    ),
+    "BB_ANY_DPD_FLAG": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2370, incremental 0,0115"
+    ),
+    "BUREAU_DAYS_CREDIT_MIN": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2263, incremental 0,0281"
+    ),
+    "BB_CREDITS_WITH_DPD_COUNT": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2261, incremental 0,0056"
+    ),
+    "BUREAU_OVERDUE_UNION": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2186, incremental 0,0059"
+    ),
+    "BUREAU_DEBT_CREDIT_RATIO": DecisionIV(
+        "conservar", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2034, incremental 0,0373"
+    ),
+    "BUREAU_HAS_ANY_OVERDUE": DecisionIV(
+        "degradada", "IV incremental sobre EXT_SOURCE_3 >= 0,02", "r=-0,2014, incremental 0,0055"
+    ),
+}
+
+
+# --- la redundancia entre tablas del 5.7 ---------------------------------------------------------
+
+TABLA_PRINCIPAL = "application_train"
+
+# cada auxiliar con el módulo que declara lo que añade sin receta
+AUXILIARES = {
+    "bureau": agg_bureau,
+    "bureau_balance": agg_bureau_balance,
+    "previous_application": agg_previous,
+}
+
+
+def _nombres_por_tabla() -> dict[str, set[str]]:
+    return {
+        tabla: {f["nombre"] for f in cargar_receta(tabla)["features"]}
+        | set(modulo.COLUMNAS_SIN_RECETA)
+        for tabla, modulo in AUXILIARES.items()
+    }
+
+
+def tabla_de(columna: str, nombres: dict[str, set[str]] | None = None) -> str:
+    """La tabla que produce la columna: la auxiliar de su receta o de su `COLUMNAS_SIN_RECETA`, y
+    si no está en ninguna, la principal. `BUREAU_OVERDUE_UNION` sale de bureau aunque la receta de
+    bureau_balance la cite como referencia, porque bureau se mira antes.
+
+    `nombres` es para no releer las tres recetas por columna; quien llame desde fuera no lo pasa.
+    """
+    for tabla, de_tabla in (nombres or _nombres_por_tabla()).items():
+        if columna in de_tabla:
+            return tabla
+    return TABLA_PRINCIPAL
+
+
+def columnas_protegidas() -> frozenset[str]:
+    """Las que no pasan por el umbral del 5.8, adelantadas aquí porque el empate del 5.7 las mira:
+    las `control: true` de las recetas, las tres `HAS_*` (`pipeline.PRESENCIA_AUX`), los dos
+    documentos protegidos del filtro de varianza (`pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA`) y
+    las banderas raras. `PREV_ACTIVIDAD_12M_COLA` también lo estuvo, como término de
+    `PREV_RELACION_CORTA_ACTIVA` (4.7), hasta que el propio `SelectorIV` sacó esa interacción por
+    IV: desde la auditoría del bloque 5 es candidata (`TERMINO_SIN_INTERACCION`).
+
+    Las dos listas de `pipeline.py` se importan y no se copian, que copiarlas es la misma trampa
+    de las dos fuentes de verdad que ya ha mordido tres veces en este proyecto: un tercer
+    documento protegido en `pipeline.py` no se enteraría aquí.
+
+    Desde el 5.8, además, toda fuente de presencia (`fuentes_de_presencia()`) mientras le quede
+    alguna columna recuperada fuera de los descartes: sin ella, la mediana deja de distinguir
+    "vale la mediana" de "no se sabe". Es lo que reabrió dos pares del 5.7. Esa protección es
+    condicional (`protecciones_de_presencia()`): aquí cuenta como protegida, que es lo que mira el
+    empate del 5.7, y el `SelectorIV` la retira en el fold donde todo lo que recupera sale.
+    """
+    return frozenset(_protegidas_fijas() | set(protecciones_de_presencia()))
+
+
+def _protegidas_fijas() -> set[str]:
+    """Las protegidas por su papel, sin condición: todas las de `columnas_protegidas()` menos las
+    que solo lo son por ser fuente de presencia."""
+    recetas = [cargar_receta(tabla)["features"] for tabla in AUXILIARES]
+    controles = {f["nombre"] for receta in recetas for f in receta if f.get("control")}
+    return (
+        controles
+        | set(pipeline.PRESENCIA_AUX)
+        | set(pipeline.COLUMNAS_PROTEGIDAS_DE_VARIANZA)
+        | set(BANDERAS_RARAS)
+    )
+
+
+def protecciones_de_presencia() -> dict[str, tuple[str, ...]]:
+    """Cada fuente de presencia protegida solo por serlo, con lo que recupera fuera de los
+    descartes fijos. Lo recuperado puede ser una candidata o un perdedor del 5.7, que salen o no
+    según el fold, así que la protección la resuelve el `SelectorIV` en su `fit`: la fuente se
+    queda mientras alguna de estas columnas siga en la matriz. `HAS_BUREAU_OVERDUE_HISTORY` solo
+    recupera `BUREAU_MAX_OVERDUE_EVER`, y protegerla sin condición la dejaba en la matriz sin nada
+    que recuperar en cuanto esa columna salía por IV."""
+    brutos = set(_descartes_brutos())
+    fijas = _protegidas_fijas()
+    return {
+        fuente: tuple(sorted(recuperadas - brutos))
+        for fuente, recuperadas in fuentes_de_presencia().items()
+        if recuperadas - brutos and fuente not in fijas
+    }
+
+
+def _descartadas() -> set[str]:
+    """Lo que ya sale por su receta o por el 5.6, y por eso no entra al detector."""
+    de_receta = {
+        f["nombre"]
+        for tabla in AUXILIARES
+        for f in cargar_receta(tabla)["features"]
+        if f["decision"] == "descartar"
+    }
+    return de_receta | {c for c, d in DECISIONES_IV.items() if d.decision == "descartar"}
+
+
+# Los dos de dentro de bureau que el 2.3 le dejó al bloque 5. El plan citaba el primero como
+# BUREAU_COUNT_COLA frente a BUREAU_ACTIVE_COUNT (0,692), pero ese par da 0,3167 sobre train: el
+# 0,6919 es el conteo del que se corta la cola. El segundo cruza con ACTIVE_COUNT > 0 (0,7106) y no
+# con el conteo (0,4355), y se mide contra el conteo porque su tramo 0 es el sin ningún activo.
+PARES_DECLARADOS: dict[tuple[str, str], str] = {
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"): (
+        "la cola del conteo sale de BUREAU_LOAN_COUNT, que correlaciona 0,692 con el activo (2.3)"
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_DAYS_CREDIT_UPDATE_FLAG"): (
+        "la señal de la bandera vive en los clientes con algún crédito activo (2.3)"
+    ),
+}
+
+
+def _es_bandera01(serie: pd.Series) -> bool:
+    return bool(serie.dropna().isin((0, 1)).all())
+
+
+def pares_redundantes(train: pd.DataFrame, columnas: list[str] | None = None) -> pd.DataFrame:
+    """Los pares de columnas de tablas distintas que cruzan el umbral de redundancia o caen en la
+    banda de revisión, más los `PARES_DECLARADOS`. No mira el TARGET.
+
+    Entran las numéricas vivas: fuera lo que su receta o el 5.6 ya descartan, porque su salida no
+    depende de este informe (si el 5.8 recupera alguna, se vuelve a pasar con `columnas`). Las
+    categóricas se saltan: `BB_TRAJECTORY`, la única de una auxiliar, se queda en 0,365 de V de
+    Cramér contra las 55 banderas vivas de otras tablas (auditoría del 5.7), y en 0,1548 contra
+    las magnitudes con el mismo binning de `tramos()` que usa el IV; una V de Cramér directa
+    contra una magnitud sin binar es engañosa (sale por encima de 0,9 contra `EXT_SOURCE_1`), que
+    es el motivo de no comparar la categórica contra la magnitud en bruto.
+
+    El Pearson va sobre los clientes con las dos columnas, y el umbral según el tipo:
+
+    - dos magnitudes, o bandera y magnitud: por encima de `redundancia_pearson`, y en la banda
+      desde `banda_revision_pearson`;
+    - dos banderas: por encima de `redundancia_cramer`, porque en una 2x2 el |r| es la V;
+    - bandera y magnitud sin negativos, además: la bandera contra `magnitud > 0` por encima de
+      `redundancia_cramer`, que es la redundancia del evento y no de la escala
+      (`metodologia-estadistica` 8.4).
+
+    Cada par sale con sus dos nombres en orden alfabético, que es la clave del registro.
+    """
+    if columnas is None:
+        fuera = _descartadas() | {"SK_ID_CURR", "TARGET"}
+        columnas = [c for c in train.columns if c not in fuera]
+    columnas = [c for c in columnas if pd.api.types.is_numeric_dtype(train[c])]
+    datos = train[columnas].astype(float)
+    bandera = {c: _es_bandera01(datos[c]) for c in columnas}
+    binarizable = [c for c in columnas if not bandera[c] and datos[c].min() >= 0]
+    evento = datos[binarizable].gt(0).where(datos[binarizable].notna()).add_suffix(" > 0")
+    r = pd.concat([datos, evento], axis=1).corr()
+    nombres = _nombres_por_tabla()
+    tabla = {c: tabla_de(c, nombres) for c in columnas}
+    umbral_mm = valor("redundancia_pearson")
+    umbral_ff = valor("redundancia_cramer")
+    banda = valor("banda_revision_pearson")
+
+    filas = []
+    ordenadas = sorted(columnas)
+    for i, a in enumerate(ordenadas):
+        for b in ordenadas[i + 1 :]:
+            declarado = (a, b) in PARES_DECLARADOS
+            if tabla[a] == tabla[b] and not declarado:
+                continue
+            tipo = {2: "FF", 1: "FM", 0: "MM"}[bandera[a] + bandera[b]]
+            r_ab = r.loc[a, b]
+            r_bin = np.nan
+            if tipo == "FM":
+                f, m = (a, b) if bandera[a] else (b, a)
+                if m in binarizable:
+                    r_bin = r.loc[f, f"{m} > 0"]
+            umbral = umbral_ff if tipo == "FF" else umbral_mm
+            if abs(r_ab) > umbral or abs(r_bin) > umbral_ff:
+                zona = "por encima"
+            elif tipo != "FF" and abs(r_ab) >= banda:
+                zona = "banda"
+            elif declarado:
+                zona = "declarado"
+            else:
+                continue
+            filas.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "tabla_a": tabla[a],
+                    "tabla_b": tabla[b],
+                    "tipo": tipo,
+                    "r": r_ab,
+                    "r_bin": r_bin,
+                    "n": int((datos[a].notna() & datos[b].notna()).sum()),
+                    "zona": zona,
+                    "declarado": declarado,
+                }
+            )
+    return pd.DataFrame(filas).set_index(["a", "b"])
+
+
+def informe_redundancia(train: pd.DataFrame, pares: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Resuelve cada par de `pares_redundantes()` con estratos cruzados en las dos direcciones.
+
+    **Criterio, escrito antes de medir:** sobre la población donde las dos columnas tienen dato,
+    `inc_a` es el IV de `a` dentro de los tramos de `b` (`iv_condicionado()`) y `inc_b` al revés.
+    - Si una de las dos es protegida (`columnas_protegidas()`), se queda; la otra se queda también
+      si su incremental sobre la protegida llega a `min_iv`, y si no, sale.
+    - Si ninguna es protegida y las dos llegan a `min_iv`, las dos aportan señal propia y se quedan.
+    - Si llega solo una, esa es la que se queda.
+    - Si no llega ninguna, es la misma información contada dos veces: se queda la de más IV
+      marginal dentro de la población del par.
+
+    `queda` es la tupla de columnas del par que sobreviven, `iv_a` e `iv_b` el IV marginal de cada
+    una sobre esa misma población y `motivo` la frase que sostiene la decisión, con las cifras.
+    """
+    if pares is None:
+        pares = pares_redundantes(train)
+    protegidas = columnas_protegidas()
+    min_iv = valor("min_iv")
+    filas = []
+    for a, b in pares.index:
+        dentro = train[train[a].notna() & train[b].notna()]
+        y = dentro["TARGET"]
+        iv_a = calcular_iv(dentro[a], y)
+        iv_b = calcular_iv(dentro[b], y)
+        inc_a = iv_condicionado(dentro[a], dentro[b], y)
+        inc_b = iv_condicionado(dentro[b], dentro[a], y)
+        prot_a, prot_b = a in protegidas, b in protegidas
+
+        if prot_a and prot_b:
+            queda, motivo = (a, b), "las dos protegidas, ninguna sale por redundancia"
+        elif prot_a or prot_b:
+            protegida, otra = (a, b) if prot_a else (b, a)
+            inc_otra = inc_b if prot_a else inc_a
+            llega = "llega" if inc_otra >= min_iv else "no llega"
+            motivo = (
+                f"{protegida} protegida; {otra} {llega} a min_iv sobre ella "
+                f"(incremental {inc_otra:.4f})"
+            )
+            queda = (a, b) if inc_otra >= min_iv else (protegida,)
+        elif inc_a >= min_iv and inc_b >= min_iv:
+            queda = (a, b)
+            motivo = f"las dos llegan a min_iv la una sobre la otra ({inc_a:.4f} y {inc_b:.4f})"
+        elif inc_a >= min_iv:
+            queda = (a,)
+            motivo = f"{a} llega a min_iv sobre {b} (incremental {inc_a:.4f}); {b} no ({inc_b:.4f})"
+        elif inc_b >= min_iv:
+            queda = (b,)
+            motivo = f"{b} llega a min_iv sobre {a} (incremental {inc_b:.4f}); {a} no ({inc_a:.4f})"
+        else:
+            ganadora = a if iv_a >= iv_b else b
+            queda = (ganadora,)
+            motivo = (
+                f"ninguna aporta sobre la otra (incremental {inc_a:.4f} y {inc_b:.4f}); "
+                f"queda {ganadora} por mayor IV marginal ({iv_a:.4f} frente a {iv_b:.4f})"
+            )
+
+        filas.append(
+            {
+                "a": a,
+                "b": b,
+                "n": len(dentro),
+                "iv_a": iv_a,
+                "iv_b": iv_b,
+                "inc_a": inc_a,
+                "inc_b": inc_b,
+                "queda": queda,
+                "motivo": motivo,
+            }
+        )
+    return pd.DataFrame(filas).set_index(["a", "b"])
+
+
+@dataclass(frozen=True)
+class DecisionRedundancia:
+    """La resolución de un par de `informe_redundancia()`, con la cifra que la sostiene en
+    `motivo`, nunca consumida."""
+
+    queda: tuple[str, ...]
+    motivo: str
+
+    def __post_init__(self) -> None:
+        if not self.queda or not self.motivo.strip():
+            raise ValueError("una decisión de redundancia declara queda y motivo")
+
+
+# Los 15 pares del 5.7 sobre los 245.993 de train: los 13 que cruzan el umbral o la banda entre
+# tablas más los 2 declarados dentro de bureau (PARES_DECLARADOS). Congelado con
+# `informe_redundancia()`, no se recalcula al importar: el 5.8 lee esto para saber qué columna
+# sale por redundancia sin volver a ensamblar nada.
+DECISIONES_REDUNDANCIA: dict[tuple[str, str], DecisionRedundancia] = {
+    ("BB_MANY_CREDITS_FLAG", "BUREAU_COUNT_COLA"): DecisionRedundancia(
+        ("BUREAU_COUNT_COLA",),
+        "r=0,9981, la misma cola del conteo refijada en 18 por las dos tablas (2.3 y 3.9); "
+        "incremental 0,0000 en las dos direcciones, queda BUREAU_COUNT_COLA por un IV apenas "
+        "mayor (0,00222 frente a 0,00217 de BB_MANY_CREDITS_FLAG)",
+    ),
+    ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_REPORTED", "BUREAU_CLOSED_COUNT"),
+        "r=0,6227, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0219 "
+        "y 0,0371, las dos por encima de min_iv), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_REPORTED", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_REPORTED", "BUREAU_LOAN_COUNT"),
+        "r=0,6932, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0233 "
+        "y 0,0220), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_CLOSED_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL",),
+        "r=0,8037, por encima del umbral; BB_MONTHS_TOTAL llega a min_iv sobre "
+        "BUREAU_CLOSED_COUNT (incremental 0,0293) y BUREAU_CLOSED_COUNT no llega sobre ella "
+        "(0,0123), así que solo se queda BB_MONTHS_TOTAL",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_DAYS_CREDIT_MIN"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL", "BUREAU_DAYS_CREDIT_MIN"),
+        "r=-0,6047, en la banda de revisión; cada una aporta sobre la otra (incremental 0,0213 "
+        "y 0,0447), así que se quedan las dos",
+    ),
+    ("BB_MONTHS_TOTAL", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BB_MONTHS_TOTAL", "BUREAU_LOAN_COUNT"),
+        "r=0,7989, por encima del umbral pero cada una aporta sobre la otra (incremental "
+        "0,1077 y 0,0745), así que se quedan las dos",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_HAS_ANY_OVERDUE"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "r=0,8502; ninguna aporta sobre la otra (incremental 0,0109 y 0,0001, las dos por "
+        "debajo de min_iv), queda BB_OVERDUE_UNION por mayor IV marginal (0,0300 frente a "
+        "0,0196)",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_MAX_OVERDUE_EVER"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "cruza binarizado (r_bin=0,8936, r en bruto solo 0,0945 porque la magnitud no escala "
+        "con el evento); ninguna aporta sobre la otra (incremental 0,0065 y 0,0029), queda "
+        "BB_OVERDUE_UNION por mayor IV marginal (0,0323 frente a 0,0293)",
+    ),
+    ("BB_OVERDUE_UNION", "BUREAU_OVERDUE_UNION"): DecisionRedundancia(
+        ("BB_OVERDUE_UNION",),
+        "r=0,8667; ninguna aporta sobre la otra (incremental 0,0070 y 0,0000), queda "
+        "BB_OVERDUE_UNION por mayor IV marginal (0,0300 frente a 0,0234)",
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_DAYS_CREDIT_UPDATE_FLAG"): DecisionRedundancia(
+        ("BUREAU_ACTIVE_COUNT",),
+        "declarado en el 2.3: cruza binarizado (r_bin=0,7106 contra ACTIVE_COUNT > 0, r en "
+        "bruto 0,4355); BUREAU_ACTIVE_COUNT llega a min_iv sobre la bandera (incremental "
+        "0,0319) y la bandera no llega sobre el conteo (0,0063), así que solo se queda "
+        "BUREAU_ACTIVE_COUNT",
+    ),
+    ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"): DecisionRedundancia(
+        ("BUREAU_ACTIVE_COUNT", "BUREAU_LOAN_COUNT"),
+        "declarado en el 2.3: r=0,6919, en la banda; cada una aporta sobre la otra "
+        "(incremental 0,0995 y 0,0583), así que se quedan las dos",
+    ),
+    ("BUREAU_ANNUITY_ACTIVE_RATIO", "HAS_BUREAU_BALANCE"): DecisionRedundancia(
+        ("HAS_BUREAU_BALANCE",),
+        "cruza binarizado (r_bin=0,7420, r en bruto 0,6152 porque el ratio no escala con el "
+        "evento); HAS_BUREAU_BALANCE es protegida y BUREAU_ANNUITY_ACTIVE_RATIO no llega a "
+        "min_iv sobre ella (incremental 0,0078), así que solo se queda la protegida",
+    ),
+    ("BUREAU_CREDITS_WITH_ANNUITY_COUNT", "HAS_BUREAU_BALANCE"): DecisionRedundancia(
+        ("HAS_BUREAU_BALANCE",),
+        "cruza binarizado (r_bin=0,7420, r en bruto 0,5373); HAS_BUREAU_BALANCE es protegida y "
+        "BUREAU_CREDITS_WITH_ANNUITY_COUNT no llega a min_iv sobre ella (incremental 0,0048), "
+        "así que solo se queda la protegida",
+    ),
+    # los dos últimos se reabrieron en el 5.8: sus perdedoras son fuentes de presencia, que desde
+    # entonces van protegidas mientras recuperen alguna columna que siga en la matriz
+    ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"): DecisionRedundancia(
+        ("FLAG_EXT_SOURCE_3_NULL", "HAS_BUREAU_HISTORY"),
+        "r=-0,7903, que el EDA no había anticipado; las dos protegidas desde el 5.8, porque "
+        "FLAG_EXT_SOURCE_3_NULL es la presencia de EXT_SOURCE_3. En el 5.7 salía por no llegar a "
+        "min_iv sobre HAS_BUREAU_HISTORY (incremental 0,0010)",
+    ),
+    ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"): DecisionRedundancia(
+        ("HAS_BUREAU_HISTORY", "HAS_BUREAU_INFO"),
+        "r=0,9667; las dos protegidas desde el 5.8, porque HAS_BUREAU_INFO es la presencia de "
+        "las seis AMT_REQ_CREDIT_BUREAU_*. En el 5.7 salía por no llegar a min_iv sobre "
+        "HAS_BUREAU_HISTORY (incremental 0,0015)",
+    ),
+}
+
+
+# --- el SelectorIV del 5.8 -------------------------------------------------------------------
+
+# la presencia de cada tabla auxiliar, para las candidatas que no vienen de `CANDIDATAS_IV`. Es
+# el mismo vocabulario de `pipeline.PRESENCIA_AUX`, cruzado en test contra esa lista
+PRESENCIA_DE_TABLA: dict[str, str] = {
+    "bureau": "HAS_BUREAU_HISTORY",
+    "bureau_balance": "HAS_BUREAU_BALANCE",
+    "previous_application": "HAS_PREV_APPLICATION",
+}
+
+# las 4 `degradada` de receta (denominador o fuente de una bandera, decisión del punto 3 del
+# 5.8) que vuelven al IV con la presencia de su tabla, y no salen fijas como las 8 del 5.6
+DEGRADADAS_DE_RECETA: tuple[str, ...] = (
+    "BUREAU_LOAN_COUNT",
+    "PREV_APPLICATION_COUNT",
+    "PREV_COUNT_12M",
+    "PREV_REFUSED_COUNT",
+)
+
+# el término de `PREV_RELACION_CORTA_ACTIVA`, que el 4.7 y el 4.11 conservaban solo para
+# acompañar a la interacción y no por efecto propio. El `SelectorIV` saca la interacción por IV,
+# así que la protección se quedaba sin motivo: se juzga por su IV, dentro de quien tiene previas
+TERMINO_SIN_INTERACCION = "PREV_ACTIVIDAD_12M_COLA"
+
+
+def configurar_selector() -> SelectorIV:
+    """El `SelectorIV` que `construir_pipeline()` monta al final, con sus listas de origen
+    del 5.8.
+
+    Las candidatas son `CANDIDATAS_IV` menos las 5 que `descartes_fijos()` ya saca sin mirar el
+    IV (`BUILDING_INFO_COUNT` y `BB_CREDITS_WITH_DPD_COUNT` del 5.6 y los tres efectos nulos del
+    3.10), más las cuatro `DEGRADADAS_DE_RECETA` y `TERMINO_SIN_INTERACCION` con la presencia de
+    su tabla, y los tres perdedores del 5.7 que no estaban en `CANDIDATAS_IV` (los otros dos,
+    `BB_MANY_CREDITS_FLAG` y `BUREAU_ANNUITY_ACTIVE_RATIO`, ya lo estaban): 38 - 5 + 5 + 3 = 41.
+    Hasta la auditoría del bloque 5 eran 35, con los perdedores fuera de forma fija y el término
+    protegido. La presencia de
+    `CANDIDATAS_IV` se reutiliza tal cual: `SelectorIV`
+    mide dentro de quien tiene la tabla (`X[presencia] == 1`) y no pondera por cobertura, que es
+    el cambio de criterio decidido en el 5.8 (antes lo hacía `iv_condicionado()`, y en
+    `bureau_balance` la ponderación restaba más cobertura que señal de bandera).
+    """
+    descartes = descartes_fijos()
+    candidatas = {
+        nombre: candidata.presencia
+        for nombre, candidata in CANDIDATAS_IV.items()
+        if nombre not in descartes
+    }
+    nombres = _nombres_por_tabla()
+    for nombre in (*DEGRADADAS_DE_RECETA, TERMINO_SIN_INTERACCION):
+        candidatas[nombre] = PRESENCIA_DE_TABLA[tabla_de(nombre, nombres)]
+    # los perdedores del 5.7 se miden como candidatas, con la presencia de `CANDIDATAS_IV` si la
+    # declaran y si no la de su tabla, por si su ganadora no queda
+    redundantes = perdedores_de_redundancia()
+    for nombre in redundantes:
+        candidatas.setdefault(nombre, PRESENCIA_DE_TABLA.get(tabla_de(nombre, nombres)))
+    # una fuente de presencia que caduca en el fold vuelve a su motivo fijo, si lo tiene
+    fuentes = protecciones_de_presencia()
+    brutos = _descartes_brutos()
+    descartes.update({f: brutos[f] for f in fuentes if f in brutos})
+    return SelectorIV(
+        candidatas=candidatas,
+        descartes=descartes,
+        protegidas=columnas_protegidas() - set(fuentes),
+        categoricas=(pipeline.COL_TRAYECTORIA,),
+        redundantes=redundantes,
+        fuentes=fuentes,
+    )
+
+
+# --- la selección final del 5.8 ------------------------------------------------------------------
+
+
+class _Lector(dict):
+    """Un frame de mentira que anota qué columnas pide una función de `PRESENCIA_POR_COLUMNA`."""
+
+    def __missing__(self, columna: str) -> pd.Series:
+        self[columna] = pd.Series([0.0])
+        return self[columna]
+
+
+def fuentes_de_presencia() -> dict[str, set[str]]:
+    """Cada columna de la que el pipeline recupera una ausencia, con las que recupera.
+
+    Sale de los cuatro grupos de `pipeline.py` y no de una lista escrita aquí: las funciones de
+    `PRESENCIA_POR_COLUMNA` se ejecutan sobre un `_Lector`, que anota qué columnas leen.
+    """
+    fuentes: dict[str, set[str]] = {}
+    for recuperada, fuente in {
+        **pipeline.PRESENCIA_POR_BANDERA,
+        **pipeline.PRESENCIA_CASI_EXACTA,
+    }.items():
+        fuentes.setdefault(fuente, set()).add(recuperada)
+    for recuperada, condicion in pipeline.PRESENCIA_POR_COLUMNA.items():
+        lector = _Lector()
+        condicion(lector)
+        for fuente in lector:
+            fuentes.setdefault(fuente, set()).add(recuperada)
+    fuentes.setdefault(pipeline.BANDERA_BLOQUE, set()).update(pipeline.PRESENCIA_POR_BLOQUE)
+    return fuentes
+
+
+def _descartes_brutos() -> dict[str, str]:
+    """Lo que sale por una decisión ya congelada, antes de mirar las protegidas: los `descartar`
+    provisionales de receta que llegan a la matriz y los `descartar` y `degradada` del 5.6 que son
+    columna. Cada columna con su motivo, o sus motivos.
+
+    Perder el par en el 5.7 solo se suma como motivo a quien ya sale por otro: sin ninguno, el
+    perdedor no sale fijo, porque su ganadora puede no quedarse (`perdedores_de_redundancia()`)."""
+    declaradas = set(pipeline.columnas_declaradas())
+    motivos: dict[str, list[str]] = {}
+    for tabla in AUXILIARES:
+        for f in cargar_receta(tabla)["features"]:
+            # BB_STATUS_WORST sale dos veces en su receta, una por población
+            texto = f"receta de {tabla}: {f['estado']}"
+            if f["decision"] == "descartar" and f["nombre"] in declaradas:
+                if texto not in motivos.setdefault(f["nombre"], []):
+                    motivos[f["nombre"]].append(texto)
+    for columna, d in DECISIONES_IV.items():
+        if d.decision in ("descartar", "degradada") and columna in declaradas:
+            motivos.setdefault(columna, []).append(f"{d.decision} en el 5.6 ({d.motivo})")
+    for (a, b), d in DECISIONES_REDUNDANCIA.items():
+        for columna in ({a, b} - set(d.queda)) & set(motivos):
+            motivos[columna].append(f"redundante con {' y '.join(d.queda)} en el 5.7")
+    return {columna: "; ".join(textos) for columna, textos in motivos.items()}
+
+
+def perdedores_de_redundancia() -> dict[str, tuple[str, ...]]:
+    """Lo que pierde su par en el 5.7 sin otro motivo fijo de salida, con las ganadoras de sus
+    pares. El `SelectorIV` lo saca solo si alguna ganadora sigue en la matriz del fold; si no queda
+    ninguna, lo juzga por su IV como una candidata más.
+
+    La regla del 5.7 ("queda la de más IV") supone que la ganadora se queda, y el 5.6 o el propio
+    IV pueden sacarla: `BUREAU_MAX_OVERDUE_EVER` salía por `BB_OVERDUE_UNION`, `degradada` en el
+    5.6, y la matriz se quedaba sin la mora histórica del buró para quien no tiene histórico
+    mensual. Las protegidas no entran, igual que en `descartes_fijos()`.
+    """
+    fijos = _descartes_brutos()
+    protegidas = columnas_protegidas()
+    perdedores: dict[str, tuple[str, ...]] = {}
+    for (a, b), d in DECISIONES_REDUNDANCIA.items():
+        for columna in {a, b} - set(d.queda) - set(fijos) - protegidas:
+            perdedores[columna] = perdedores.get(columna, ()) + d.queda
+    return perdedores
+
+
+def descartes_fijos() -> dict[str, str]:
+    """Lo que el `SelectorIV` saca sin mirar el IV del fold, con su motivo: `_descartes_brutos()`
+    menos las protegidas. No se reajusta por fold, igual que los cortes `medido` del 5.1."""
+    protegidas = columnas_protegidas()
+    return {c: m for c, m in _descartes_brutos().items() if c not in protegidas}
+
+
+# --- la banda de revisión y el registro del 5.8 --------------------------------------------------
+
+# tres semillas de cinco folds sobre la parte de entrenamiento de cada uno: el mismo protocolo de
+# 15 folds que ya midió la estabilidad del tramo y la cola de bureau en el 2.3, sin una constante
+# compartida porque esas medidas nunca quedaron escritas en código, solo en el docstring de sus
+# cortes. Se fija aquí para no repetir el barrido con semillas distintas cada vez que se llame.
+SEMILLAS_ESTABILIDAD: tuple[int, ...] = (0, 1, 2)
+N_FOLDS_ESTABILIDAD = 5
+
+
+def _decide_el_iv(selector: SelectorIV) -> set[str]:
+    """Los orígenes que el umbral de IV decide: las candidatas que no van protegidas. Un descarte
+    o una protegida también llevan `iv_`, pero marginal y sin decisión detrás, así que caer en la
+    banda no dice nada de ellos (`BUREAU_ACTIVE_CARD_COUNT` salía con 0,0183 y 2 de 15 folds, y
+    dentro de `bureau` vale 0,0314)."""
+    return set(selector.candidatas or {}) - set(selector.protegidas)
+
+
+def estabilidad_banda(
+    matriz: pd.DataFrame, objetivo: pd.Series, selector: SelectorIV
+) -> dict[str, int]:
+    """En cuántos de los 15 folds cada candidata dentro de la banda de revisión llega a `min_iv`.
+
+    Informativo, como pide el 5.8: no mueve `quedan_` de `selector`, que sigue cortando en
+    `min_iv` sin mirar la banda. Solo mira lo que el umbral decide (`_decide_el_iv()`). Reajusta
+    el propio `SelectorIV` con `clone()` en cada fold, sin reimplementar el IV aparte. Lo que no
+    se reajusta es lo de delante: `matriz` sale del pipeline ajustado sobre todo train, así que
+    la imputación y la codificación son las de ese ajuste y no las de cada fold, que sí lo serán
+    en el CV de la Fase 4. `matriz` y `objetivo` son la matriz y el TARGET con los que se ajustó
+    `selector` (o un subconjunto de train).
+    """
+    check_is_fitted(selector)
+    suelo = valor("banda_revision_iv_suelo")
+    techo = valor("banda_revision_iv_techo")
+    decide = _decide_el_iv(selector)
+    en_banda = [o for o, iv in selector.iv_.items() if o in decide and suelo <= iv < techo]
+    if not en_banda:
+        return {}
+
+    aciertos = dict.fromkeys(en_banda, 0)
+    min_iv = valor("min_iv")
+    for semilla in SEMILLAS_ESTABILIDAD:
+        kfold = StratifiedKFold(n_splits=N_FOLDS_ESTABILIDAD, shuffle=True, random_state=semilla)
+        for indice_train, _ in kfold.split(matriz, objetivo):
+            fold = clone(selector).fit(matriz.iloc[indice_train], objetivo.iloc[indice_train])
+            for origen in en_banda:
+                if fold.iv_[origen] >= min_iv:
+                    aciertos[origen] += 1
+    return aciertos
+
+
+def seleccion_final(
+    pipeline_ajustado: Pipeline, estabilidad: dict[str, int] | None = None
+) -> pd.DataFrame:
+    """El registro de selección del 5.8: una fila por cada una de las 180 columnas de capa 1
+    (`pipeline.columnas_declaradas()`), con su tabla, la decisión de su receta si la tiene, el
+    IV que midió el `SelectorIV` ya ajustado de `pipeline_ajustado`, si cae en la banda de
+    revisión (con sus folds si se pasa `estabilidad`, de `estabilidad_banda()`), el par de
+    redundancia del 5.7 si le toca alguno, y si queda con el motivo final.
+
+    No recalcula nada: lee `selector.iv_`/`motivos_` y los registros ya congelados
+    (`descartes_fijos()`, `columnas_protegidas()`, las recetas, `DECISIONES_REDUNDANCIA`).
+
+    El parámetro se llama `pipeline_ajustado` y no `pipeline`, que era lo natural: este módulo
+    importa `pipeline.py` como paquete, y una variable local con ese nombre lo tapaba dentro de
+    la función.
+    """
+    selector = pipeline_ajustado.named_steps["seleccion"]
+    check_is_fitted(selector)
+    nombres = _nombres_por_tabla()
+    protegidas = columnas_protegidas()
+    descartes = descartes_fijos()
+    redundantes = selector.redundantes or {}
+    fuentes = selector.fuentes or {}
+    decide = _decide_el_iv(selector)
+    estabilidad = estabilidad or {}
+    suelo = valor("banda_revision_iv_suelo")
+    techo = valor("banda_revision_iv_techo")
+    min_iv = valor("min_iv")
+
+    receta_de = {
+        f["nombre"]: (f["decision"], f["firmeza"])
+        for tabla in AUXILIARES
+        for f in cargar_receta(tabla)["features"]
+    }
+    pares_de: dict[str, list[str]] = {}
+    for (a, b), decision in DECISIONES_REDUNDANCIA.items():
+        for columna in (a, b):
+            pares_de.setdefault(columna, []).append(f"{a}/{b} ({decision.motivo})")
+
+    filas = []
+    for nombre in pipeline.columnas_declaradas():
+        iv = selector.iv_.get(nombre)
+        en_banda = nombre in decide and suelo <= iv < techo
+        decision_receta, firmeza = receta_de.get(nombre, (None, None))
+
+        if nombre in descartes:
+            queda, motivo = False, descartes[nombre]
+        elif nombre in fuentes:
+            queda = nombre not in selector.motivos_
+            motivo = selector.motivos_.get(
+                nombre,
+                f"fuente de presencia de {' y '.join(fuentes[nombre])}, protegida mientras "
+                "alguna siga en la matriz",
+            )
+        elif nombre in protegidas:
+            queda, motivo = True, "protegida, no pasa por el umbral de IV"
+        elif nombre in redundantes:
+            # depende de si su ganadora siguió en la matriz: lo decidió el selector en su `fit`
+            queda = nombre not in selector.motivos_
+            motivo = selector.motivos_.get(
+                nombre,
+                f"IV {_coma(iv)} llega a min_iv ({_coma(min_iv)}); su ganadora del 5.7 "
+                f"({' y '.join(redundantes[nombre])}) no queda",
+            )
+        elif iv is not None:
+            queda = iv >= min_iv
+            motivo = f"IV {_coma(iv)} {'llega' if queda else 'no llega'} a min_iv ({_coma(min_iv)})"
+            if en_banda:
+                folds = estabilidad.get(nombre)
+                motivo += f"; en banda, {folds} de 15 folds" if folds is not None else "; en banda"
+        else:
+            queda, motivo = True, "sin decisión de IV, pasa intacta"
+
+        filas.append(
+            {
+                "feature": nombre,
+                "tabla": tabla_de(nombre, nombres),
+                "decision_receta": decision_receta,
+                "firmeza": firmeza,
+                "iv": iv,
+                "en_banda": en_banda,
+                "folds": estabilidad.get(nombre) if en_banda else None,
+                "redundancia": "; ".join(pares_de[nombre]) if nombre in pares_de else None,
+                "queda": queda,
+                "motivo": motivo,
+            }
+        )
+    return pd.DataFrame(filas).set_index("feature")

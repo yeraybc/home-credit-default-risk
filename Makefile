@@ -30,6 +30,9 @@ test: ## tests
 train: ## entrena el modelo
 	$(PY) -m src.models.train
 
+features: ## construye matrices, registro de seleccion y pipeline (5.9)
+	$(PY) -m src.features.build_features
+
 audit: ## muestra el data audit
 	$(PY) -c "from src.data.loader import load_all_tables, data_audit; print(data_audit(load_all_tables()).to_string())"
 
