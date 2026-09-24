@@ -979,7 +979,7 @@ ANCLAJES: tuple[tuple[str, str, float | None, float, str], ...] = (
     ("application_train", "centinela de DAYS_EMPLOYED", 55_374, 55_374, ""),
     ("bureau", "con historial de buró", 263_491, 263_475, ""),
     ("bureau", "sin historial de buró", 44_020, 44_017, ""),
-    ("bureau", "ratio de deuda no nulo", 262_408, 255_094, "limpieza y min_count=1 (2.2)"),
+    ("bureau", "ratio de deuda no nulo", 262_408, 255_094, "limpieza y sumas sin cero de relleno"),
     ("bureau_balance", "con histórico mensual", 92_231, 92_220, ""),
     ("bureau_balance", "suma de BB_MONTHS_TOTAL", 14_701_612, 14_700_583, ""),
     ("bureau_balance", "con mora alguna vez", 31_052, 31_048, ""),
