@@ -35,6 +35,9 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 # quien lee un transformer. Renombrarla aqui seria apartarse del contrato para contentar al
 # linter, asi que se acota al fichero de los transformers y no se abre en todo src.
 "src/features/transformers.py" = ["N803", "N806"]
+# Lo mismo para los folds: X e y son los nombres de scikit-learn, y `X_ajuste` y `X_eval` los de
+# lo que sale de ajustar y transformar con ellos.
+"src/models/folds.py" = ["N803", "N806"]
 
 # --- Black (code formatter) --------------------------------------------------
 [tool.black]
