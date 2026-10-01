@@ -289,14 +289,23 @@ def test_mcnemar_aprobados_detecta_el_mejor_y_con_tasa_igual_es_mas_potente():
     assert mcnemar_aprobados(y, _corte(a), _corte(b))["p"] < mcnemar(y, _corte(a), _corte(b))["p"]
 
 
-@pytest.mark.parametrize("q_a, q_b", [(0.8, 0.8), (0.8, 0.7)])
+@pytest.mark.parametrize("q_a, q_b", [(0.8, 0.8), (0.8, 0.7), (0.9, 0.6)])
 def test_mcnemar_aprobados_no_inventa_diferencias(q_a, q_b):
-    # sin diferencia real, con la misma tasa y con tasas distintas (donde el score B aprueba menos)
+    # dos scores distintos de la misma calidad, con la misma tasa y con tasas distintas
     def nulo(s):
-        y, a, b = _par(n=1500, seed=s)
-        return mcnemar_aprobados(y, _corte(a, q_a), _corte(a, q_b))["p"]
+        y, a, b = _par(n=3000, seed=s)
+        return mcnemar_aprobados(y, _corte(a, q_a), _corte(b, q_b))
 
-    assert (np.array([nulo(s) for s in range(300)]) < 0.05).mean() <= 0.07
+    res = [nulo(s) for s in range(300)]
+    # guardián: los dos grupos exclusivos existen, que con el mismo score el test es vacuo
+    assert all(r["solo_a"] > 0 and r["solo_b"] > 0 for r in res)
+    assert (np.array([r["p"] for r in res]) < 0.05).mean() <= 0.07
+
+
+def test_mcnemar_aprobados_con_decisiones_anidadas_no_tiene_nada_que_contrastar():
+    y, a, _ = _par()
+    res = mcnemar_aprobados(y, _corte(a, 0.8), _corte(a, 0.7))
+    assert res["solo_b"] == 0 and res["p"] == 1.0
 
 
 def test_mcnemar_aprobados_decisiones_iguales_y_entradas_invalidas():
@@ -350,3 +359,54 @@ def test_la_familia_corregida_entra_en_elegir_sin_traducir():
     assert elegir(modelos, sin_corregir) == "lightgbm"
     assert elegir(modelos, bonferroni(sin_corregir, len(claves))) == "logistica"
     assert elegir(modelos, bonferroni(dict.fromkeys(claves, 0.01), len(claves))) == "lightgbm"
+
+
+def _delong_a_fuerza_bruta(y, a, b):
+    """DeLong por el kernel de Mann-Whitney O(m·n), sin rangos: la referencia del camino rápido."""
+    comp = []
+    for sc in (a, b):
+        pos, neg = sc[y == 1], sc[y == 0]
+        k = (pos[:, None] > neg[None, :]) + 0.5 * (pos[:, None] == neg[None, :])
+        comp.append((k.mean(), k.mean(axis=1), k.mean(axis=0)))
+    m, n = (y == 1).sum(), (y == 0).sum()
+    cov = np.cov([comp[0][1], comp[1][1]]) / m + np.cov([comp[0][2], comp[1][2]]) / n
+    return comp[0][0], comp[1][0], np.sqrt(cov[0, 0] + cov[1, 1] - 2 * cov[0, 1])
+
+
+@pytest.mark.parametrize("con_empates", [False, True])
+def test_delong_coincide_exacto_con_la_fuerza_bruta(con_empates):
+    # 10% de impagos: m y n muy distintos, que es lo que separa los pesos de las dos covarianzas
+    y, a, b = _par(n=500, sep_a=1.1, sep_b=0.8, seed=5)
+    if con_empates:
+        a, b = np.round(a), np.round(b)
+    auc_a, auc_b, ee = _delong_a_fuerza_bruta(y, a, b)
+    res = delong(y, a, b)
+    assert res["auc_a"] == pytest.approx(auc_a, abs=1e-12)
+    assert res["auc_b"] == pytest.approx(auc_b, abs=1e-12)
+    assert res["ee"] == pytest.approx(ee, abs=1e-12)
+
+
+def test_delong_con_scores_perfectos_opuestos_la_diferencia_es_segura():
+    y = np.array([0] * 50 + [1] * 10)
+    res = delong(y, np.arange(60.0), -np.arange(60.0))
+    assert res["dif"] == 1 and res["ee"] == 0 and res["p"] == 0 and res["z"] == np.inf
+
+
+@pytest.mark.parametrize("n_rep", [1, 0])
+def test_bootstrap_revienta_con_pocas_replicas(n_rep):
+    with pytest.raises(ValueError, match="no válidos"):
+        bootstrap_estratificado([0, 1, 0, 1], lambda i: 0.0, n_rep=n_rep)
+
+
+@pytest.mark.parametrize("funcion", [mcnemar, mcnemar_aprobados])
+def test_las_decisiones_revientan_con_y_no_binaria_o_con_longitud_que_se_difunde(funcion):
+    with pytest.raises(ValueError, match="0 y 1"):
+        funcion([0, 1, 2, 1], [1, 0, 1, 0], [1, 0, 1, 0])
+    # una decisión de un solo elemento se difundiría contra y sin error de numpy
+    with pytest.raises(ValueError, match="0 y 1"):
+        funcion([0, 1, 0, 1], [1], [1, 0, 1, 0])
+
+
+def test_bonferroni_sin_contrastes_revienta():
+    with pytest.raises(ValueError, match="contrastes"):
+        bonferroni({}, 0)

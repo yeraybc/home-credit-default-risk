@@ -141,7 +141,8 @@ def mcnemar_aprobados(y: ArrayLike, aprueba_a: ArrayLike, aprueba_b: ArrayLike) 
 
     Binomial exacto sobre los impagos de cada grupo, con probabilidad nula igual al peso del grupo
     de A. Mide la mora entre aprobados y es válido con tasas de aprobación iguales o distintas,
-    donde `mcnemar()` es conservador. `impagos_a` son los impagos que solo aprueba A.
+    donde `mcnemar()` es conservador. `impagos_a` son los impagos que solo aprueba A. Si las
+    decisiones de un modelo contienen las del otro no hay grupo con el que contrastar y da p = 1.
     """
     y, a, b = _decisiones(y, aprueba_a, aprueba_b)
     solo_a, solo_b = a & ~b, b & ~a
