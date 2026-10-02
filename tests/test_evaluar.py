@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
@@ -116,6 +117,18 @@ def test_el_auc_por_fold_coincide_con_recalcularlo_a_mano(poblacion):
     assert (ev.por_fold["gap"] == ev.por_fold["auc_ajuste"] - ev.por_fold["auc"]).all()
 
 
+def test_el_score_de_ajuste_es_el_del_ajuste_y_se_mide_el_tiempo(poblacion):
+    """Un bosque de arboles sin podar memoriza el ajuste: su AUC de ajuste casi 1 y el de
+    evaluacion no."""
+    X, y, _ = poblacion
+
+    ev = evaluar_en_folds(RandomForestClassifier(50, random_state=0), _folds(X, y, semillas=(0,)))
+
+    assert (ev.por_fold["auc_ajuste"] > 0.99).all()
+    assert (ev.por_fold["gap"] > 0.05).all()
+    assert (ev.por_fold["t_ajuste"] > 0).all() and (ev.por_fold["t_prediccion"] > 0).all()
+
+
 def test_el_oof_cubre_a_cada_cliente_una_vez_por_semilla(poblacion):
     X, y, _ = poblacion
 
@@ -125,6 +138,16 @@ def test_el_oof_cubre_a_cada_cliente_una_vez_por_semilla(poblacion):
     assert ev.oof.index.equals(X.index.sort_values())
     assert not ev.oof.isna().any().any()
     assert ((ev.oof >= 0) & (ev.oof <= 1)).all().all()
+
+
+def test_una_sola_semilla_el_caso_del_tuning_se_resume_sin_reventar(poblacion):
+    """Con una semilla pandas no ordena al unir, y el OOF saldria en el orden de los folds."""
+    X, y, contexto = poblacion
+
+    ev = evaluar_en_folds(LogisticRegression(), _folds(X, y, semillas=(0,)))
+
+    assert ev.oof.index.is_monotonic_increasing
+    assert resumir(ev, contexto).auc_cv == pytest.approx(ev.por_fold["auc"].mean())
 
 
 def test_el_estimador_de_entrada_no_se_ajusta(poblacion):
@@ -217,18 +240,29 @@ def test_resumir_con_una_pd_casi_perfecta_da_los_valores_conocidos(poblacion):
     )
 
 
-def test_resumir_promedia_las_semillas(poblacion):
+def test_resumir_promedia_las_semillas_y_los_folds(poblacion):
+    """Tres semillas distintas, tres folds distintos: la media no es la primera ni la mediana."""
     _, y, contexto = poblacion
-    prob = pd.Series(np.linspace(0.01, 0.99, N), index=y.index)
-    una = Evaluacion(pd.DataFrame({"auc": [0.7], "gap": [0.0]}), pd.DataFrame({0: prob}))
-    dos = Evaluacion(
-        pd.DataFrame({"auc": [0.7], "gap": [0.0]}), pd.DataFrame({0: prob, 1: prob})
+    rng = np.random.default_rng(3)
+    # cada semilla con mas senal que la anterior, para que ninguna media coincida con una sola
+    logits = {k - 1: 0.4 * k * y.to_numpy() + rng.normal(size=N) - 2 for k in (1, 2, 3)}
+    oof = pd.DataFrame({s: 1 / (1 + np.exp(-z)) for s, z in logits.items()}, index=y.index)
+    por_fold = pd.DataFrame({"auc": [0.6, 0.7, 0.95], "gap": [0.1, 0.2, 0.6]})
+
+    r = resumir(Evaluacion(por_fold, oof), contexto)
+
+    sin = contexto["HAS_BUREAU_HISTORY"].eq(0).to_numpy()
+    sueltos = [resumir(Evaluacion(por_fold, oof[[s]]), contexto) for s in oof.columns]
+    assert r.auc_cv == pytest.approx(0.75) and r.gap == pytest.approx(0.3)  # media, no mediana
+    for campo in ("pendiente", "ordenada", "auc_sin_historial"):
+        valores = [getattr(x, campo) for x in sueltos]
+        assert len(set(np.round(valores, 6))) == 3  # el caso separa las semillas
+        assert getattr(r, campo) == pytest.approx(np.mean(valores))
+    assert r.auc_sin_historial == pytest.approx(
+        np.mean([roc_auc_score(y[sin], oof[s][sin]) for s in oof.columns])
     )
-
-    a, b = resumir(una, contexto), resumir(dos, contexto)
-
-    pd.testing.assert_frame_equal(a.curva, b.curva)
-    assert a.pendiente == pytest.approx(b.pendiente)
+    mora = [x.curva["mora"] for x in sueltos]
+    pd.testing.assert_series_equal(r.curva["mora"], sum(mora) / 3)
 
 
 def test_resumir_deja_las_tasas_de_la_curva_exactas_con_tres_semillas(poblacion):
@@ -271,6 +305,11 @@ def test_el_dummy_da_la_prevalencia_del_ajuste_y_su_brier(poblacion):
         p = fold.y_ajuste.mean()
         assert fila.pd == pytest.approx(p)
         assert fila.brier == pytest.approx(((fold.y_eval - p) ** 2).mean())
+
+
+def test_el_suelo_ext_source_va_sin_pesos_de_clase():
+    """Excepcion declarada a la regla del desbalance: el liston es sin ninguna tecnica."""
+    assert suelo_ext_source().named_steps["modelo"].class_weight is None
 
 
 def test_el_suelo_ext_source_solo_lee_las_tres_ext_source(poblacion):
