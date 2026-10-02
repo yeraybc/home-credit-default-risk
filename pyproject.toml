@@ -30,7 +30,7 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 # N806 por lo mismo que abajo: los tests de los transformers llaman a fit(X, y) con el nombre
 # que usa scikit-learn, y son 48 avisos que enterraban a los que si dicen algo. Con ellos fuera,
 # ruff sobre tests/ sale limpio y puede entrar en CI, que es lo que caza el test duplicado.
-"tests/*"     = ["ANN001", "ANN201", "N806"]
+"tests/*"     = ["ANN001", "ANN201", "N803", "N806"]
 # La X mayuscula de fit(X, y) es el nombre que usa scikit-learn en toda su API y el que espera
 # quien lee un transformer. Renombrarla aqui seria apartarse del contrato para contentar al
 # linter, asi que se acota al fichero de los transformers y no se abre en todo src.
@@ -38,6 +38,8 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 # Lo mismo para los folds: X e y son los nombres de scikit-learn, y `X_ajuste` y `X_eval` los de
 # lo que sale de ajustar y transformar con ellos.
 "src/models/folds.py" = ["N803", "N806"]
+# Y la evaluacion, que recibe X de la API de scikit-learn en `_proba_impago()`.
+"src/models/evaluar.py" = ["N803"]
 
 # --- Black (code formatter) --------------------------------------------------
 [tool.black]
