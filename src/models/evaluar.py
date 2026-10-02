@@ -21,6 +21,8 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from src.features.build_features import _exigir_train
+from src.features.split import cargar_split, mascara
 from src.models.folds import Fold
 from src.models.metricas import Resumen, calibracion, curva_estrategia, ranking
 
@@ -46,16 +48,41 @@ def _proba_impago(modelo: BaseEstimator, X: pd.DataFrame) -> np.ndarray:
     return np.asarray(modelo.predict_proba(X)[:, 1])
 
 
-def evaluar_en_folds(estimador: BaseEstimator, folds: Iterable[Fold]) -> Evaluacion:
+def _clientes_de_train(split: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.Index]:
+    """El split (el persistido si no se da) y los clientes de train, ordenados."""
+    split = cargar_split() if split is None else split
+    return split, pd.Index(split.loc[mascara(split, "train"), "SK_ID_CURR"]).sort_values()
+
+
+def _exigir_particion_de_train(fold: Fold, split: pd.DataFrame, esperados: pd.Index) -> None:
+    """Ajuste y evaluación son disjuntos y suman exactamente train, o revienta.
+
+    Camino rápido por ordenación (9 ms frente a 59 ms de `_exigir_train()` por fold, que importa
+    en el tuning); si falla, `_exigir_train()` dice quién sobra o falta.
+    """
+    ids = fold.X_ajuste.index.append(fold.X_eval.index)
+    if ids.sort_values().equals(esperados):
+        return
+    _exigir_train(pd.Series(ids.unique()), split)
+    raise ValueError(f"fold s{fold.semilla} k{fold.k}: ajuste y evaluación comparten clientes")
+
+
+def evaluar_en_folds(
+    estimador: BaseEstimator, folds: Iterable[Fold], split: pd.DataFrame | None = None
+) -> Evaluacion:
     """Ajusta un clon del estimador en cada fold y puntúa su parte de evaluación.
 
-    Revienta si las columnas de ajuste y evaluación no coinciden, si `classes_` no es `[0, 1]`, si
-    el AUC de un fold no pasa de 0,5 (columna o signo al revés) o si un cliente sale dos veces en el
-    OOF de una misma semilla. El score de ajuste solo alimenta el gap.
+    Revienta si ajuste y evaluación de un fold no son disjuntos y suman exactamente train (contra
+    `split`, el persistido por defecto: un fold con clientes de valid o repetidos no es de aquí),
+    si las columnas no coinciden, si `classes_` no es `[0, 1]`, si el AUC de un fold no pasa de 0,5
+    (columna o signo al revés) o si un cliente sale dos veces en el OOF de una misma semilla. El
+    score de ajuste solo alimenta el gap.
     """
+    split, esperados = _clientes_de_train(split)
     filas = []
     oof: dict[int, list[pd.Series]] = {}
     for fold in folds:
+        _exigir_particion_de_train(fold, split, esperados)
         if not fold.X_eval.columns.equals(fold.X_ajuste.columns):
             raise ValueError(f"fold s{fold.semilla} k{fold.k}: columnas de ajuste y evaluación")
         modelo = clone(estimador)
@@ -92,14 +119,18 @@ def evaluar_en_folds(estimador: BaseEstimator, folds: Iterable[Fold]) -> Evaluac
     return Evaluacion(pd.DataFrame(filas), pd.DataFrame(columnas).sort_index())
 
 
-def resumir(evaluacion: Evaluacion, contexto: pd.DataFrame) -> Resumen:
+def resumir(
+    evaluacion: Evaluacion, contexto: pd.DataFrame, split: pd.DataFrame | None = None
+) -> Resumen:
     """Lo que lee el criterio de elección, promediado entre las semillas.
 
     `auc_cv` y `gap` son la media de los folds. La curva de estrategia, el AUC sin historial y la
     calibración se miden sobre el OOF completo de cada semilla, que es de lo que hay una PD por
-    cliente, y se promedian. `contexto` es el de `cargar_contexto()`; revienta si el OOF no cubre
-    exactamente a sus clientes.
+    cliente, y se promedian. `contexto` es el de `cargar_contexto()`; revienta si no es el de train
+    (contra `split`, el persistido por defecto) o si el OOF no cubre exactamente a sus clientes.
     """
+    split = cargar_split() if split is None else split
+    _exigir_train(pd.Series(contexto.index), split)
     oof = evaluacion.oof
     if not oof.index.equals(contexto.index.sort_values()) or oof.isna().any().any():
         raise ValueError("el OOF no cubre exactamente a los clientes del contexto")
