@@ -57,6 +57,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, TargetEncoder
 
+from src.config import cargar_config
 from src.features.agg_bureau_balance import TRAYECTORIAS
 from src.features.application import COLUMNAS_EDIFICIO
 from src.features.params import valor
@@ -669,8 +670,13 @@ def construir_pipeline() -> Pipeline:
             ),
             ("woe", WoEEncoder(), [COL_ORGANIZACION]),
             # `TargetEncoder` hace codificación cruzada interna, o sea que resuelve por diseño el
-            # sobreajuste del target encoding sin escribirlo a mano.
-            ("tgt", TargetEncoder(), [COL_OCUPACION]),
+            # sobreajuste del target encoding sin escribirlo a mano. La semilla fija cómo baraja
+            # esos folds internos: sin ella, la matriz de entrenamiento cambiaba en cada ajuste.
+            (
+                "tgt",
+                TargetEncoder(random_state=cargar_config()["modeling"]["random_state"]),
+                [COL_OCUPACION],
+            ),
             ("bin", "passthrough", list(BINARIAS + PRESENCIA_AUX)),
             # constante y no mediana, con el motivo medido arriba. `keep_empty_features` no hace
             # falta: con `strategy="constant"` la columna que llegue toda a NaN se rellena igual,

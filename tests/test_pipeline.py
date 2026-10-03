@@ -624,6 +624,14 @@ def test_solo_la_ocupacion_cambia_entre_ajustar_y_transformar(entrada, objetivo)
     assert distintas == [COL_OCUPACION]
 
 
+def test_la_codificacion_cruzada_se_reproduce_entre_ajustes(entrada, objetivo):
+    """Dos `fit_transform` dan la misma ocupación: sin semilla, cada ajuste barajaba sus folds."""
+    primera = construir_pipeline().fit_transform(entrada, objetivo)[COL_OCUPACION]
+    segunda = construir_pipeline().fit_transform(entrada, objetivo)[COL_OCUPACION]
+
+    pd.testing.assert_series_equal(primera, segunda)
+
+
 def test_el_fixture_da_una_ocupacion_con_varios_niveles_y_repartida(entrada, objetivo):
     """Guardián: con un solo oficio, las medias por fold coinciden y no hay huella que ver.
 

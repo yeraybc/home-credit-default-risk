@@ -22,7 +22,6 @@ modeling:
   cv_folds:        5
   optuna_metric:   "roc_auc"
   optuna_n_trials: 100
-  decision_threshold: 0.5
 
 monitoring:
   psi_threshold:   0.2    # > 0.2 → drift significativo, reentrenar
@@ -31,7 +30,6 @@ monitoring:
 api:
   host:          "0.0.0.0"
   port:          8000
-  model_name:    "credit_scoring_ensemble"
   model_version: "latest"
 
 mlflow:

@@ -1,6 +1,7 @@
 # Dependencias de ejecucion, fijadas a las versiones con las que corren los notebooks.
 # Solo se declara lo que se importa de verdad en src/ y notebooks/.
-# statsmodels, xgboost y lightgbm entraran con la fase de modelado.
+# Excepcion: el stack de modelado (fase 4) se fija entero al abrir la fase, para cerrar su
+# compatibilidad antes de escribir codigo; cada una dice en que punto se importa por primera vez.
 
 pandas==2.3.3
 numpy==2.0.2
@@ -16,6 +17,18 @@ scikit-learn==1.6.1
 pyarrow==21.0.0
 # serializa el pipeline ajustado en models/
 joblib==1.5.3
+
+# modelado (fase 4). Las cuatro con wheel para cp39.
+# statsmodels: inferencia y diagnostico de la logistica sin regularizar (1.1)
+statsmodels==0.14.6
+# imbalanced-learn: remuestreo dentro del pipeline, solo en fit (0.7). 0.13 ya pide Python 3.10;
+# con scikit-learn 1.6.1 funciona pero emite avisos de deprecacion propios, filtrados de forma
+# acotada donde se construye el sampler
+imbalanced-learn==0.12.4
+# lightgbm: el modelo de boosting (0.7 sin tunear, bloque 3)
+lightgbm==4.6.0
+# optuna: busqueda de hiperparametros de Random Forest y LightGBM (2.2 y 3.2)
+optuna==5.0.0
 
 # entorno de notebooks
 ipython==8.18.1

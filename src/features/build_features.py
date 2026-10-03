@@ -254,6 +254,16 @@ def ensamblar_auxiliares(
     return unido
 
 
+def cargar_auxiliares() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Las tres auxiliares crudas, `(bureau, bureau_balance, previous_application)`, como las lee
+    todo el que ensambla: `bureau_balance` con memoria reducida y las otras dos sin ella."""
+    return (
+        load_table("bureau", reduce_memory=False),
+        load_table("bureau_balance"),
+        load_table("previous_application", reduce_memory=False),
+    )
+
+
 def matriz_de_features(base: pd.DataFrame) -> pd.DataFrame:
     """La base sin la etiqueta ni el identificador, que es lo que consumen las capas 2.
 
@@ -1117,9 +1127,7 @@ def construir_artefactos(
     split = cargar_split()
     if set(base[id_col]) != set(split[id_col]):
         raise ValueError("el split no cubre exactamente la población de modelado de la base")
-    bureau = load_table("bureau", reduce_memory=False)
-    bb = load_table("bureau_balance")
-    prev = load_table("previous_application", reduce_memory=False)
+    bureau, bb, prev = cargar_auxiliares()
 
     if refijando:
         refijar_cortes_auxiliares(bureau, bb, prev, base, split, sobrescribir)

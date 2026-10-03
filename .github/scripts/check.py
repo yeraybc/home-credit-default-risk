@@ -27,6 +27,7 @@ KERNEL_PORTABLE = "python3"
 IMPORT_A_PAQUETE = {
     "dotenv": "python-dotenv",
     "sklearn": "scikit-learn",
+    "imblearn": "imbalanced-learn",
     "cv2": "opencv-python",
     "PIL": "pillow",
     "yaml": "pyyaml",

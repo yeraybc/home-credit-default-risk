@@ -1,3 +1,3 @@
-"""src.models — entrenamiento (XGBoost+LightGBM+Optuna), evaluación (Gini, KS), predicción."""
+"""src.models, modelado: folds, métricas, contrastes, evaluación, espacios y reentreno final."""
 
 __all__: list[str] = []
