@@ -16,8 +16,11 @@ from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 
+import imblearn
+import lightgbm
 import numpy as np
 import pandas as pd
+import sklearn
 from imblearn.combine import SMOTETomek
 from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.over_sampling import SMOTENC
@@ -33,7 +36,7 @@ from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from src.config import ruta
 from src.models.contrastes import bonferroni, nadeau_bengio
 from src.models.evaluar import evaluar_en_folds, resumir
-from src.models.folds import SEMILLA_TUNING, Fold, cargar_contexto, cargar_folds
+from src.models.folds import SEMILLA_TUNING, Fold, cargar_contexto, cargar_folds, huella_cache
 from src.models.metricas import ALFA, ORDEN_SIMPLICIDAD, _zona, curva_estrategia
 from src.models.tiempos import sanear_nombres
 
@@ -208,14 +211,15 @@ def medir(
     y, importe = contexto["TARGET"], contexto["AMT_CREDIT"]
     filas = []
     for _, f in por_fold.iterrows():
-        idx = miembros[(int(f["semilla"]), int(f["k"]))]
-        curva = curva_estrategia(y.loc[idx], oof.loc[idx, int(f["semilla"])], importe.loc[idx])
+        semilla, k = int(f["semilla"]), int(f["k"])
+        idx = miembros[(semilla, k)]
+        curva = curva_estrategia(y.loc[idx], oof.loc[idx, semilla], importe.loc[idx])
         filas.append(
             {
                 "modelo": modelo,
                 "estrategia": estrategia,
-                "semilla": int(f["semilla"]),
-                "k": int(f["k"]),
+                "semilla": semilla,
+                "k": k,
                 "auc": f["auc"],
                 "mora_zona": float(_zona(curva)["mora"].mean()),
             }
@@ -326,10 +330,26 @@ def _acumular(nuevo: pd.DataFrame, destino: Path, claves: list[str]) -> pd.DataF
     return nuevo
 
 
+def versiones() -> dict[str, str]:
+    """Las librerías de las que depende la medida, para saber con qué se hizo."""
+    return {
+        "scikit-learn": sklearn.__version__,
+        "imbalanced-learn": imblearn.__version__,
+        "lightgbm": lightgbm.__version__,
+    }
+
+
 def escribir_decision(
-    resumen: pd.DataFrame, por_fold: pd.DataFrame, destino: Path | None = None
+    resumen: pd.DataFrame,
+    por_fold: pd.DataFrame,
+    huella: str,
+    destino: Path | None = None,
 ) -> dict[str, list[str]]:
-    """`models/decision_desbalance.json`: tabla, contrastes y finalistas (viaja con el repo)."""
+    """`models/decision_desbalance.json`: tabla, contrastes y finalistas (viaja con el repo).
+
+    Lleva la huella de la caché de folds y las versiones con las que se midió: una decisión sobre
+    folds reconstruidos con otro código ya no es la de este pipeline.
+    """
     contrastes = contrastar(por_fold)
     propuestas = finalistas(resumen.merge(contrastes, on=["modelo", "estrategia"], how="left"))
     destino = destino or ruta("models") / NOMBRE_DECISION
@@ -337,6 +357,8 @@ def escribir_decision(
     contenido = {
         "criterio": "escrito antes de medir (plan.md, 0.7): contra pesos, ALFA tras Bonferroni",
         "folds": "5 de la semilla 0, modelos sin tunear",
+        "huella_folds": huella,
+        "versiones": versiones(),
         "finalistas": propuestas,
         "tabla": json.loads(resumen.to_json(orient="records")),
         "contrastes": json.loads(contrastes.to_json(orient="records")),
@@ -380,7 +402,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     hechas = set(zip(resumen["modelo"], resumen["estrategia"]))
     if all((m, e) in hechas for m in ESTRATEGIAS for e in ESTRATEGIAS[m]):
-        print(escribir_decision(resumen, por_fold))
+        print(escribir_decision(resumen, por_fold, huella_cache()))
 
 
 if __name__ == "__main__":

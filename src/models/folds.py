@@ -228,6 +228,11 @@ def _leer_manifiesto(origen: Path, huella: str | None) -> dict:
     return manifiesto
 
 
+def huella_cache(origen: Path | None = None) -> str:
+    """La huella de la caché de folds, ya comprobada contra el split, los cortes y el código."""
+    return str(_leer_manifiesto(origen or _destino(), None)["huella"])
+
+
 def cargar_contexto(origen: Path | None = None, huella: str | None = None) -> pd.DataFrame:
     """`TARGET`, `AMT_CREDIT` crudo y `HAS_BUREAU_HISTORY` de cada cliente de train."""
     ruta_origen = origen or _destino()
@@ -308,7 +313,7 @@ def informe_identidad(base: pd.DataFrame, split: pd.DataFrame) -> pd.DataFrame:
         en_grupo = d[grupo.transform("size").gt(1)].assign(
             grupo=lambda f: f.groupby(list(claves), observed=True).ngroup()
         )
-        partes = en_grupo.groupby("grupo")["split"].agg(lambda s: set(s))
+        partes = en_grupo.groupby("grupo")["split"].agg(set)
         cruzan = partes[partes.map(lambda p: p == {"train", "valid"})].index
         filas.append(
             {

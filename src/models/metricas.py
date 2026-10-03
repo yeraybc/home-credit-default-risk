@@ -20,6 +20,8 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+from src.features.params import valor
+
 # Fijados el 2026-09-30, antes de medir ningún modelo.
 # fracción de más riesgo en la que se mide la captura de impagos
 DECIL = 0.10
@@ -29,7 +31,8 @@ TASAS_CURVA = tuple(round(t, 2) for t in np.arange(0.50, 0.951, 0.05))
 # Criterio de elección: el modelo más complejo gana solo si cumple las cuatro condiciones frente al
 # más simple. El gap entre train y CV se informa en `Resumen` y no decide.
 DELTA_AUC_MIN = 0.005  # mejora mínima del AUC de CV
-ALFA = 0.05  # sobre el p ya corregido por Bonferroni (0.3)
+# el alfa de familia de params.py, comparado con el p ya multiplicado por `bonferroni()` (0.3)
+ALFA = float(valor("alfa_familia"))
 TOL_CURVA = 0.001  # 0,1 puntos de mora por tasa de la zona, en recuento y en importe
 TOL_AUC_SIN_HISTORIAL = 0.005  # caída máxima del AUC en los clientes sin historial de buró
 PENDIENTE_CALIBRACION = (0.9, 1.1)

@@ -14,8 +14,12 @@ import pandas as pd
 import pytest
 from imblearn.over_sampling import SMOTE
 from sklearn.base import clone
+from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import Pipeline as SkPipeline
+from sklearn.preprocessing import FunctionTransformer
 
 from src.config import ruta
+from src.models import evaluar as evaluar_modulo
 from src.models.espacios import (
     ESTRATEGIAS,
     FINALISTAS,
@@ -26,10 +30,14 @@ from src.models.espacios import (
     avisos_imblearn,
     construir_estimador,
     contrastar,
+    escribir_decision,
     filas_tras_remuestrear,
     finalistas,
+    medir,
+    miembros_de_folds,
+    versiones,
 )
-from src.models.folds import NOMBRE_MANIFIESTO, Fold, cargar_folds
+from src.models.folds import NOMBRE_MANIFIESTO, Fold, cargar_folds, huella_cache, particionar
 from src.models.metricas import ALFA
 
 N = 1200
@@ -252,6 +260,61 @@ def test_balanced_rf_equilibra_cada_arbol_sin_el_aviso_de_la_013(datos):
             construir_estimador("random_forest", "balanced_rf").fit(X, y)
 
 
+def _semillas_del_remuestreo(estimador):
+    """Los `random_state` del paso de remuestreo, incluidos los de los samplers que contiene."""
+    paso = estimador.named_steps["remuestreo"]
+    return [v for k, v in paso.get_params().items() if k.endswith("random_state")]
+
+
+SIN_SEMILLA = ("pesos", "nada", "balanced_rf")
+
+
+@pytest.mark.parametrize(
+    ("modelo", "estrategia"), [(m, e) for m, e in TODAS if e not in SIN_SEMILLA]
+)
+def test_todo_remuestreo_lleva_semilla_en_cada_sampler(modelo, estrategia):
+    semillas = _semillas_del_remuestreo(construir_estimador(modelo, estrategia))
+    assert semillas and all(s is not None for s in semillas)
+
+
+# la tabla por fold que alimenta los contrastes ----------------------------------------------
+
+
+def test_medir_da_por_fold_el_auc_y_la_media_de_mora_de_la_zona_calculados_a_mano(monkeypatch):
+    rng = np.random.default_rng(0)
+    n = 1000
+    indice = pd.Index(np.arange(1000, 1000 + n), name="SK_ID_CURR")
+    y = pd.Series((np.arange(n) % 25 == 0).astype(int), index=indice, name="TARGET")
+    X = pd.DataFrame({"f1": y * 1.5 + rng.normal(size=n), "f2": rng.normal(size=n)}, index=indice)
+    contexto = pd.DataFrame(
+        {
+            "AMT_CREDIT": rng.uniform(1e4, 1e6, n),
+            "HAS_BUREAU_HISTORY": rng.integers(0, 2, n),
+            "TARGET": y,
+        },
+        index=indice,
+    )
+    split = pd.DataFrame({"SK_ID_CURR": indice, "TARGET": y.to_numpy(), "split": "train"})
+    monkeypatch.setattr(evaluar_modulo, "cargar_split", lambda: split)
+    identidad = lambda: SkPipeline([("id", FunctionTransformer())])  # noqa: E731
+
+    def folds():
+        yield from particionar(X, y, identidad, semillas=(0,))
+
+    por_fold = medir("logistica", "nada", folds, contexto, miembros_de_folds(folds()))[1]
+
+    assert len(por_fold) == 5
+    for fold in folds():
+        est = construir_estimador("logistica", "nada").fit(fold.X_ajuste, fold.y_ajuste)
+        p = est.predict_proba(fold.X_eval)[:, 1]
+        ye = fold.y_eval.to_numpy()[np.argsort(p, kind="stable")]
+        moras = [ye[: round(t * len(ye))].mean() for t in (0.70, 0.75, 0.80, 0.85, 0.90)]
+        fila = por_fold.query("k == @fold.k").iloc[0]
+        assert fila["auc"] == pytest.approx(roc_auc_score(fold.y_eval, p))
+        assert fila["mora_zona"] == pytest.approx(np.mean(moras))
+        assert np.mean(moras) < max(moras)  # guardián: media y máximo se distinguen
+
+
 # contrastes y finalistas ----------------------------------------------------------------------
 
 
@@ -379,6 +442,23 @@ def test_finalistas_son_dos_por_modelo_de_su_espacio_y_sin_sinteticas():
         assert not set(elegidas) & set(SINTETICAS)
 
 
+def test_la_decision_escrita_lleva_la_huella_de_los_folds_y_las_versiones(tmp_path):
+    estrategias = ESTRATEGIAS["logistica"]
+    por_fold = _por_fold("logistica", {}, estrategias=estrategias)
+    resumen = pd.DataFrame(
+        {"modelo": "logistica", "estrategia": list(estrategias), "auc_media": 0.76}
+    )
+    destino = tmp_path / "decision.json"
+
+    escribir_decision(resumen, por_fold, "huella-de-prueba", destino)
+
+    d = json.loads(destino.read_text())
+    assert d["huella_folds"] == "huella-de-prueba"
+    assert d["versiones"] == versiones()
+    assert set(d["versiones"]) == {"scikit-learn", "imbalanced-learn", "lightgbm"}
+    assert all(v for v in d["versiones"].values())
+
+
 def test_finalistas_escritas_salen_de_aplicar_la_regla_a_la_evidencia_guardada():
     d = _decision()
     tabla = pd.DataFrame(d["tabla"]).merge(
@@ -417,3 +497,10 @@ def test_fold_real_conserva_su_tamano_y_su_prevalencia_tras_ajustar():
     assert len(_proba(est, fold.X_eval)) == len(fold.y_eval)
     pd.testing.assert_frame_equal(fold.X_eval, antes)
     assert float(fold.y_eval.mean()) == pytest.approx(0.0807, abs=0.0005)
+
+
+@sin_cache
+def test_la_decision_guardada_es_de_los_folds_y_las_versiones_actuales():
+    d = _decision()
+    assert d["huella_folds"] == huella_cache()
+    assert d["versiones"] == versiones()

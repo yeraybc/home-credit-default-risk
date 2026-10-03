@@ -1,6 +1,12 @@
 {
   "criterio": "escrito antes de medir, ver plan.md 0.7; referencia pesos, ALFA sobre Bonferroni",
   "folds": "5 de la semilla 0, modelos sin tunear",
+  "huella_folds": "cbce6e93d080afae295ba124359d6d20f235818ab0d875bbd171ef09757f0fe2",
+  "versiones": {
+    "scikit-learn": "1.6.1",
+    "imbalanced-learn": "0.12.4",
+    "lightgbm": "4.6.0"
+  },
   "finalistas": {
     "logistica": [
       "pesos",

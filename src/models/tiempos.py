@@ -186,17 +186,18 @@ def resumir_tiempos(
             continue
         pared = m[[f"pared_{e}" for e in ETAPAS]].sum(axis=1)
         cpu = m[[f"cpu_{e}" for e in ETAPAS]].sum(axis=1)
+        mediana = pared.median()
         fila = {"modelo": modelo, "repeticiones": len(m)}
         for etapa in ETAPAS:
             fila[f"pared_{etapa}"] = m[f"pared_{etapa}"].median()
         fila |= {
-            "pared_fold": pared.median(),
-            "dispersion": (pared.max() - pared.min()) / pared.median(),
-            "cpu_sobre_pared": cpu.median() / pared.median(),
+            "pared_fold": mediana,
+            "dispersion": (pared.max() - pared.min()) / mediana,
+            "cpu_sobre_pared": cpu.median() / mediana,
             "mem_pico_mb": m["mem_pico_mb"].median(),
             "auc": m["auc"].median(),
-            "trial_s": N_FOLDS * pared.median(),
-            "total_s": presupuesto[modelo] * N_FOLDS * pared.median(),
+            "trial_s": N_FOLDS * mediana,
+            "total_s": presupuesto[modelo] * N_FOLDS * mediana,
             "trials": presupuesto[modelo],
             "extrapolado": True,
         }
@@ -228,16 +229,27 @@ def linea_base(X: pd.DataFrame, y: pd.Series, repeticiones: int = REPETICIONES) 
     modelos = modelos_ingenuos()
     pedidos = [(m, 0) for _ in range(repeticiones) for m in ORDEN_SIMPLICIDAD]
     pedidos += [(m, k) for m in MODELOS_TODOS_LOS_FOLDS for k in range(1, N_FOLDS)]
-    filas = []
-    for modelo, k in pedidos:
-        filas.append({"modelo": modelo, **medir_fold(modelos[modelo], X, y, k)})
-    return pd.DataFrame(filas)
+    return pd.DataFrame([{"modelo": m, **medir_fold(modelos[m], X, y, k)} for m, k in pedidos])
+
+
+def exigir_dispersion(resumen: pd.DataFrame) -> None:
+    """Revienta si la dispersión de las repeticiones de algún modelo supera `DISPERSION_MAX`."""
+    ruidosos = resumen.index[resumen["dispersion"] > DISPERSION_MAX].tolist()
+    if ruidosos:
+        raise ValueError(
+            f"dispersión por encima de {DISPERSION_MAX:.0%} en {ruidosos}: la medida no vale, "
+            "busca la causa (temperatura, un proceso en segundo plano) y repítela"
+        )
 
 
 def escribir_linea_base(
     medidas: pd.DataFrame, resumen: pd.DataFrame, destino: Path | None = None
 ) -> str:
-    """`models/linea_base_tiempos.json`: hardware, criterio, medidas crudas y tabla, para el 4.5."""
+    """`models/linea_base_tiempos.json`: hardware, criterio, medidas crudas y tabla, para el 4.5.
+
+    No escribe si la dispersión de alguna medida supera `DISPERSION_MAX`.
+    """
+    exigir_dispersion(resumen)
     destino = destino or ruta("models") / NOMBRE_FICHERO
     destino.parent.mkdir(parents=True, exist_ok=True)
     contenido = {

@@ -24,6 +24,8 @@ from src.models.tiempos import (
     DISPERSION_MAX,
     PRESUPUESTO_PROVISIONAL,
     _nan_canonico,
+    escribir_linea_base,
+    exigir_dispersion,
     homogeneidad_folds,
     medir_fold,
     modelos_ingenuos,
@@ -250,3 +252,30 @@ def test_linea_base_intercala_los_modelos_y_cubre_los_folds(monkeypatch, poblaci
     otros = medidas[medidas["k"] != 0]
     assert sorted(otros["k"].unique()) == [1, 2, 3, 4]
     assert set(otros["modelo"]) == set(tiempos.MODELOS_TODOS_LOS_FOLDS)
+
+
+# --- la guarda de la dispersión -------------------------------------------------------------
+
+
+def _resumen(*dispersiones):
+    return pd.DataFrame(
+        {"dispersion": dispersiones}, index=list(ORDEN_SIMPLICIDAD)[: len(dispersiones)]
+    )
+
+
+def test_la_dispersion_en_el_limite_pasa_y_por_encima_revienta():
+    exigir_dispersion(_resumen(0.02, DISPERSION_MAX))
+    with pytest.raises(ValueError, match="random_forest"):
+        exigir_dispersion(_resumen(0.02, DISPERSION_MAX + 0.01))
+
+
+def test_la_linea_base_ruidosa_no_se_escribe(tmp_path):
+    destino = tmp_path / "linea_base.json"
+    medidas = _medidas()
+
+    with pytest.raises(ValueError, match="dispersión"):
+        escribir_linea_base(medidas, _resumen(0.02, 0.5, 0.02), destino)
+    assert not destino.exists()
+
+    escribir_linea_base(medidas, resumir_tiempos(medidas).assign(dispersion=0.05), destino)
+    assert destino.exists()
