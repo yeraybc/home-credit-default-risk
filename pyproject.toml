@@ -40,6 +40,8 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN001", "ANN201"]
 "src/models/folds.py" = ["N803", "N806"]
 # Y la evaluacion, que recibe X de la API de scikit-learn en `_proba_impago()`.
 "src/models/evaluar.py" = ["N803"]
+# Y el cronometro, que mide sobre la X y la y de los folds.
+"src/models/tiempos.py" = ["N803", "N806"]
 
 # --- Black (code formatter) --------------------------------------------------
 [tool.black]

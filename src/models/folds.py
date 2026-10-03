@@ -77,16 +77,20 @@ def particionar(
     y: pd.Series,
     fabrica: Callable[[], Pipeline] = construir_pipeline,
     semillas: tuple[int, ...] = SEMILLAS,
+    ks: tuple[int, ...] | None = None,
 ) -> Iterator[Fold]:
     """Los folds de cada semilla con el pipeline ajustado dentro de cada uno.
 
     La matriz de ajuste sale de `fit_transform`, no de `fit` y `transform`: la codificación
     cruzada de la ocupación solo es honesta así (`ajustar_pipeline()` lo explica). `fabrica` existe
-    para probar con un espía sin montar el esquema entero.
+    para probar con un espía sin montar el esquema entero. `ks` limita los folds que se ajustan,
+    para cronometrar uno sin pagar los anteriores (0.6).
     """
     for semilla in semillas:
         kfold = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=semilla)
         for k, (i_ajuste, i_eval) in enumerate(kfold.split(X, y)):
+            if ks is not None and k not in ks:
+                continue
             pipeline = clone(fabrica())
             X_ajuste = pipeline.fit_transform(X.iloc[i_ajuste], y.iloc[i_ajuste])
             X_eval = pipeline.transform(X.iloc[i_eval])
