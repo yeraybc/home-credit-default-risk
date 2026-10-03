@@ -107,7 +107,6 @@ def modelos_ingenuos() -> dict[str, BaseEstimator]:
     }
 
 
-
 def _pico_mb() -> float:
     """Memoria residente máxima del proceso hasta ahora, en MB (bytes en macOS, KB en Linux)."""
     pico = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -147,9 +146,7 @@ def _medir(
     if auc <= 0.5:
         raise ValueError(f"fold k{k}: AUC {auc:.4f}, no pasa de 0,5")
     fila = {"k": k, "n_ajuste": len(fold.X_ajuste), "n_columnas": fold.X_ajuste.shape[1]}
-    for etapa, (antes, despues) in zip(
-        ("features", "ajuste", "prediccion"), zip(marcas, marcas[1:])
-    ):
+    for etapa, (antes, despues) in zip(ETAPAS, zip(marcas, marcas[1:])):
         fila[f"pared_{etapa}"] = despues[0] - antes[0]
         fila[f"cpu_{etapa}"] = despues[1] - antes[1]
     return {**fila, "mem_features_mb": mem_features, "mem_pico_mb": _pico_mb() - base, "auc": auc}
